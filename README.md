@@ -23,6 +23,10 @@ The tested target is an **ESP32-S3 N16R8** with an **ILI9488 480x320 SPI display
 
 Before the first build, configure the language, display, pins and optional hardware in [`src/config/hardware_config.h`](src/config/hardware_config.h). The shipped profile uses one rotary encoder and an IR receiver.
 
+## Add a language
+
+The interface language is selected at build time with `UI_LANGUAGE` in `hardware_config.h`; built-in values are `hu`, `en` and the `eng` alias. To add your own language, copy the [firmware template](src/i18n/lang_template.h) to `lang_xx.h` and the [web template](data/i18n/template.js) to `xx.js`, translate both while preserving keys and placeholders, set `#define UI_LANGUAGE xx`, then rebuild firmware and LittleFS/data. See the complete [language guide](data/i18n/README.md).
+
 ## Install and update
 
 Open the project in VS Code with PioArduino or PlatformIO, configure `hardware_config.h`, then upload both firmware and the data image:

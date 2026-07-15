@@ -23,6 +23,10 @@ A tesztelt célhardver **ESP32-S3 N16R8**, **ILI9488 480x320 SPI kijelzővel** �
 
 Az első build előtt a nyelvet, kijelzőt, pineket és opcionális hardvert a [`src/config/hardware_config.h`](src/config/hardware_config.h) fájlban állítsd be. A jelenlegi profil egy forgóenkódert és IR-vevőt használ.
 
+## Saját nyelv hozzáadása
+
+A felület nyelve fordításkor a `hardware_config.h` fájl `UI_LANGUAGE` értékével választható; a beépített értékek: `hu`, `en` és az angol `eng` aliasa. Saját nyelvhez másold a [firmware-sablont](src/i18n/lang_template.h) `lang_xx.h`, a [webes sablont](data/i18n/template.js) pedig `xx.js` néven, fordítsd le mindkettőt a kulcsok és helyőrzők megtartásával, állítsd be a `#define UI_LANGUAGE xx` értéket, majd fordítsd újra a firmware-t és a LittleFS/data image-et. A teljes útmutató: [nyelvi leírás](data/i18n/README.md).
+
 ## Telepítés és frissítés
 
 Nyisd meg a projektet VS Code-ban PioArduino vagy PlatformIO támogatással, állítsd be a `hardware_config.h` fájlt, majd töltsd fel a firmware-t és a data image-et is:
