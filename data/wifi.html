@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="hu">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SimpleRadio WiFi</title>
+  <link rel="stylesheet" href="wifi.css">
+</head>
+<body>
+  <main class="wifi-shell">
+    <section class="wifi-card">
+      <div class="brand-mark">SR</div>
+      <h1 data-i18n="wifi.title">WiFi beállítás</h1>
+      <p data-i18n="wifi.help">Válaszd ki a hálózatot, add meg a jelszót, majd mentsd a rádióra.</p>
+
+      <label>
+        <span data-i18n="wifi.network">Hálózat</span>
+        <select id="ssid"></select>
+      </label>
+
+      <label>
+        <span data-i18n="wifi.password">Jelszó</span>
+        <input id="pass" type="password" placeholder="WiFi jelszó" autocomplete="off" autocapitalize="none" spellcheck="false">
+      </label>
+
+      <button type="button" onclick="save()" data-i18n="save.idle">Mentés</button>
+      <span id="status" data-i18n="wifi.scanning">Hálózatok keresése...</span>
+    </section>
+  </main>
+  <script src="i18n.js?v=20260705-lang"></script>
+  <script src="wifi.js"></script>
+</body>
+</html>

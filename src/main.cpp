@@ -1,0 +1,111 @@
+#include <Arduino.h>
+#include <LittleFS.h>
+
+#include "state/player_state.h"
+#include "state/state_storage.h"
+#include "audio/audio_player.h"
+#include "artwork/artwork_cache.h"
+#include "config/app_config.h"
+#include "display/display.h"
+#include "web/web_server.h"
+#include "wifi/wifi_manager.h"
+#include "stations/station_manager.h"
+#include "mqtt/mqtt_controller.h"
+#include "input/input_controller.h"
+#include "led/status_led.h"
+#include "config/logging.h"
+
+#include <esp_system.h>
+#include <esp_heap_caps.h>
+#include <mbedtls/platform.h>
+#include <time.h>
+
+AudioPlayer audioPlayer;
+
+static void* mbedtlsPsramCalloc(size_t count, size_t size) {
+  if (psramFound()) {
+    void* ptr = heap_caps_calloc(count, size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (ptr) return ptr;
+  }
+  return heap_caps_calloc(count, size, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+}
+
+static void mbedtlsPsramFree(void* ptr) {
+  heap_caps_free(ptr);
+}
+
+static void configureTlsMemory() {
+  int result = mbedtls_platform_set_calloc_free(mbedtlsPsramCalloc, mbedtlsPsramFree);
+  Serial.printf("[setup] TLS allocator: %s, PSRAM free=%u\n",
+                result == 0 ? "PSRAM preferred" : "default",
+                static_cast<unsigned>(ESP.getFreePsram()));
+}
+
+static void configureLocalTime() {
+  static bool configured = false;
+  if (configured) return;
+
+  AppConfig& config = AppConfig::instance();
+  config.applyTimeZone();
+  configTzTime(config.timeZone.c_str(), "pool.ntp.org", "time.nist.gov");
+  configured = true;
+}
+
+void setup() {
+  Serial.begin(115200);
+  delay(200);
+
+  Serial.println("RESET REASON:");
+  Serial.println(esp_reset_reason());
+
+  configureTlsMemory();
+
+  if (!LittleFS.begin(true)) {
+    Serial.println("LittleFS mount failed!");
+  }
+
+  AppConfig::instance().load();
+  StatusLed::instance().begin();
+  Display::instance().begin();
+  ArtworkCache::instance().begin();
+
+  WifiManager& wifi = WifiManager::instance();
+  wifi.begin();
+  
+  if (wifi.mode() == WifiRunMode::STA_OK) {
+    Serial.println("[setup] STA ready");
+    configureLocalTime();
+    Serial.println("[setup] time configured");
+    StationManager::instance().begin();
+    Serial.println("[setup] stations loaded");
+    StateStorage::instance().load();
+    Serial.println("[setup] state loaded");
+    webServerBegin();
+    Serial.println("[setup] web started");
+    MqttController::instance().begin();
+    Serial.println("[setup] mqtt started");
+    InputController::instance().begin();
+    Serial.println("[setup] input started");
+    audioPlayer.begin();
+    Serial.println("[setup] audio started");
+    broadcastState();
+    Serial.println("[setup] initial state broadcast");
+  }
+}
+
+void loop() {
+ if (WifiManager::instance().mode() == WifiRunMode::STA_OK) {
+    audioPlayer.loop();
+    webServerLoop();
+    ArtworkCache::instance().loop();
+    MqttController::instance().loop();
+    InputController::instance().loop();
+    StatusLed::instance().loop();
+    if (playerStateDirty) {
+      playerStateDirty = false;
+      broadcastState();
+    }
+  }
+  Display::instance().tick();
+  vTaskDelay(1);
+}

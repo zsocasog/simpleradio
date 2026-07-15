@@ -1,0 +1,598 @@
+<!DOCTYPE html>
+<html lang="hu">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SimpleRadio</title>
+  <link rel="stylesheet" href="style.css?v=20260715-settings-layout">
+</head>
+<body>
+  <div class="app-shell">
+    <header class="topbar">
+      <button class="brand brand-button" type="button" onclick="showView('player')" aria-label="Lejátszó megnyitása">
+        <span id="brandMark" class="brand-mark">SR</span>
+        <div>
+          <strong>SimpleRadio</strong>
+          <small id="connectionInfo">Kapcsolódás...</small>
+        </div>
+      </button>
+
+      <nav class="tabs" aria-label="Fő nézetek">
+        <button id="playerTab" class="active" type="button" onclick="showView('player')">Lejátszó</button>
+        <button id="stationsTab" type="button" onclick="showView('stations')">Állomások</button>
+        <button id="soundTab" type="button" onclick="showView('sound')">Hang</button>
+        <button id="displayTab" type="button" onclick="showView('display')">Kijelző</button>
+        <button id="controlsTab" type="button" onclick="showView('controls')">Vezérlés</button>
+        <button id="irTab" type="button" onclick="showView('ir')" data-i18n="ir.pageTitle">Távirányító</button>
+        <button id="systemTab" type="button" onclick="showView('system')">Rendszer</button>
+      </nav>
+
+      <div class="top-actions">
+        <span id="playState" class="state-chip">STOP</span>
+        <button id="playButtonSmall" class="top-play-btn" type="button" onclick="togglePlay()">Play</button>
+      </div>
+    </header>
+
+    <main class="main">
+      <section id="playerView" class="view">
+        <section class="now-grid">
+          <article class="player-stage">
+            <div class="cover-frame">
+              <div class="cover-art" id="webCoverArt">SR</div>
+            </div>
+            <div class="now-copy">
+              <h1 id="current-station">Állomás kiválasztása</h1>
+              <p id="meta">Nincs metadata</p>
+              <div class="transport">
+                <button class="transport-icon" type="button" onclick="prevStation()" aria-label="Előző állomás" title="Előző állomás"><span class="transport-glyph icon-prev"></span></button>
+                <button id="playButton" class="play-main transport-icon" type="button" onclick="togglePlay()" aria-label="Play" title="Play"><span class="transport-glyph icon-play"></span></button>
+                <button class="transport-icon" type="button" onclick="nextStation()" aria-label="Következő állomás" title="Következő állomás"><span class="transport-glyph icon-next"></span></button>
+              </div>
+              <div class="volume-rail" role="group" aria-label="Hangerő">
+                <span class="volume-label">Hangerő</span>
+                <div class="volume-control-row">
+                  <button class="volume-step" type="button" onclick="changeVolume(-5)" aria-label="Hangerő csökkentése 5 százalékkal" title="Hangerő -5%">−</button>
+                  <input id="volume" type="range" min="0" max="100" oninput="setVolume(this.value)">
+                  <button class="volume-step" type="button" onclick="changeVolume(5)" aria-label="Hangerő növelése 5 százalékkal" title="Hangerő +5%">+</button>
+                </div>
+                <strong id="volValue">50%</strong>
+              </div>
+            </div>
+          </article>
+
+          <aside class="panel queue-panel">
+            <header class="panel-head">
+              <div>
+                <h2>Csatornalista</h2>
+                <small id="stationCount">0 mentve</small>
+              </div>
+              <button class="ghost-btn" type="button" onclick="showView('stations')">Kezelés</button>
+            </header>
+            <div id="stations" class="station-list compact"></div>
+          </aside>
+        </section>
+      </section>
+
+      <section id="stationsView" class="view hidden">
+        <header class="page-head">
+          <h1>Állomások</h1>
+          <div class="button-row page-actions">
+            <button class="ghost-btn" type="button" onclick="openStationSearch()">Online kereső</button>
+            <button class="primary" type="button" onclick="clearStationForm()">Új állomás</button>
+          </div>
+        </header>
+
+        <section class="stations-layout">
+          <article class="panel saved-stations-panel">
+            <header class="panel-head">
+              <div>
+                <h2>Mentett állomások</h2>
+                <small id="stationManagerCount">0 állomás</small>
+              </div>
+              <label class="saved-search search-box">
+                Keresés
+                <span>
+                  <input id="savedStationSearch" type="search" placeholder="Mentett állomás..." autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false" oninput="filterSavedStations()">
+                  <button type="button" onclick="clearSavedStationSearch()" title="Törlés" aria-label="Mentett állomások keresés törlése">×</button>
+                </span>
+              </label>
+            </header>
+            <div id="stationManager" class="station-list manager"></div>
+          </article>
+
+          <section class="station-tools">
+            <details id="stationSearchDrawer" class="tool-drawer">
+              <summary>
+                <span>Online kereső</span>
+                <small id="searchStatus"></small>
+              </summary>
+              <div class="drawer-body">
+                <div class="search-row">
+                  <label class="country-field">
+                    Ország
+                    <select id="searchCountry" onchange="queueOnlineSearch()">
+                      <option value="">Összes</option>
+                      <option value="HU" selected>HU - Magyarország</option>
+                      <option value="AT">AT - Ausztria</option>
+                      <option value="DE">DE - Németország</option>
+                      <option value="RO">RO - Románia</option>
+                      <option value="SK">SK - Szlovákia</option>
+                      <option value="CZ">CZ - Csehország</option>
+                      <option value="PL">PL - Lengyelország</option>
+                      <option value="HR">HR - Horvátország</option>
+                      <option value="SI">SI - Szlovénia</option>
+                      <option value="RS">RS - Szerbia</option>
+                      <option value="GB">GB - Egyesült Királyság</option>
+                      <option value="US">US - Egyesült Államok</option>
+                      <option value="FR">FR - Franciaország</option>
+                      <option value="IT">IT - Olaszország</option>
+                      <option value="ES">ES - Spanyolország</option>
+                      <option value="NL">NL - Hollandia</option>
+                      <option value="BE">BE - Belgium</option>
+                      <option value="CH">CH - Svájc</option>
+                      <option value="SE">SE - Svédország</option>
+                      <option value="NO">NO - Norvégia</option>
+                      <option value="FI">FI - Finnország</option>
+                      <option value="DK">DK - Dánia</option>
+                      <option value="IE">IE - Írország</option>
+                      <option value="PT">PT - Portugália</option>
+                      <option value="GR">GR - Görögország</option>
+                      <option value="TR">TR - Törökország</option>
+                      <option value="CA">CA - Kanada</option>
+                      <option value="AU">AU - Ausztrália</option>
+                    </select>
+                  </label>
+                  <label class="search-box">
+                    Keresés
+                    <span>
+                      <input id="searchName" type="search" placeholder="Rádió neve..." autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false" oninput="queueOnlineSearch()">
+                      <button type="button" onclick="clearStationSearch()" title="Törlés" aria-label="Keresés törlése">×</button>
+                    </span>
+                  </label>
+                </div>
+                <div id="searchResults" class="result-list"></div>
+              </div>
+            </details>
+
+            <details id="stationEditorDrawer" class="tool-drawer">
+              <summary>
+                <span>Állomás szerkesztése</span>
+                <small>Név, stream URL, logó</small>
+              </summary>
+              <form class="form-stack drawer-body" autocomplete="off" onsubmit="saveStation(event)">
+                <input id="editId" type="hidden">
+                <label>Név<input id="editName" type="text" autocomplete="off" autocorrect="off" spellcheck="false" required></label>
+                <label>Stream URL<input id="editUrl" type="url" autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false" required></label>
+                <label>Logó útvonal vagy URL<input id="editLogo" type="text" autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false" placeholder="/logos/radio.png"></label>
+                <label class="logo-picker-field">Feltöltött logók
+                  <span class="logo-picker-row">
+                    <select id="editLogoPicker" onchange="selectUploadedLogo()">
+                      <option value="">Nincs kiválasztva</option>
+                    </select>
+                    <button class="ghost-btn" type="button" onclick="loadLogoChoices()">Frissítés</button>
+                  </span>
+                </label>
+                <div class="button-row">
+                  <button class="primary" type="submit">Mentés</button>
+                  <button class="ghost-btn" type="button" onclick="clearStationForm()">Mezők törlése</button>
+                </div>
+              </form>
+            </details>
+
+            <article class="panel">
+              <header class="panel-head">
+                <h2>Logók</h2>
+              </header>
+              <div id="logoDropZone" class="upload-drop" tabindex="0">
+                <strong>Logók feltöltése</strong>
+                <span>Több PNG, JPG vagy BMP fájl is mehet egyszerre.</span>
+                <input id="logoBulkInput" type="file" accept="image/png,image/jpeg,image/bmp,.png,.jpg,.jpeg,.bmp" multiple>
+              </div>
+              <small id="logoUploadStatus" class="form-note upload-status">A fájlok a /logos mappába kerülnek.</small>
+            </article>
+          </section>
+        </section>
+      </section>
+
+      <section id="soundView" class="view hidden">
+        <header class="page-head">
+          <h1>Hang</h1>
+          <button class="primary" type="button" onclick="resetTone()">Reset</button>
+        </header>
+
+        <article class="panel settings-surface">
+          <div class="settings-columns">
+            <div class="settings-column">
+              <section class="settings-section">
+                <header class="settings-section-head">
+                  <h2>Equalizer</h2>
+                  <small>A mély, közép és magas tartomány finomhangolása</small>
+                </header>
+                <label class="setting-row">
+                  <span>Bass</span>
+                  <span class="setting-range"><input id="soundEqLow" type="range" min="-12" max="6" value="0" oninput="mirrorEq('low', this.value)"><strong id="soundEqLowValue">0 dB</strong></span>
+                </label>
+                <label class="setting-row">
+                  <span>Közép</span>
+                  <span class="setting-range"><input id="soundEqMid" type="range" min="-12" max="6" value="0" oninput="mirrorEq('mid', this.value)"><strong id="soundEqMidValue">0 dB</strong></span>
+                </label>
+                <label class="setting-row">
+                  <span>Treble</span>
+                  <span class="setting-range"><input id="soundEqHigh" type="range" min="-12" max="6" value="0" oninput="mirrorEq('high', this.value)"><strong id="soundEqHighValue">0 dB</strong></span>
+                </label>
+              </section>
+            </div>
+
+            <div class="settings-column">
+              <section class="settings-section">
+                <header class="settings-section-head">
+                  <h2>Balansz</h2>
+                  <small>A bal és jobb csatorna aránya</small>
+                </header>
+                <label class="setting-row">
+                  <span>Bal / jobb</span>
+                  <span class="setting-range"><input id="soundBalance" type="range" min="-100" max="100" value="0" oninput="mirrorBalance(this.value)"><strong id="soundBalanceValue">Közép</strong></span>
+                </label>
+              </section>
+
+              <section class="settings-section">
+                <header class="settings-section-head">
+                  <h2>Hangerő karakterisztika</h2>
+                  <small>A hangerőszabályzás érzetének beállítása</small>
+                </header>
+                <label class="setting-row">
+                  <span>Görbe</span>
+                  <select id="volumeCurve" onchange="syncVolumeCurve(); saveConfigNow()">
+                    <option value="soft">Lágy</option>
+                    <option value="linear">Lineáris</option>
+                    <option value="log">Logaritmikus</option>
+                  </select>
+                </label>
+                <canvas id="volumeCurvePreview" class="curve-preview settings-preview" width="360" height="148"></canvas>
+              </section>
+            </div>
+          </div>
+        </article>
+      </section>
+
+      <section id="displayView" class="view hidden">
+        <header class="page-head">
+          <h1>Kijelző</h1>
+          <button class="primary" type="button" data-config-save onclick="saveConfigNow()">Mentés</button>
+        </header>
+
+        <article class="panel settings-surface">
+          <div class="settings-columns">
+            <div class="settings-column">
+              <section class="settings-section">
+                <header class="settings-section-head"><h2>Fényerő és téma</h2><small>A kijelző színei és nappali fényereje</small></header>
+                <label class="setting-row setting-toggle">
+                  <span class="setting-copy"><strong>Inverz kijelző</strong></span>
+                  <span class="toggle-switch"><input id="displayInvert" type="checkbox" onchange="saveConfigNow()"><span></span></span>
+                </label>
+                <label class="setting-row"><span>Téma</span>
+                  <select id="themeAccent" onchange="syncThemeAccent(); saveConfigNow()">
+                <option value="green">Zöld</option>
+                <option value="amber">Borostyán</option>
+                <option value="blue">Kék</option>
+                <option value="cyan">Cián</option>
+                <option value="red">Vörös</option>
+                <option value="custom">Egyéni</option>
+                  </select>
+                </label>
+                <label id="themeCustomColorField" class="setting-row hidden"><span>Egyéni témaszín</span>
+                  <span class="color-picker-row">
+                <input id="themeCustomColor" type="color" value="#a9f7bf" oninput="syncThemeCustomColorFromPicker(); queueConfigSave()" onchange="syncThemeCustomColorFromPicker(); saveConfigNow()">
+                <input id="themeCustomColorText" type="text" value="#a9f7bf" maxlength="7" autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false" oninput="syncThemeCustomColorFromText(); queueConfigSave()" onchange="syncThemeCustomColorFromText(); saveConfigNow()">
+                  </span>
+                </label>
+                <label class="setting-row"><span>Fényerő</span><span class="setting-range"><input id="brightness" type="range" min="0" max="255" oninput="setPercentLabel('brightness'); queueConfigSave()"><strong id="brightnessValue">0%</strong></span></label>
+                <label class="setting-row setting-toggle">
+                  <span class="setting-copy"><strong>Automatikus nappal / éjszaka mód</strong></span>
+                  <span class="toggle-switch"><input id="autoBrightness" type="checkbox" onchange="saveConfigNow()"><span></span></span>
+                </label>
+                <label class="setting-row"><span>Nappali mód kezdete</span><input id="dayStartTime" type="time" onchange="saveConfigNow()"></label>
+                <label class="setting-row"><span>Éjszakai mód kezdete</span><input id="nightStartTime" type="time" onchange="saveConfigNow()"></label>
+                <label class="setting-row"><span>Nappali</span><span class="setting-range"><input id="dayBrightness" type="range" min="0" max="255" oninput="setPercentLabel('dayBrightness'); queueConfigSave()"><strong id="dayBrightnessValue">0%</strong></span></label>
+                <label class="setting-row"><span>Éjszakai</span><span class="setting-range"><input id="nightBrightness" type="range" min="0" max="255" oninput="setPercentLabel('nightBrightness'); queueConfigSave()"><strong id="nightBrightnessValue">0%</strong></span></label>
+              </section>
+            </div>
+
+            <div class="settings-column">
+              <section class="settings-section">
+                <header class="settings-section-head"><h2>Alsó kijelzősáv</h2><small>A lejátszóképernyő alsó információs területe</small></header>
+                <label class="setting-row"><span>Alsó kijelzősáv</span>
+                  <select id="displayFooterMode" onchange="syncDisplayFooterMode(); saveConfigNow()">
+                <option value="off">Kikapcsolva</option>
+                <option value="volume">Hangerősáv</option>
+                <option value="station">Állomás</option>
+                <option value="datetime" data-i18n="display.footer.datetime">Dátum és idő</option>
+                <option value="vu">Animáció</option>
+                  </select>
+                </label>
+                <label id="displayVuStyleField" class="setting-row"><span>Animáció típusa</span>
+                  <select id="displayVuStyle" onchange="saveConfigNow()">
+                <option value="bars">Álló oszlopok</option>
+                <option value="symmetric">Szimmetrikus oszlopok</option>
+                <option value="classic">Középről induló VU</option>
+                  </select>
+                </label>
+                <label id="displayVuSensitivityField" class="setting-row"><span data-i18n="display.vuSensitivity">VU érzékenység</span><span class="setting-range"><input id="displayVuSensitivity" type="range" min="50" max="200" step="5" oninput="setRawPercentLabel('displayVuSensitivity'); queueConfigSave()"><strong id="displayVuSensitivityValue">100%</strong></span></label>
+              </section>
+
+              <section class="settings-section">
+                <header class="settings-section-head"><h2>Készenlét és óra</h2><small>Az inaktív kijelző megjelenése</small></header>
+                <label class="setting-row setting-toggle">
+                  <span class="setting-copy"><strong>Készenléti mód</strong></span>
+                  <span class="toggle-switch"><input id="displayIdleEnabled" type="checkbox" onchange="syncDisplayIdleMode(); saveConfigNow()"><span></span></span>
+                </label>
+            <input id="displayIdleBlank" type="checkbox" hidden>
+            <input id="displayClockEnabled" type="checkbox" hidden>
+                <label class="setting-row"><span>Inaktivitás után</span>
+                  <select id="displayIdleMode" onchange="syncDisplayIdleMode(); saveConfigNow()">
+                <option value="dim">Halványított lejátszóképernyő</option>
+                <option value="blank">Sötét kijelző</option>
+                <option value="clock">Óra</option>
+                  </select>
+                </label>
+                <label id="displayClockOptions" class="setting-row"><span>Óra típusa</span>
+                  <select id="displayClockStyle" onchange="saveConfigNow()">
+                <option value="digital">Digitális</option>
+                <option value="analog">Analóg</option>
+                  </select>
+                </label>
+                <label class="setting-row"><span>Időzóna</span>
+                  <select id="timeZone" onchange="saveConfigNow()">
+                <option value="CET-1CEST,M3.5.0/2,M10.5.0/3">Budapest / Közép-Európa (automata DST)</option>
+                <option value="UTC0">UTC</option>
+                <option value="GMT0BST,M3.5.0/1,M10.5.0">London (automata DST)</option>
+                <option value="EET-2EEST,M3.5.0/3,M10.5.0/4">Kelet-Európa (automata DST)</option>
+                <option value="EST5EDT,M3.2.0/2,M11.1.0/2">New York (automata DST)</option>
+                  </select>
+                </label>
+                <label class="setting-row"><span>Készenléti idő (másodperc)</span><input id="displayIdleSeconds" type="number" min="10" max="3600" onchange="saveConfigNow()"></label>
+                <label class="setting-row"><span>Készenléti fényerő</span><span class="setting-range"><input id="displayIdleBrightness" type="range" min="0" max="255" oninput="setPercentLabel('displayIdleBrightness'); queueConfigSave()"><strong id="displayIdleBrightnessValue">0%</strong></span></label>
+              </section>
+            </div>
+          </div>
+        </article>
+      </section>
+
+      <section id="controlsView" class="view hidden">
+        <header class="page-head">
+          <h1>Vezérlés</h1>
+          <button class="primary" type="button" data-config-save onclick="saveConfigNow()">Mentés</button>
+        </header>
+
+        <article class="panel settings-surface">
+          <div class="settings-columns">
+            <div id="encoderHardwarePanel" class="settings-column">
+              <section class="settings-section">
+                <header class="settings-section-head settings-section-head-inline">
+                  <div><h2 id="encoderSectionTitle">Enkóder</h2><small>Alap működés és érzékenység</small></div>
+                  <span id="encoderHardwareBadge" class="hardware-badge">Betöltés...</span>
+                </header>
+                <div id="encoderHardwareNotice" class="hardware-notice hidden"></div>
+                <div class="settings-fields">
+                  <label class="setting-row setting-toggle">
+                    <span class="setting-copy"><strong>Enkóder használata</strong></span>
+                    <span class="toggle-switch"><input id="encoderEnabled" type="checkbox" onchange="syncEncoderControls(); saveConfigNow()"><span></span></span>
+                  </label>
+                  <label class="setting-row setting-toggle">
+                    <span class="setting-copy"><strong>Második enkóder</strong><small id="encoder2HardwareHint"></small></span>
+                    <span class="toggle-switch"><input id="secondEncoderEnabled" type="checkbox" onchange="syncEncoderControls(); saveConfigNow()"><span></span></span>
+                  </label>
+                  <label class="setting-row"><span>Érzékenység</span><span class="setting-range"><input id="encoderSensitivity" type="range" min="1" max="8" step="1" oninput="syncEncoderSensitivity(this.value); queueConfigSave()"><strong id="encoderSensitivityValue">8/8</strong></span></label>
+                  <label class="setting-row"><span>Hosszú nyomás (ms)</span><input id="encoderLongPressMs" type="number" min="300" max="3000" step="50" onchange="saveConfigNow()"></label>
+                </div>
+              </section>
+            </div>
+
+            <div class="settings-column">
+              <section id="encoderVolumePanel" class="settings-section">
+                <header class="settings-section-head"><h2>Hangerő</h2><small>Enkóderes hangerőállítás</small></header>
+                <div class="settings-fields">
+                  <label class="setting-row"><span>Hangerő lépés (%)</span><input id="encoderVolumeStep" type="number" min="1" max="10" step="1" onchange="saveConfigNow()"></label>
+                </div>
+              </section>
+
+              <section id="encoderStationPanel" class="settings-section">
+                <header class="settings-section-head"><h2>Állomásválasztás</h2><small>Lista megnyitása és automatikus indítás</small></header>
+                <div class="settings-fields">
+                  <label class="setting-row setting-toggle">
+                    <span class="setting-copy"><strong>Automatikus indítás választás után</strong></span>
+                    <span class="toggle-switch"><input id="encoderAutoPlayStation" type="checkbox" onchange="syncEncoderAutoPlay(); saveConfigNow()"><span></span></span>
+                  </label>
+                  <label class="setting-row"><span>Automatikus indítás késleltetése (ms)</span><input id="encoderAutoPlayMs" type="number" min="300" max="10000" step="100" inputmode="numeric" onchange="saveConfigNow()"></label>
+                </div>
+              </section>
+
+              <section class="settings-section">
+                <header class="settings-section-head"><h2>Indítás</h2><small>A rádió viselkedése bekapcsoláskor</small></header>
+                <label class="setting-row setting-toggle">
+                  <span class="setting-copy"><strong>Automatikus lejátszás indításkor</strong></span>
+                  <span class="toggle-switch"><input id="autoStart" type="checkbox" onchange="saveConfigNow()"><span></span></span>
+                </label>
+              </section>
+            </div>
+          </div>
+        </article>
+      </section>
+
+      <section id="irView" class="view hidden">
+        <header class="page-head">
+          <h1 data-i18n="ir.pageTitle">Távirányító</h1>
+          <div id="irLearnStatus" class="learn-pill" data-i18n="ir.ready">Készenlét</div>
+        </header>
+
+        <div id="irHardwareNotice" class="hardware-notice page-notice hidden"></div>
+
+        <section id="irWorkbench" class="ir-workbench">
+          <article class="remote-unit">
+            <div class="remote-top">
+              <span class="ir-eye"></span>
+              <strong>IR-RCNEC-BK</strong>
+            </div>
+            <div id="irRemote" class="remote-grid"></div>
+          </article>
+
+          <article class="panel learn-panel">
+            <header class="panel-head">
+              <div>
+                <h2 id="irPanelTitle" data-i18n="ir.recorder">Gombok tanítása</h2>
+                <small id="irPanelHelp" data-i18n="ir.recordHelpIdle">Válassz egy gombot, majd tanítsd be.</small>
+              </div>
+              <label class="toggle-field compact">
+                <span class="toggle-copy"><strong>IR</strong></span>
+                <span class="toggle-switch"><input id="irEnabled" type="checkbox" onchange="saveConfigNow()"><span></span></span>
+              </label>
+            </header>
+            <input id="irActionLearning" type="hidden">
+            <label class="range-line">
+              <span data-i18n="ir.sensitivity">IR érzékenység</span>
+              <input id="irSensitivity" type="range" min="15" max="60" step="1" oninput="syncIrSensitivity(this.value); queueConfigSave()">
+              <strong id="irSensitivityValue">40%</strong>
+            </label>
+            <div class="learn-display">
+              <span data-i18n="ir.currentCode">Aktuális kód</span>
+              <strong id="irPrimaryCode" data-i18n="ir.notLearned">Nincs kód</strong>
+            </div>
+            <div class="button-row">
+              <button class="ghost-btn" type="button" onclick="cancelIrLearning()" data-i18n="action.cancel">Mégse</button>
+              <button class="danger" type="button" onclick="clearSelectedIr()" data-i18n="ir.clearCode">Kód törlése</button>
+            </div>
+            <div id="irMappedList" class="mapped-grid"></div>
+          </article>
+        </section>
+      </section>
+
+      <section id="systemView" class="view hidden">
+        <header class="page-head">
+          <h1>Rendszer</h1>
+          <button class="primary" type="button" data-config-save onclick="saveConfigNow()">Mentés</button>
+        </header>
+
+        <article class="panel system-status-panel">
+          <header class="panel-head">
+            <h2>Állapot</h2>
+            <div class="button-row compact">
+              <button class="ghost-btn" type="button" onclick="refreshSystemStatus()">Frissítés</button>
+              <button class="danger" id="rebootButton" type="button" onclick="requestSystemReboot()">Újraindítás</button>
+            </div>
+          </header>
+          <div class="status-grid">
+            <div id="statusPlaybackCard" class="status-card">
+              <span>Állapot</span>
+              <strong id="statusPlayback">...</strong>
+              <small id="statusPlaybackDetail">...</small>
+            </div>
+            <div id="statusWifiCard" class="status-card">
+              <span>WiFi</span>
+              <strong id="statusWifi">...</strong>
+              <div class="meter-mini"><span id="statusWifiMeter"></span></div>
+              <small id="statusWifiDetail">...</small>
+            </div>
+            <div id="statusMqttCard" class="status-card">
+              <span>MQTT</span>
+              <strong id="statusMqtt">...</strong>
+              <small id="statusMqttDetail">...</small>
+            </div>
+            <div id="statusFilesystemCard" class="status-card">
+              <span id="statusFilesystemLabel">Tárhely</span>
+              <strong id="statusFilesystem">...</strong>
+              <div class="meter-mini"><span id="statusFilesystemMeter"></span></div>
+              <small id="statusFilesystemDetail">...</small>
+            </div>
+            <div id="statusSystemCard" class="status-card wide">
+              <span>ESP</span>
+              <strong id="statusSystem">...</strong>
+              <small id="statusSystemDetail">...</small>
+            </div>
+          </div>
+        </article>
+
+        <article class="panel ota-panel">
+          <header class="panel-head">
+            <div>
+              <h2>OTA frissítés</h2>
+              <small>Firmware és LittleFS/data feltöltés WiFi-n keresztül</small>
+            </div>
+            <span id="otaVersion" class="version-pill">v-</span>
+          </header>
+          <div id="otaWarning" class="ota-warning">
+            A firmware frissítés után az ESP újraindul. A data frissítés teljes LittleFS cserét végez; a WiFi, config,
+            állapot és állomáslista mentésre kerül. A cache újragenerálódik, a kézzel feltöltött logók akkor maradnak
+            meg, ha benne vannak a feltöltött data image-ben.
+          </div>
+          <label class="toggle-field">
+            <span class="toggle-copy"><strong>Megértettem, frissíteni szeretnék</strong></span>
+            <span class="toggle-switch"><input id="otaConfirm" type="checkbox"><span></span></span>
+          </label>
+          <label>OTA jelszó<input id="otaPassword" type="password" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="simpleradio"></label>
+          <div class="ota-grid">
+            <div id="otaFirmwareDrop" class="upload-drop ota-drop" tabindex="0">
+              <strong>Firmware feltöltése</strong>
+              <span>.pio/build/.../firmware.bin</span>
+              <input id="otaFirmwareInput" type="file" accept=".bin,application/octet-stream">
+            </div>
+            <div id="otaFilesystemDrop" class="upload-drop ota-drop" tabindex="0">
+              <strong>Data / LittleFS feltöltése</strong>
+              <span>.pio/build/.../littlefs.bin</span>
+              <input id="otaFilesystemInput" type="file" accept=".bin,application/octet-stream">
+            </div>
+          </div>
+          <div class="ota-progress">
+            <span id="otaProgressBar"></span>
+          </div>
+          <small id="otaStatus" class="form-note upload-status">Válaszd ki a megfelelő .bin fájlt.</small>
+        </article>
+
+        <article class="panel settings-surface">
+          <div class="settings-columns">
+            <div id="frontLedPanel" class="settings-column">
+              <section class="settings-section">
+                <header class="settings-section-head settings-section-head-inline">
+                  <div><h2>Előlapi RGB LED</h2><small>Állapotjelzés és hangulatfény</small></div>
+                  <span id="frontLedHardwareBadge" class="hardware-badge">Betöltés...</span>
+                </header>
+                <div id="frontLedHardwareNotice" class="hardware-notice hidden"></div>
+                <div class="settings-fields">
+                  <label class="setting-row setting-toggle"><span class="setting-copy"><strong>LED használata</strong></span><span class="toggle-switch"><input id="frontLedEnabled" type="checkbox" onchange="syncFrontLedControls(); saveConfigNow()"><span></span></span></label>
+                  <label class="setting-row setting-toggle"><span class="setting-copy"><strong>Téma színének követése</strong></span><span class="toggle-switch"><input id="frontLedUseTheme" type="checkbox" onchange="syncFrontLedControls(); saveConfigNow()"><span></span></span></label>
+                  <label class="setting-row"><span>LED fényerő</span><span class="setting-range"><input id="frontLedBrightness" type="range" min="0" max="255" oninput="setPercentLabel('frontLedBrightness'); queueConfigSave()"><strong id="frontLedBrightnessValue">0%</strong></span></label>
+                  <label class="setting-row"><span>LED készenléti fényerő</span><span class="setting-range"><input id="frontLedStandbyBrightness" type="range" min="0" max="255" oninput="setPercentLabel('frontLedStandbyBrightness'); queueConfigSave()"><strong id="frontLedStandbyBrightnessValue">0%</strong></span></label>
+                  <label class="setting-row"><span>Egyedi szín</span><span class="color-picker-row"><input id="frontLedColor" type="color" value="#a9f7bf" oninput="syncFrontLedColorFromPicker(); queueConfigSave()" onchange="syncFrontLedColorFromPicker(); saveConfigNow()"><input id="frontLedColorText" type="text" value="#a9f7bf" maxlength="7" autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false" oninput="syncFrontLedColorFromText(); queueConfigSave()" onchange="syncFrontLedColorFromText(); saveConfigNow()"></span></label>
+                </div>
+              </section>
+            </div>
+
+            <div class="settings-column">
+              <section class="settings-section">
+                <header class="settings-section-head"><h2 id="mqttTitle">MQTT</h2><small>Kapcsolódás az otthonautomatizálási rendszerhez</small></header>
+                <div class="settings-fields">
+                  <label class="setting-row setting-toggle"><span class="setting-copy"><strong>MQTT használata</strong></span><span class="toggle-switch"><input id="mqttEnabled" type="checkbox" onchange="saveConfigNow()"><span></span></span></label>
+                  <label class="setting-row"><span>Host</span><input id="mqttHost" type="text" autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false" onchange="saveConfigNow()"></label>
+                  <label class="setting-row"><span>Port</span><input id="mqttPort" type="number" min="1" max="65535" onchange="saveConfigNow()"></label>
+                  <label class="setting-row"><span>Felhasználónév</span><input id="mqttUser" type="text" autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false" onchange="saveConfigNow()"></label>
+                  <label class="setting-row"><span>Jelszó</span><input id="mqttPassword" type="password" autocomplete="off" autocapitalize="none" spellcheck="false" onchange="saveConfigNow()"></label>
+                  <label class="setting-row"><span>Root topic</span><input id="mqttRootTopic" type="text" autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false" onchange="saveConfigNow()"></label>
+                </div>
+              </section>
+
+              <section class="settings-section">
+                <header class="settings-section-head"><h2 id="streamTitle">Stream kapcsolat</h2><small>A megszakadt lejátszás automatikus helyreállítása</small></header>
+                <div class="settings-fields">
+                  <label class="setting-row setting-toggle"><span class="setting-copy"><strong>Újracsatlakozás stream szakadáskor</strong></span><span class="toggle-switch"><input id="streamRetryEnabled" type="checkbox" onchange="saveConfigNow()"><span></span></span></label>
+                  <label class="setting-row"><span>Újracsatlakozás késleltetése (ms)</span><input id="streamRetryMs" type="number" min="1000" max="60000" step="500" onchange="saveConfigNow()"></label>
+                </div>
+              </section>
+            </div>
+          </div>
+        </article>
+      </section>
+    </main>
+  </div>
+  <script src="i18n.js?v=20260715-settings-layout"></script>
+  <script src="app.js?v=0.8.1"></script>
+</body>
+</html>
