@@ -1,0 +1,41 @@
+name: Issue
+description: Report a bug, suggest an improvement, or ask a project question.
+title: "[Issue]: "
+body:
+  - type: dropdown
+    id: type
+    attributes:
+      label: Type
+      options:
+        - Bug report
+        - Feature request
+        - Question / other
+    validations:
+      required: true
+
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: Briefly describe the problem, idea, or question.
+    validations:
+      required: true
+
+  - type: textarea
+    id: details
+    attributes:
+      label: Details
+      description: For bugs, include steps to reproduce and what you expected to happen. For ideas, explain the use case.
+
+  - type: input
+    id: version
+    attributes:
+      label: SimpleRadio version
+      description: For example, 0.8.13. Leave empty if not relevant.
+      placeholder: 0.8.13
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Device and environment
+      description: Include relevant hardware, browser, Home Assistant version, logs, or screenshots.
