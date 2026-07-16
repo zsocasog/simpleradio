@@ -1243,6 +1243,34 @@ small { color: var(--muted); }
   grid-column: 1 / -1;
 }
 
+.version-pills {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.ota-compatibility {
+  margin-bottom: 14px;
+  padding: 11px 13px;
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--line));
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--accent) 8%, var(--panel));
+  color: var(--muted);
+}
+
+.ota-compatibility.warn {
+  border-color: #8b6b28;
+  background: #2b220f;
+  color: #ffe0a0;
+}
+
+.ota-compatibility.error {
+  border-color: #8b3535;
+  background: #2a1212;
+  color: #ffb2b2;
+}
+
 .settings-surface {
   padding: 26px;
   gap: 0;

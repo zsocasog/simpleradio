@@ -95,6 +95,7 @@ void setup() {
 
 void loop() {
  if (WifiManager::instance().mode() == WifiRunMode::STA_OK) {
+    bool wifiChanged = WifiManager::instance().loop();
     audioPlayer.loop();
     webServerLoop();
     ArtworkCache::instance().loop();
@@ -104,6 +105,9 @@ void loop() {
     if (playerStateDirty) {
       playerStateDirty = false;
       broadcastState();
+    }
+    if (wifiChanged) {
+      broadcastState(true);
     }
   }
   Display::instance().tick();

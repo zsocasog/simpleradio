@@ -517,8 +517,12 @@
               <h2>OTA frissítés</h2>
               <small>Firmware és LittleFS/data feltöltés WiFi-n keresztül</small>
             </div>
-            <span id="otaVersion" class="version-pill">v-</span>
+            <span class="version-pills">
+              <span id="otaVersion" class="version-pill">FW v-</span>
+              <span id="otaWebUiVersion" class="version-pill">WebUI v-</span>
+            </span>
           </header>
+          <div id="otaCompatibility" class="ota-compatibility hidden"></div>
           <div id="otaWarning" class="ota-warning">
             A firmware frissítés után az ESP újraindul. A data frissítés teljes LittleFS cserét végez; a WiFi, config,
             állapot és állomáslista mentésre kerül. A cache újragenerálódik, a kézzel feltöltött logók akkor maradnak
@@ -593,6 +597,6 @@
     </main>
   </div>
   <script src="i18n.js?v=20260715-settings-layout"></script>
-  <script src="app.js?v=0.8.1"></script>
+  <script src="app.js?v=0.8.13"></script>
 </body>
 </html>

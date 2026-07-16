@@ -8,6 +8,7 @@
 
 #include <freertos/FreeRTOS.h>
 #include <freertos/queue.h>
+#include <WiFi.h>
 #include <algorithm>
 #include <ctype.h>
 
@@ -326,7 +327,13 @@ uint32_t AudioPlayer::retryDelayMs(const AppConfig& config) const {
 bool AudioPlayer::connectToStream(const String& url) {
   if (!url.length()) return false;
 
+  if (!WiFi.isConnected()) {
+    PlayerState::instance().setStreamConnectionState(StreamConnectionState::WaitingForNetwork, connectFailureCount);
+    return false;
+  }
+
   ArtworkCache::instance().notifyAudioConnectStarting();
+  PlayerState::instance().setStreamConnectionState(StreamConnectionState::Connecting, connectFailureCount);
   resetQueuedAudioEventCache();
   updateCodecFromText(PlayerState::instance(), url.c_str());
   uint32_t startMs = millis();
@@ -335,6 +342,7 @@ bool AudioPlayer::connectToStream(const String& url) {
 
   if (ok) {
     connectFailureCount = 0;
+    PlayerState::instance().setStreamConnectionState(StreamConnectionState::Connected, 0);
     ArtworkCache::instance().notifyAudioConnectResult(true);
     Serial.printf("[audio] connect ok %lu ms: %s\n",
                   static_cast<unsigned long>(durationMs),
@@ -342,6 +350,7 @@ bool AudioPlayer::connectToStream(const String& url) {
   } else {
     ArtworkCache::instance().notifyAudioConnectResult(false);
     if (connectFailureCount < 10) ++connectFailureCount;
+    PlayerState::instance().setStreamConnectionState(StreamConnectionState::RetryWaiting, connectFailureCount);
     Serial.printf("[audio] connect failed %lu ms, failures=%u: %s\n",
                   static_cast<unsigned long>(durationMs),
                   static_cast<unsigned>(connectFailureCount),
@@ -367,6 +376,17 @@ void AudioPlayer::service() {
   PlayerStateSnapshot s = PlayerState::instance().snapshot();
   AppConfig& config = AppConfig::instance();
   bool streamControlOperation = false;
+  bool wifiConnected = WiFi.isConnected();
+  if (wifiConnected != lastWifiConnected) {
+    lastWifiConnected = wifiConnected;
+    if (!wifiConnected && s.playing) {
+      audio.stopSong();
+      lastRetryMs = millis();
+      PlayerState::instance().setStreamConnectionState(StreamConnectionState::WaitingForNetwork, connectFailureCount);
+    } else if (wifiConnected && s.playing && !audio.isRunning()) {
+      lastRetryMs = millis() - retryDelayMs(config);
+    }
+  }
 
   if (s.playing != lastPlaying) {
     lastPlaying = s.playing;
@@ -376,7 +396,11 @@ void AudioPlayer::service() {
       lastStreamUrl = s.streamUrl;
       lastRetryMs = millis();
       streamControlOperation = true;
-      connectToStream(s.streamUrl);
+      if (wifiConnected) {
+        connectToStream(s.streamUrl);
+      } else {
+        PlayerState::instance().setStreamConnectionState(StreamConnectionState::WaitingForNetwork, connectFailureCount);
+      }
     } else {
       streamControlOperation = true;
       audio.stopSong();
@@ -384,6 +408,7 @@ void AudioPlayer::service() {
       lastStreamUrl = "";
       lastCodecName[0] = '\0';
       connectFailureCount = 0;
+      PlayerState::instance().setStreamConnectionState(StreamConnectionState::Idle, 0);
       audioLoopStallCount = 0;
       delay(50);
     }
@@ -398,25 +423,35 @@ void AudioPlayer::service() {
     audioLoopStallCount = 0;
     lastRetryMs = millis();
     ArtworkCache::instance().cancelIdlePrewarm();
-    connectToStream(s.streamUrl);
+    if (wifiConnected) {
+      connectToStream(s.streamUrl);
+    } else {
+      PlayerState::instance().setStreamConnectionState(StreamConnectionState::WaitingForNetwork, connectFailureCount);
+    }
   }
 
   applyProcessingSettings(config, s);
   applyVolumeCurve(config.volumeCurve);
 
-  if (config.streamRetryEnabled &&
-      s.playing &&
+  if (s.playing &&
       s.streamUrl.length() &&
       lastStreamUrl == s.streamUrl &&
       !audio.isRunning()) {
-    unsigned long now = millis();
-    if (now - lastRetryMs >= retryDelayMs(config)) {
-      lastRetryMs = now;
-      streamControlOperation = true;
-      audio.stopSong();
-      delay(20);
-      audioLoopStallCount = 0;
-      connectToStream(s.streamUrl);
+    if (!wifiConnected) {
+      PlayerState::instance().setStreamConnectionState(StreamConnectionState::WaitingForNetwork, connectFailureCount);
+    } else if (!config.streamRetryEnabled) {
+      PlayerState::instance().setStreamConnectionState(StreamConnectionState::Failed, connectFailureCount);
+    } else {
+      PlayerState::instance().setStreamConnectionState(StreamConnectionState::RetryWaiting, connectFailureCount);
+      unsigned long now = millis();
+      if (now - lastRetryMs >= retryDelayMs(config)) {
+        lastRetryMs = now;
+        streamControlOperation = true;
+        audio.stopSong();
+        delay(20);
+        audioLoopStallCount = 0;
+        connectToStream(s.streamUrl);
+      }
     }
   }
 

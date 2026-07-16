@@ -330,6 +330,7 @@ function renderSystemStatus(status) {
   const wifi = status.wifi || {};
   const mqtt = status.mqtt || {};
   const system = status.system || {};
+  const webui = status.webui || {};
 
   setText("statusPlayback", playback.playing ? t("status.playing", "Lejátszás") : t("status.stopped", "Megállítva"));
   setText(
@@ -380,8 +381,25 @@ function renderSystemStatus(status) {
   setStatusCard("statusFilesystemCard", totalBytes <= 0 ? "bad" : freePercent <= 15 ? "bad" : freePercent <= 30 ? "warn" : "good");
 
   setText("statusSystem", `${system.chipModel || "ESP32"} · ${system.cpuMhz || 0} MHz`);
-  setText("statusSystemDetail", `${t("status.version", "Verzió {version}", { version: system.version || "-" })} · Uptime: ${formatDuration(system.uptimeMs)} · reset: ${system.resetReasonText || "-"} · flash: ${formatBytes(system.flashSize)} · SDK: ${system.sdk || "-"}`);
-  setText("otaVersion", system.version ? `v${system.version}` : "v-");
+  const firmwareVersion = system.version || "-";
+  const webuiVersion = webui.version || "-";
+  setText("statusSystemDetail", `${t("status.versionPair", "Firmware {firmware} · WebUI {webui}", { firmware: firmwareVersion, webui: webuiVersion })} · Uptime: ${formatDuration(system.uptimeMs)} · reset: ${system.resetReasonText || "-"} · flash: ${formatBytes(system.flashSize)} · SDK: ${system.sdk || "-"}`);
+  setText("otaVersion", `FW v${firmwareVersion}`);
+  setText("otaWebUiVersion", `WebUI v${webuiVersion}`);
+  const compatibility = $("otaCompatibility");
+  if (compatibility) {
+    compatibility.classList.remove("hidden", "warn", "error");
+    if (!webui.manifestPresent || !webui.manifestValid || webui.compatible === false) {
+      compatibility.classList.add("error");
+      compatibility.textContent = t("ota.incompatible", "A firmware és a WebUI/data nem kompatibilis. Telepítsd a megfelelő másik frissítést is.");
+    } else if (firmwareVersion !== webuiVersion) {
+      compatibility.classList.add("warn");
+      compatibility.textContent = t("ota.versionMismatchCompatible", "A firmware és a WebUI verziója eltér, de az API-kompatibilitás rendben van.");
+    } else {
+      compatibility.classList.add("hidden");
+      compatibility.textContent = "";
+    }
+  }
   setStatusCard("statusSystemCard", system.resetReason === 4 ? "warn" : "good");
 }
 
@@ -2135,6 +2153,20 @@ function updatePlayButtons() {
   });
 }
 
+function streamConnectionMessage(state) {
+  const connectionState = state.streamConnectionState || "idle";
+  if (connectionState === "waiting_for_network") return t("stream.waitingForNetwork", "Nincs WiFi kapcsolat · újracsatlakozás...");
+  if (connectionState === "connecting") return t("stream.connecting", "Kapcsolódás az adóhoz...");
+  if (connectionState === "retry_waiting") {
+    const failures = Number(state.streamConnectFailures || 0);
+    return failures > 0
+      ? t("stream.retryingCount", "Sikertelen kapcsolódás · újrapróbálkozás ({count})", { count: failures })
+      : t("stream.retrying", "A stream megszakadt · újrapróbálkozás...");
+  }
+  if (connectionState === "failed") return t("stream.failed", "Az adó nem érhető el, az automatikus újrapróbálkozás ki van kapcsolva.");
+  return "";
+}
+
 function updateUI(state) {
   const previousStationId = currentStationId;
   playing = !!state.playing;
@@ -2152,8 +2184,9 @@ function updateUI(state) {
   syncEqLabels(low, mid, high);
   syncBalance(state.balance || 0);
 
+  const connectionMessage = playing ? streamConnectionMessage(state) : "";
   const meta = playing ? [state.artist, state.title].filter(Boolean).join(" - ") : "";
-  setText("meta", playing ? (meta || t("state.noMetadata", "Nincs metadata")) : t("state.playbackPaused", "Lejátszás szünetel"));
+  setText("meta", playing ? (connectionMessage || meta || t("state.noMetadata", "Nincs metadata")) : t("state.playbackPaused", "Lejátszás szünetel"));
   setText("current-station", state.station || t("state.chooseStation", "Állomás kiválasztása"));
   updateCover(state);
   if (stationSelectionChanged) renderStations();

@@ -1563,7 +1563,22 @@ static void drawVuMeter(const DisplayModel& m, bool forceFull = false) {
 
 static void displayTitleArtist(const DisplayModel& m, String& title, String& artist) {
   if (m.playing) {
-    if (m.title.length() || m.artist.length()) {
+    if (!m.networkConnected || m.streamConnectionState == StreamConnectionState::WaitingForNetwork) {
+      title = m.station.length() ? m.station : I18n::SIMPLE_RADIO;
+      artist = I18n::WIFI_CONNECTION_LOST;
+    } else if (m.streamConnectionState == StreamConnectionState::Connecting) {
+      title = m.station.length() ? m.station : I18n::SIMPLE_RADIO;
+      artist = I18n::STREAM_CONNECTING;
+    } else if (m.streamConnectionState == StreamConnectionState::RetryWaiting) {
+      title = m.station.length() ? m.station : I18n::SIMPLE_RADIO;
+      artist = I18n::STREAM_RETRYING;
+      if (m.streamConnectFailures > 0) {
+        artist += " (" + String(m.streamConnectFailures) + ")";
+      }
+    } else if (m.streamConnectionState == StreamConnectionState::Failed) {
+      title = m.station.length() ? m.station : I18n::SIMPLE_RADIO;
+      artist = I18n::STREAM_FAILED;
+    } else if (m.title.length() || m.artist.length()) {
       title = m.title.length() ? m.title : (m.station.length() ? m.station : I18n::SIMPLE_RADIO);
       artist = m.artist;
     } else {
@@ -2946,7 +2961,10 @@ void Display::renderPartial(const DisplayModel& previous, bool footerModeChanged
   bool infoChanged = previous.station != m.station ||
                      previous.artist != m.artist ||
                      previous.title != m.title ||
-                     previous.playing != m.playing;
+                     previous.playing != m.playing ||
+                     previous.networkConnected != m.networkConnected ||
+                     previous.streamConnectionState != m.streamConnectionState ||
+                     previous.streamConnectFailures != m.streamConnectFailures;
   bool volumeChanged = previous.volume != m.volume;
   bool popupActive = volumePopupUntil && millis() < volumePopupUntil;
   if (popupActive) {

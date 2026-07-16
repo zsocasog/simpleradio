@@ -23,6 +23,7 @@ private:
     TaskHandle_t taskHandle = nullptr;
     bool taskStarted = false;
     bool lastPlaying = false;
+    bool lastWifiConnected = false;
     uint8_t lastVolume = 5;
     String lastStreamUrl;
     char lastCodecName[12] = "";

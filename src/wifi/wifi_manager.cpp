@@ -75,6 +75,7 @@ bool WifiManager::tryConnect() {
   WiFi.persistent(false);
   WiFi.mode(WIFI_STA);
   WiFi.setSleep(false);
+  WiFi.setAutoReconnect(true);
 
   for (size_t i = 0; i < credCount; ++i) {
     Serial.print("Connecting to WiFi: ");
@@ -86,6 +87,7 @@ bool WifiManager::tryConnect() {
     while (millis() - start < 8000) {
       if (WiFi.status() == WL_CONNECTED) {
         WiFi.setSleep(false);
+        WiFi.setAutoReconnect(true);
         Serial.print("WiFi connected, IP: ");
         Serial.println(WiFi.localIP());
         return true;
@@ -177,6 +179,7 @@ void WifiManager::begin() {
   creds[0] = {FIXED_WIFI_SSID, FIXED_WIFI_PASS};
   if (tryConnect()) {
     _mode = WifiRunMode::STA_OK;
+    _lastConnected = true;
     return;
   }
 
@@ -186,6 +189,7 @@ void WifiManager::begin() {
 #else
   if (loadCredentials() && tryConnect()) {
     _mode = WifiRunMode::STA_OK;
+    _lastConnected = true;
     return;
   }
 
@@ -198,9 +202,28 @@ bool WifiManager::isConnected() const {
   return WiFi.status() == WL_CONNECTED;
 }
 
+bool WifiManager::loop() {
+  if (_mode != WifiRunMode::STA_OK) return false;
+
+  bool connected = isConnected();
+  bool changed = connected != _lastConnected;
+  if (changed) {
+    _lastConnected = connected;
+    if (connected) {
+      Serial.printf("[wifi] reconnected: %s, IP=%s\n", WiFi.SSID().c_str(), WiFi.localIP().toString().c_str());
+    } else {
+      Serial.println("[wifi] connection lost, automatic reconnect active");
+    }
+  }
+
+  if (!connected) handleReconnect();
+  return changed;
+}
+
 void WifiManager::handleReconnect() {
   if (millis() - lastReconnect < 5000) return;
   lastReconnect = millis();
 
+  Serial.println("[wifi] reconnect attempt");
   WiFi.reconnect();
 }

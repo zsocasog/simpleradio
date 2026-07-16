@@ -4,7 +4,7 @@
 
 **SimpleRadio** is an ESP32-S3 internet-radio firmware with a modern web interface and a dedicated LCD player view. It targets a self-built radio with I2S audio, physical controls and optional smart-home integration.
 
-> Current version: **0.8.1** · ESP32-S3 N16R8 · LittleFS · English and Hungarian UI
+> Current version: **0.8.13** · ESP32-S3 N16R8 · LittleFS · English and Hungarian UI
 
 ![SimpleRadio LCD player](.screenshots/lcd/player1.jpg)
 
@@ -41,6 +41,10 @@ pio device monitor -b 115200
 The first installation requires both uploads. Re-upload the data image after changing files under `data/`; C++ changes only require a firmware upload. If no WiFi is stored, the radio starts the `ESP32-WebRadio` access point for provisioning.
 
 After the first wired upload, firmware and data updates are available from the System page. A data OTA replaces LittleFS; WiFi, configuration, state and stations are backed up, while the artwork cache is regenerated.
+
+Firmware and WebUI/data have separate release versions plus a shared Web API compatibility level. Different release versions may run together when their API levels are compatible. If the WebUI manifest is missing or incompatible, the firmware serves a LittleFS-independent recovery OTA page instead of the normal interface, allowing the matching firmware or data image to be installed. `data/build-info.json` is generated automatically during builds from `src/config/version.h`.
+
+While playback is requested, an interrupted stream is retried indefinitely when stream retry is enabled; the delay increases up to 60 seconds. After WiFi loss, the firmware explicitly attempts reconnection every five seconds and resumes stream recovery when the saved network returns. The LCD distinguishes WiFi loss, station connection and stream retry states.
 
 `secrets.ini` is optional and intentionally ignored by Git. Create it from [`secrets.example.ini`](secrets.example.ini) only for local build-time overrides such as fixed test WiFi, MQTT credentials or a custom OTA password.
 

@@ -10,6 +10,7 @@ class WifiManager {
 public:
     static WifiManager& instance();
     void begin();
+    bool loop();
     bool isConnected() const;
     WifiRunMode mode() const;
 
@@ -21,5 +22,6 @@ private:
     void handleReconnect();
 
     WifiRunMode _mode = WifiRunMode::AP_CONFIG;
+    bool _lastConnected = false;
     
 };

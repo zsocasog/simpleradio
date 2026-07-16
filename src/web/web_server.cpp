@@ -20,6 +20,8 @@
 #include "../config/version.h"
 #include "../mqtt/mqtt_controller.h"
 #include "../config/logging.h"
+#include "recovery_page.h"
+#include "webui_compatibility.h"
 
 #ifndef SIMPLE_RADIO_OTA_PASSWORD
 #define SIMPLE_RADIO_OTA_PASSWORD "simpleradio"
@@ -119,6 +121,31 @@ static bool otaFilesystemUnmounted = false;
 static size_t otaUploadedBytes = 0;
 static unsigned long otaUploadLastMs = 0;
 static String otaUploadError;
+
+static String htmlEscape(String value) {
+  value.replace("&", "&amp;");
+  value.replace("<", "&lt;");
+  value.replace(">", "&gt;");
+  value.replace("\"", "&quot;");
+  value.replace("'", "&#39;");
+  return value;
+}
+
+static void sendRecoveryPage(AsyncWebServerRequest* request) {
+  const WebUiCompatibilityInfo& webui = WebUiCompatibility::info();
+  String page = FPSTR(RECOVERY_PAGE);
+  page.replace("__FW_VERSION__", htmlEscape(APP_VERSION));
+  page.replace("__FW_API__", String(WEB_API_VERSION));
+  page.replace("__UI_VERSION__", htmlEscape(webui.webuiVersion.length() ? webui.webuiVersion : "ismeretlen / unknown"));
+  String apiRange = webui.manifestValid
+                      ? String(webui.minimumApiVersion) + ".." + String(webui.maximumApiVersion)
+                      : "?";
+  page.replace("__UI_API__", apiRange);
+  page.replace("__REASON__", htmlEscape(WebUiCompatibility::reasonText()));
+  AsyncWebServerResponse* response = request->beginResponse(200, "text/html; charset=utf-8", page);
+  response->addHeader("Cache-Control", "no-store, max-age=0");
+  request->send(response);
+}
 
 struct OtaBackupFile {
   const char* path;
@@ -335,6 +362,7 @@ static void finishOtaUpload(AsyncWebServerRequest* request) {
     }
     otaFilesystemUnmounted = false;
     restoreOtaRuntimeFiles();
+    WebUiCompatibility::refresh();
   }
 
   clearOtaRuntimeBackups();
@@ -413,6 +441,8 @@ static String systemStatusJson() {
   status["playing"] = player.playing;
   status["station"] = player.station;
   status["volume"] = player.volume;
+  status["streamConnectionState"] = streamConnectionStateName(player.streamConnectionState);
+  status["streamConnectFailures"] = player.streamConnectFailures;
   status["clients"] = ws.count();
 
   JsonObject wifi = doc["wifi"].to<JsonObject>();
@@ -437,12 +467,23 @@ static String systemStatusJson() {
   system["uptimeMs"] = millis();
   system["chipModel"] = ESP.getChipModel();
   system["version"] = APP_VERSION;
+  system["webApiVersion"] = WEB_API_VERSION;
   system["chipRevision"] = ESP.getChipRevision();
   system["cpuMhz"] = ESP.getCpuFreqMHz();
   system["flashSize"] = ESP.getFlashChipSize();
   system["sdk"] = ESP.getSdkVersion();
   system["resetReason"] = static_cast<int>(esp_reset_reason());
   system["resetReasonText"] = resetReasonText(esp_reset_reason());
+
+  const WebUiCompatibilityInfo& webuiInfo = WebUiCompatibility::info();
+  JsonObject webui = doc["webui"].to<JsonObject>();
+  webui["version"] = webuiInfo.webuiVersion;
+  webui["manifestPresent"] = webuiInfo.manifestPresent;
+  webui["manifestValid"] = webuiInfo.manifestValid;
+  webui["compatible"] = webuiInfo.compatible;
+  webui["minimumApiVersion"] = webuiInfo.minimumApiVersion;
+  webui["maximumApiVersion"] = webuiInfo.maximumApiVersion;
+  webui["reason"] = webuiInfo.reason;
 
   JsonObject filesystem = doc["filesystem"].to<JsonObject>();
   const size_t fsTotal = LittleFS.totalBytes();
@@ -1049,6 +1090,7 @@ void webServerLoop() {
 
 void webServerBegin() {
   Serial.println("[web] begin");
+  WebUiCompatibility::refresh();
   ws.onEvent(onWsEvent);
   server.addHandler(&ws);
 
@@ -1702,9 +1744,23 @@ void webServerBegin() {
     request->send(200, "application/json", AppConfig::instance().toJson());
   });
 
-  server.serveStatic("/", LittleFS, "/")
-        .setDefaultFile("index.html")
-        .setCacheControl("no-store, max-age=0");
+  server.on("/recovery", HTTP_GET, [](AsyncWebServerRequest* request) {
+    sendRecoveryPage(request);
+  });
+
+  if (WebUiCompatibility::info().compatible) {
+    server.serveStatic("/", LittleFS, "/")
+          .setDefaultFile("index.html")
+          .setCacheControl("no-store, max-age=0");
+  } else {
+    Serial.printf("[webui] recovery mode: %s\n", WebUiCompatibility::info().reason.c_str());
+    server.on("/", HTTP_GET, [](AsyncWebServerRequest* request) {
+      sendRecoveryPage(request);
+    });
+    server.on("/index.html", HTTP_GET, [](AsyncWebServerRequest* request) {
+      sendRecoveryPage(request);
+    });
+  }
 
   server.begin();
   Serial.println("[web] listening on port 80");

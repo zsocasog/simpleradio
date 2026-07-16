@@ -2,8 +2,21 @@
 #include <Arduino.h>
 #include <ArduinoJson.h>
 
+enum class StreamConnectionState : uint8_t {
+  Idle = 0,
+  WaitingForNetwork,
+  Connecting,
+  Connected,
+  RetryWaiting,
+  Failed
+};
+
+const char* streamConnectionStateName(StreamConnectionState state);
+
 struct PlayerStateSnapshot {
   bool playing = false;
+  StreamConnectionState streamConnectionState = StreamConnectionState::Idle;
+  uint8_t streamConnectFailures = 0;
   uint8_t volume = 50;
   int stationId = -1;
   int8_t eqLow = 0;
@@ -28,6 +41,8 @@ public:
   static PlayerState& instance();
 
   bool playing = false;
+  StreamConnectionState streamConnectionState = StreamConnectionState::Idle;
+  uint8_t streamConnectFailures = 0;
   uint8_t volume = 50;
   int stationId = -1;
   int8_t eqLow = 0;
@@ -63,6 +78,7 @@ public:
   void setBitrate(const String& value);
   void setCodec(const String& value);
   void setHasStreamImage(bool value);
+  void setStreamConnectionState(StreamConnectionState state, uint8_t failures = 0);
   void setEq(int8_t low, int8_t mid, int8_t high);
   void setBalance(int8_t value);
 

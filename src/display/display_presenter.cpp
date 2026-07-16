@@ -2,6 +2,7 @@
 #include <LittleFS.h>
 #include <WiFi.h>
 #include "../artwork/artwork_cache.h"
+#include "../wifi/wifi_manager.h"
 
 static constexpr int META_SCROLL_THRESHOLD = 26;
 
@@ -64,12 +65,15 @@ DisplayModel DisplayPresenter::build(const PlayerState& s) {
   PlayerStateSnapshot state = s.snapshot();
   DisplayModel m;
 
-  m.apMode = !WiFi.isConnected();
+  m.apMode = WifiManager::instance().mode() == WifiRunMode::AP_CONFIG;
+  m.networkConnected = WifiManager::instance().isConnected();
   m.ip = m.apMode
            ? WiFi.softAPIP().toString()
            : WiFi.localIP().toString();
 
   m.playing = state.playing;
+  m.streamConnectionState = state.streamConnectionState;
+  m.streamConnectFailures = state.streamConnectFailures;
   m.volume = state.volume;
   m.stationId = state.stationId;
 

@@ -320,12 +320,26 @@ PlayerState& PlayerState::instance() {
   return s;
 }
 
+const char* streamConnectionStateName(StreamConnectionState state) {
+  switch (state) {
+    case StreamConnectionState::WaitingForNetwork: return "waiting_for_network";
+    case StreamConnectionState::Connecting: return "connecting";
+    case StreamConnectionState::Connected: return "connected";
+    case StreamConnectionState::RetryWaiting: return "retry_waiting";
+    case StreamConnectionState::Failed: return "failed";
+    case StreamConnectionState::Idle:
+    default: return "idle";
+  }
+}
+
 PlayerStateSnapshot PlayerState::snapshot() const {
   PlayerStateSnapshot out;
   PlayerStateLock lock;
   if (!lock.ok()) return out;
 
   out.playing = playing;
+  out.streamConnectionState = streamConnectionState;
+  out.streamConnectFailures = streamConnectFailures;
   out.volume = volume;
   out.stationId = stationId;
   out.eqLow = eqLow;
@@ -354,6 +368,8 @@ String PlayerState::toJson() const {
   PlayerStateSnapshot s = snapshot();
   JsonDocument doc;
   doc["playing"] = s.playing;
+  doc["streamConnectionState"] = streamConnectionStateName(s.streamConnectionState);
+  doc["streamConnectFailures"] = s.streamConnectFailures;
   doc["volume"] = s.volume;
   doc["stationId"] = s.stationId;
   doc["eqLow"] = s.eqLow;
@@ -406,6 +422,10 @@ bool PlayerState::loadStation(int id, bool resetMetadata, bool markDirty) {
     streamUrl = nextStation.url;
     changed = true;
     resetMetadata = true;
+    if (playing) {
+      streamConnectionState = StreamConnectionState::Connecting;
+      streamConnectFailures = 0;
+    }
   }
   if (logoChanged) {
     stationLogo = nextStation.logo;
@@ -439,6 +459,11 @@ bool PlayerState::clearStation(bool markDirty) {
 
   if (playing) {
     playing = false;
+    changed = true;
+  }
+  if (streamConnectionState != StreamConnectionState::Idle || streamConnectFailures != 0) {
+    streamConnectionState = StreamConnectionState::Idle;
+    streamConnectFailures = 0;
     changed = true;
   }
   if (stationId != -1) {
@@ -504,6 +529,8 @@ bool PlayerState::applyCommand(const JsonDocument& cmd) {
     bool nextPlaying = requestedPlaying && stationId >= 0 && streamUrl.length();
     if (nextPlaying != playing) {
       playing = nextPlaying;
+      streamConnectionState = nextPlaying ? StreamConnectionState::Connecting : StreamConnectionState::Idle;
+      streamConnectFailures = 0;
       changed = true;
     }
     if (!nextPlaying) {
@@ -554,6 +581,16 @@ bool PlayerState::applyCommand(const JsonDocument& cmd) {
 
   if (changed) markPlayerStateDirty();
   return changed;
+}
+
+void PlayerState::setStreamConnectionState(StreamConnectionState state, uint8_t failures) {
+  PlayerStateLock lock;
+  if (!lock.ok()) return;
+  if (!playing && state != StreamConnectionState::Idle) return;
+  if (streamConnectionState == state && streamConnectFailures == failures) return;
+  streamConnectionState = state;
+  streamConnectFailures = failures;
+  markPlayerStateDirty();
 }
 
 void PlayerState::setStreamTitle(const String& streamTitle) {

@@ -1,11 +1,15 @@
 #pragma once
 #include <Arduino.h>
+#include "../state/player_state.h"
 
 struct DisplayModel {
   bool apMode = false;
+  bool networkConnected = false;
   String ip;
 
   bool playing = false;
+  StreamConnectionState streamConnectionState = StreamConnectionState::Idle;
+  uint8_t streamConnectFailures = 0;
   uint8_t volume = 0;
   int stationId = -1;
 
@@ -24,8 +28,11 @@ struct DisplayModel {
 
   bool equals(const DisplayModel& o) const {
     return apMode == o.apMode &&
+           networkConnected == o.networkConnected &&
            ip == o.ip &&
            playing == o.playing &&
+           streamConnectionState == o.streamConnectionState &&
+           streamConnectFailures == o.streamConnectFailures &&
            volume == o.volume &&
            stationId == o.stationId &&
            station == o.station &&
