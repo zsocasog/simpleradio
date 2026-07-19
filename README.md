@@ -17,6 +17,14 @@
 - One or two rotary encoders, optional IR receiver and optional front-panel RGB LED. The UI automatically disables controls for hardware not enabled in the firmware profile.
 - MQTT discovery and an optional [Home Assistant Lovelace card](home-assistant/README.md).
 
+## Support
+
+If you found SimpleRadio useful, you can buy me a coffee!
+
+<a href="https://ko-fi.com/zsoltsogorka" target="_blank" rel="noopener noreferrer"><img src="https://ko-fi.com/img/githubbutton_sm.svg" alt="Support me on Ko-fi"></a>
+
+Thank you!
+
 ## Hardware profile
 
 The tested target is an **ESP32-S3 N16R8** with an **ILI9488 480x320 SPI display** and I2S output (for example, two MAX98357A modules for stereo). ST7796 480x320 and ILI9341 320x240 profiles are also available.

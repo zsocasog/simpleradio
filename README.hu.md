@@ -17,6 +17,14 @@
 - Egy vagy két forgóenkóder, opcionális IR-vevő és előlapi RGB LED. A webes felület automatikusan letiltja a hardverprofilban nem engedélyezett vezérlőket.
 - MQTT discovery és opcionális [Home Assistant Lovelace kártya](home-assistant/README.md).
 
+## Támogatás
+
+Ha hasznosnak találtad a SimpleRadio projektet, meghívhatsz egy kávéra! 
+
+<a href="https://ko-fi.com/zsoltsogorka" target="_blank" rel="noopener noreferrer"><img src="https://ko-fi.com/img/githubbutton_sm.svg" alt="Támogatás Ko-fi-n"></a>
+
+Köszönöm!
+
 ## Hardverprofil
 
 A tesztelt célhardver **ESP32-S3 N16R8**, **ILI9488 480x320 SPI kijelzővel** és I2S hangkimenettel (például két MAX98357A modullal sztereóhoz). ST7796 480x320 és ILI9341 320x240 profil is elérhető.
