@@ -25,8 +25,8 @@
 
 static constexpr size_t MAX_ARTWORK_BYTES = 384 * 1024;
 static constexpr size_t MAX_EMBEDDED_SEGMENTS = 8;
-static constexpr size_t MAX_CACHE_BYTES = 2400 * 1024;
-static constexpr size_t TARGET_CACHE_BYTES = 2000 * 1024;
+static constexpr size_t MAX_CACHE_BYTES = 5632 * 1024;
+static constexpr size_t TARGET_CACHE_BYTES = 5120 * 1024;
 static constexpr size_t MIN_FS_FREE_BYTES = 384 * 1024;
 static constexpr unsigned long RETRY_MS = 60000;
 static constexpr unsigned long MISSING_ARTWORK_RETRY_MS = 30000;
