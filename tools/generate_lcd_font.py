@@ -1,4 +1,6 @@
 from pathlib import Path
+import unicodedata
+
 from PIL import Image, ImageFont
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -7,9 +9,17 @@ FONT_REGULAR = Path(r"C:\Windows\Fonts\NotoSans-Regular.ttf")
 FONT_BOLD = Path(r"C:\Windows\Fonts\NotoSans-Bold.ttf")
 
 ASCII = "".join(chr(c) for c in range(32, 127))
-HUNGARIAN = "ÁÉÍÓÖŐÚÜŰáéíóöőúüű"
-PUNCT = "\u00a0°–—‘’“”…•×"
-CHARS = sorted(set(ASCII + HUNGARIAN + PUNCT), key=ord)
+EUROPEAN_LATIN = "".join(
+    chr(code)
+    for code in range(0x00C0, 0x0180)
+    if unicodedata.category(chr(code)).startswith("L")
+)
+# Romanian comma-below letters live in Latin Extended-B; capital sharp S is
+# outside Latin Extended-A as well. Keep them explicit so Central European
+# station names and metadata work regardless of the selected UI language.
+EUROPEAN_LATIN_EXTRA = "ȘȚșțẞ"
+PUNCT = "\u00a0°–—‘’‚“”„…•×«»€"
+CHARS = sorted(set(ASCII + EUROPEAN_LATIN + EUROPEAN_LATIN_EXTRA + PUNCT), key=ord)
 
 FONTS = [
     ("Small", FONT_REGULAR, 12),
@@ -85,7 +95,7 @@ def main():
         "",
         "struct LcdGlyph {",
         "  uint16_t code;",
-        "  uint16_t offset;",
+        "  uint32_t offset;",
         "  uint8_t width;",
         "  uint8_t height;",
         "  int8_t xOffset;",

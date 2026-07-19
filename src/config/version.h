@@ -1,6 +1,6 @@
 #pragma once
 
-#define APP_VERSION "0.8.13"
+#define APP_VERSION "0.8.20"
 
 // Increment only when a WebUI/API change is not backwards compatible.
 #define WEB_API_VERSION 1

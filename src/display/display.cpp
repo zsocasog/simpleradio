@@ -204,7 +204,7 @@ static const uint8_t kVuSeed[VU_BAR_COUNT] = {
 
 struct GlyphInfo {
   uint16_t code = 0;
-  uint16_t offset = 0;
+  uint32_t offset = 0;
   uint8_t width = 0;
   uint8_t height = 0;
   int8_t xOffset = 0;
@@ -281,7 +281,7 @@ static bool readGlyphAt(const LcdFont& font, uint16_t index, GlyphInfo& out) {
   if (index >= fontGlyphCount(font)) return false;
   const LcdGlyph* glyph = &fontGlyphs(font)[index];
   out.code = pgm_read_word(&glyph->code);
-  out.offset = pgm_read_word(&glyph->offset);
+  out.offset = pgm_read_dword(&glyph->offset);
   out.width = pgm_read_byte(&glyph->width);
   out.height = pgm_read_byte(&glyph->height);
   out.xOffset = static_cast<int8_t>(pgm_read_byte(&glyph->xOffset));
@@ -609,6 +609,30 @@ static String fitTextForFont(String text, int32_t maxWidth, const LcdFont& font)
   return "...";
 }
 
+static String fittingTextPrefix(const String& text, int32_t maxWidth, int& consumedBytes) {
+  consumedBytes = 0;
+  const char* start = text.c_str();
+  const char* cursor = start;
+
+  while (*cursor) {
+    const char* next = cursor;
+    nextUtf8Codepoint(next);
+    int bytes = static_cast<int>(next - start);
+    if (uiTextWidth(text.substring(0, bytes)) > maxWidth) break;
+    consumedBytes = bytes;
+    cursor = next;
+  }
+
+  // Always make progress, even if a single glyph is wider than the available area.
+  if (consumedBytes == 0 && text.length()) {
+    const char* next = start;
+    nextUtf8Codepoint(next);
+    consumedBytes = static_cast<int>(next - start);
+  }
+
+  return text.substring(0, consumedBytes);
+}
+
 static void drawTextLine(const String& text, int32_t x, int32_t y, int32_t maxWidth, uint8_t size, uint16_t color) {
   setUiFont(size);
   drawUiText(fitText(text, maxWidth), x, y, *currentUiFont, color, cBg);
@@ -687,8 +711,9 @@ static void drawCenteredWrappedText(String text, int32_t centerX, int32_t center
     }
 
     if (!candidate.length()) {
-      candidate = fitText(text, maxWidth);
-      rest = "";
+      int consumedBytes = 0;
+      candidate = fittingTextPrefix(text, maxWidth, consumedBytes);
+      rest = text.substring(consumedBytes);
     }
 
     if (lineCount == maxLines - 1 && rest.length()) {
@@ -867,7 +892,7 @@ static bool readImageSize(const String& path, ImageSize& size) {
   return false;
 }
 
-static void drawPlayerSurfaceRegion(int32_t x, int32_t y, int32_t w, int32_t h, bool decorativeFooterLines = true) {
+static void drawPlayerSurfaceRegion(int32_t x, int32_t y, int32_t w, int32_t h) {
   if (w <= 0 || h <= 0) return;
 
   int32_t x0 = max<int32_t>(0, x);
@@ -889,23 +914,11 @@ static void drawPlayerSurfaceRegion(int32_t x, int32_t y, int32_t w, int32_t h, 
     lcd.drawFastHLine(x0, yy, x1 - x0, color);
   }
 
-  if (decorativeFooterLines) {
-    for (int i = 0; i < 4; ++i) {
-      int32_t lineY = SCREEN_H - sy(38) + i * sy(7);
-      if (lineY >= y0 && lineY < y1) {
-      lcd.drawFastHLine(x0, lineY, x1 - x0, blend565(cLine, cBg, 90 - i * 16));
-    }
-  }
   lcd.endWrite();
-}
 }
 
 static void drawPlayerSurface() {
   drawPlayerSurfaceRegion(0, 0, SCREEN_W, SCREEN_H);
-}
-
-static uint16_t logoMatBg() {
-  return blend565(cAccent, cBg, 18);
 }
 
 static uint16_t logoMatLine() {
@@ -913,11 +926,24 @@ static uint16_t logoMatLine() {
 }
 
 static void drawArtFrame(uint16_t fill, uint16_t line) {
-  lcd.fillRoundRect(ART_X - ss(2), ART_Y - ss(2), ART_SIZE + ss(4), ART_SIZE + ss(4), ss(7), fill);
-  lcd.drawRoundRect(ART_X - ss(2), ART_Y - ss(2), ART_SIZE + ss(4), ART_SIZE + ss(4), ss(7), line);
+  const int thickness = max(1, ss(3));
+  lcd.fillRoundRect(ART_X - thickness,
+                    ART_Y - thickness,
+                    ART_SIZE + thickness * 2,
+                    ART_SIZE + thickness * 2,
+                    ss(8),
+                    fill);
+  for (int pad = thickness; pad > 0; --pad) {
+    lcd.drawRoundRect(ART_X - pad,
+                      ART_Y - pad,
+                      ART_SIZE + pad * 2,
+                      ART_SIZE + pad * 2,
+                      max(1, ss(5) + pad),
+                      line);
+  }
 }
 
-static bool drawLcdThumbnail(const String& path, uint16_t line) {
+static bool drawLcdThumbnail(const String& path) {
   File file = LittleFS.open(path, "r");
   if (!file) return false;
 
@@ -952,7 +978,6 @@ static bool drawLcdThumbnail(const String& path, uint16_t line) {
   file.close();
 
   if (!ok) return false;
-  lcd.drawRoundRect(ART_X, ART_Y, ART_SIZE, ART_SIZE, ss(4), line);
   return true;
 }
 
@@ -964,7 +989,33 @@ static void drawArtPlaceholder(const DisplayModel& m) {
   String label = m.station.length() ? m.station : I18n::SIMPLE_RADIO;
   label = lcdSafeText(label);
   label.trim();
-  drawCenteredWrappedText(label, ART_X + ART_SIZE / 2, ART_Y + ART_SIZE / 2, ART_SIZE - sx(24), 2, cAccent, 3, placeholderBg);
+  const int32_t textWidth = ART_SIZE - sx(24);
+  uint8_t fontSize = 3;
+  String remaining = label;
+
+  // Keep the large placeholder font whenever complete words fit. For a long
+  // station name such as "Poptarisznya", step down only as far as necessary
+  // so the word can remain intact instead of being split in the middle.
+  while (fontSize > 1) {
+    const LcdFont& font = *uiFontForSize(fontSize);
+    bool wordsFit = true;
+    remaining = label;
+    remaining.trim();
+    while (remaining.length()) {
+      int space = remaining.indexOf(' ');
+      String word = space >= 0 ? remaining.substring(0, space) : remaining;
+      if (uiTextWidth(word, font) > textWidth) {
+        wordsFit = false;
+        break;
+      }
+      remaining = space < 0 ? "" : remaining.substring(space + 1);
+      remaining.trim();
+    }
+    if (wordsFit) break;
+    --fontSize;
+  }
+
+  drawCenteredWrappedText(label, ART_X + ART_SIZE / 2, ART_Y + ART_SIZE / 2, textWidth, fontSize, cAccent, 3, placeholderBg);
 }
 
 static void drawArt(const DisplayModel& m) {
@@ -981,13 +1032,12 @@ static void drawArt(const DisplayModel& m) {
   String path = m.logoPath;
   path.toLowerCase();
 
-  uint16_t matBg = logoMatBg();
   uint16_t matLine = logoMatLine();
-  drawArtFrame(matBg, matLine);
+  drawArtFrame(cBg, matLine);
 
   String thumbPath = ArtworkCache::instance().lcdThumbnailPath(m.logoPath);
   if (thumbPath.length()) {
-    if (LittleFS.exists(thumbPath) && drawLcdThumbnail(thumbPath, matLine)) {
+    if (LittleFS.exists(thumbPath) && drawLcdThumbnail(thumbPath)) {
       return;
     }
     if (m.playing) {
@@ -995,7 +1045,7 @@ static void drawArt(const DisplayModel& m) {
       return;
     }
     ArtworkCache::instance().ensureLcdThumbnail(m.logoPath);
-    if (LittleFS.exists(thumbPath) && drawLcdThumbnail(thumbPath, matLine)) {
+    if (LittleFS.exists(thumbPath) && drawLcdThumbnail(thumbPath)) {
       return;
     }
   }
@@ -1019,7 +1069,7 @@ static void drawArt(const DisplayModel& m) {
   art.setColorDepth(16);
   void* buffer = art.createSprite(ART_SIZE, ART_SIZE);
   if (buffer) {
-    art.fillSprite(matBg);
+    art.fillSprite(cBg);
     if (path.endsWith(".jpg") || path.endsWith(".jpeg")) {
       drawn = art.drawJpgFile(LittleFS, m.logoPath.c_str(), drawX - ART_X, drawY - ART_Y, ART_SIZE, ART_SIZE, 0, 0, scale, scale, top_left);
     } else if (path.endsWith(".png")) {
@@ -1049,7 +1099,6 @@ static void drawArt(const DisplayModel& m) {
 
   if (drawn) {
     Serial.printf("[display] logo drawn: %s %ux%u scale=%.2f\n", m.logoPath.c_str(), size.width, size.height, scale);
-    lcd.drawRoundRect(ART_X, ART_Y, ART_SIZE, ART_SIZE, ss(4), matLine);
   } else {
     Serial.printf("[display] logo draw failed: %s %ux%u scale=%.2f\n", m.logoPath.c_str(), size.width, size.height, scale);
     drawArtPlaceholder(m);
@@ -1477,7 +1526,7 @@ static void drawVuBarInLayout(const VuLayout& layout, int index, int height) {
 
 static void restoreVuRect(int x, int y, int w, int h) {
   if (w <= 0 || h <= 0) return;
-  drawPlayerSurfaceRegion(x, y, w, h, false);
+  drawPlayerSurfaceRegion(x, y, w, h);
 }
 
 static void restoreShrinkingVuBar(const VuLayout& layout, int index, int oldHeight, int newHeight) {
@@ -1506,9 +1555,9 @@ static void clearRenderedVuArea(const VuLayout& layout) {
   if (vuRendered && vuRenderedClearH > 0) {
     int y = min(layout.clearY, vuRenderedClearY);
     int bottom = max(layout.clearY + layout.clearH, vuRenderedClearY + vuRenderedClearH);
-    drawPlayerSurfaceRegion(0, y, SCREEN_W, bottom - y, false);
+    drawPlayerSurfaceRegion(0, y, SCREEN_W, bottom - y);
   } else {
-    drawPlayerSurfaceRegion(0, layout.clearY, SCREEN_W, layout.clearH, false);
+    drawPlayerSurfaceRegion(0, layout.clearY, SCREEN_W, layout.clearH);
   }
   lcd.endWrite();
   resetRenderedVuMeter();
@@ -1604,7 +1653,7 @@ static void drawInfoRegion(const DisplayModel& m) {
 }
 
 static void drawStationFooter(const DisplayModel& m) {
-  drawPlayerSurfaceRegion(FOOTER_REGION_X, FOOTER_REGION_Y, FOOTER_REGION_W, FOOTER_REGION_H, false);
+  drawPlayerSurfaceRegion(FOOTER_REGION_X, FOOTER_REGION_Y, FOOTER_REGION_W, FOOTER_REGION_H);
   resetRenderedVuMeter();
 
   String station = lcdSafeText(m.station.length() ? m.station : I18n::NO_STATION);
@@ -1659,7 +1708,7 @@ static void drawDateTimeFooter(bool force = false) {
   int32_t stamp = footerDateTimeMinuteStamp(timeinfo, haveTime);
   if (!force && dateTimeFooterRendered && stamp == dateTimeFooterMinuteStamp) return;
 
-  drawPlayerSurfaceRegion(FOOTER_REGION_X, FOOTER_REGION_Y, FOOTER_REGION_W, FOOTER_REGION_H, false);
+  drawPlayerSurfaceRegion(FOOTER_REGION_X, FOOTER_REGION_Y, FOOTER_REGION_W, FOOTER_REGION_H);
   resetRenderedVuMeter();
 
   String line = lcdSafeText(footerDateTimeText(timeinfo, haveTime));
@@ -1680,13 +1729,13 @@ static void drawFooterRegion(const DisplayModel& m) {
   DisplayFooterMode mode = footerMode();
   if (mode == DisplayFooterMode::Volume) {
     resetDateTimeFooter();
-    drawPlayerSurfaceRegion(FOOTER_REGION_X, FOOTER_REGION_Y, FOOTER_REGION_W, FOOTER_REGION_H, false);
+    drawPlayerSurfaceRegion(FOOTER_REGION_X, FOOTER_REGION_Y, FOOTER_REGION_W, FOOTER_REGION_H);
     resetRenderedVuMeter();
     drawProgressBar(m, BAR_Y);
   } else if (mode == DisplayFooterMode::Vu) {
     resetDateTimeFooter();
     if (volumeRestoreInProgress) {
-      drawPlayerSurfaceRegion(FOOTER_REGION_X, FOOTER_REGION_Y, FOOTER_REGION_W, FOOTER_REGION_H, false);
+      drawPlayerSurfaceRegion(FOOTER_REGION_X, FOOTER_REGION_Y, FOOTER_REGION_W, FOOTER_REGION_H);
       resetRenderedVuMeter();
     } else {
       drawVuMeter(m, true);
@@ -1698,7 +1747,7 @@ static void drawFooterRegion(const DisplayModel& m) {
     drawDateTimeFooter(true);
   } else {
     resetDateTimeFooter();
-    drawPlayerSurfaceRegion(FOOTER_REGION_X, FOOTER_REGION_Y, FOOTER_REGION_W, FOOTER_REGION_H, false);
+    drawPlayerSurfaceRegion(FOOTER_REGION_X, FOOTER_REGION_Y, FOOTER_REGION_W, FOOTER_REGION_H);
     resetRenderedVuMeter();
   }
 }
@@ -2341,7 +2390,7 @@ static void redrawVolumePopupArea(const DisplayModel& m) {
   const int popupW = VOLUME_POPUP_W + sx(26);
   const int popupH = VOLUME_POPUP_H + sy(30);
 
-  drawPlayerSurfaceRegion(popupX, popupY, popupW, popupH, false);
+  drawPlayerSurfaceRegion(popupX, popupY, popupW, popupH);
   if (rectsOverlap(popupX, popupY, popupW, popupH, ART_REGION_X, ART_REGION_Y, ART_REGION_W, ART_REGION_H)) {
     drawArt(m);
   }
@@ -2359,7 +2408,7 @@ static void redrawStationPickerArea(const DisplayModel& m) {
   const int pickerW = PICKER_BOX_W + sx(16);
   const int pickerH = PICKER_BOX_H + sy(16);
 
-  drawPlayerSurfaceRegion(pickerX, pickerY, pickerW, pickerH, false);
+  drawPlayerSurfaceRegion(pickerX, pickerY, pickerW, pickerH);
   if (rectsOverlap(pickerX, pickerY, pickerW, pickerH, ART_REGION_X, ART_REGION_Y, ART_REGION_W, ART_REGION_H)) {
     drawArt(m);
   }
