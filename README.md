@@ -4,7 +4,7 @@
 
 **SimpleRadio** is an ESP32-S3 internet-radio firmware with a modern web interface and a dedicated LCD player view. It targets a self-built radio with I2S audio, physical controls and optional smart-home integration.
 
-> Current version: **0.8.20** · ESP32-S3 N16R8 · LittleFS · English and Hungarian UI
+> Current version: **0.8.21** · ESP32-S3 N16R8 · LittleFS · English and Hungarian UI
 
 ![SimpleRadio LCD player](.screenshots/lcd/player1.jpg)
 

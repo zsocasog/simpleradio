@@ -275,6 +275,10 @@ function showView(view) {
     $(`${name}Tab`).classList.toggle("active", name === view);
   });
 
+  if (view === "sound") {
+    requestAnimationFrame(drawVolumeCurvePreview);
+  }
+
   if (view === "system") {
     refreshSystemStatus();
     clearInterval(systemStatusTimer);
@@ -302,6 +306,18 @@ function formatDuration(ms) {
   if (days) return t("duration.daysHours", "{days} nap {hours} óra", { days, hours });
   if (hours) return t("duration.hoursMinutes", "{hours} óra {minutes} perc", { hours, minutes });
   return t("duration.minutes", "{minutes} perc", { minutes });
+}
+
+async function loadWebUiBranding() {
+  try {
+    const response = await fetch("/build-info.json", { cache: "no-store" });
+    if (!response.ok) return;
+    const buildInfo = await response.json();
+    const version = String(buildInfo.webuiVersion || "").trim();
+    if (version) setText("footerVersion", `v${version}`);
+  } catch (_) {
+    // The footer remains useful without a version while the device is offline.
+  }
 }
 
 function setStatusCard(id, state) {
@@ -384,6 +400,8 @@ function renderSystemStatus(status) {
   const firmwareVersion = system.version || "-";
   const webuiVersion = webui.version || "-";
   setText("statusSystemDetail", `${t("status.versionPair", "Firmware {firmware} · WebUI {webui}", { firmware: firmwareVersion, webui: webuiVersion })} · Uptime: ${formatDuration(system.uptimeMs)} · reset: ${system.resetReasonText || "-"} · flash: ${formatBytes(system.flashSize)} · SDK: ${system.sdk || "-"}`);
+  setText("statusAboutVersion", t("status.versionPair", "Firmware {firmware} · WebUI {webui}", { firmware: firmwareVersion, webui: webuiVersion }));
+  setText("footerVersion", webuiVersion === "-" ? "v-" : `v${webuiVersion}`);
   setText("otaVersion", `FW v${firmwareVersion}`);
   setText("otaWebUiVersion", `WebUI v${webuiVersion}`);
   const compatibility = $("otaCompatibility");
@@ -460,9 +478,10 @@ function drawVolumeCurvePreview() {
   if (!canvas) return;
   const curve = $("volumeCurve")?.value || "soft";
   const rect = canvas.getBoundingClientRect();
+  if (rect.width < 1 || rect.height < 1) return;
   const dpr = window.devicePixelRatio || 1;
-  const width = Math.max(220, Math.round((rect.width || canvas.width) * dpr));
-  const height = Math.max(110, Math.round((rect.height || canvas.height) * dpr));
+  const width = Math.max(220, Math.round(rect.width * dpr));
+  const height = Math.max(110, Math.round(rect.height * dpr));
   if (canvas.width !== width || canvas.height !== height) {
     canvas.width = width;
     canvas.height = height;
@@ -517,6 +536,7 @@ function drawVolumeCurvePreview() {
   ctx.fillStyle = muted;
   ctx.font = `${11 * dpr}px system-ui, sans-serif`;
   ctx.textBaseline = "top";
+  ctx.textAlign = "left";
   ctx.fillText("0%", pad, height - pad + 4 * dpr);
   ctx.textAlign = "right";
   ctx.fillText("100%", width - pad, height - pad + 4 * dpr);
@@ -2199,6 +2219,7 @@ initOtaUploads();
 initStationDrawers();
 window.addEventListener("resize", () => requestAnimationFrame(drawVolumeCurvePreview));
 applyHardwareCapabilitiesToUI();
+loadWebUiBranding();
 loadLogoChoices();
 loadStations();
 loadDeviceConfig();

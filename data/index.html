@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>SimpleRadio</title>
-  <link rel="stylesheet" href="style.css?v=20260715-settings-layout">
+  <link rel="stylesheet" href="style.css?v=0.8.21">
 </head>
 <body>
   <div class="app-shell">
@@ -508,6 +508,17 @@
               <strong id="statusSystem">...</strong>
               <small id="statusSystemDetail">...</small>
             </div>
+            <div class="status-card wide status-about-card">
+              <span data-i18n="about.label">Névjegy</span>
+              <div class="status-about-main">
+                <div>
+                  <strong>SimpleRadio</strong>
+                  <small data-i18n="about.tagline">ESP32 internetes rádió</small>
+                </div>
+                <a class="status-about-link" href="https://github.com/zsocasog/simpleradio" target="_blank" rel="noopener noreferrer">GitHub ↗</a>
+              </div>
+              <small id="statusAboutVersion">Firmware - · WebUI -</small>
+            </div>
           </div>
         </article>
 
@@ -595,8 +606,15 @@
         </article>
       </section>
     </main>
+    <footer class="app-footer" aria-label="SimpleRadio">
+      <a href="https://github.com/zsocasog/simpleradio" target="_blank" rel="noopener noreferrer">SimpleRadio</a>
+      <span aria-hidden="true">·</span>
+      <span data-i18n="about.tagline">ESP32 internetes rádió</span>
+      <span aria-hidden="true">·</span>
+      <span id="footerVersion">v-</span>
+    </footer>
   </div>
-  <script src="i18n.js?v=20260715-settings-layout"></script>
-  <script src="app.js?v=0.8.20"></script>
+  <script src="i18n.js?v=0.8.21"></script>
+  <script src="app.js?v=0.8.21"></script>
 </body>
 </html>

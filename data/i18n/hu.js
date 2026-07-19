@@ -58,6 +58,8 @@
     "status.playbackDetail": "{station} · hangerő {volume}% · {clients} web kliens",
     "status.version": "Verzió {version}",
     "status.versionPair": "Firmware {firmware} · WebUI {webui}",
+    "about.label": "Névjegy",
+    "about.tagline": "ESP32 internetes rádió",
     "stream.waitingForNetwork": "Nincs WiFi kapcsolat · újracsatlakozás...",
     "stream.connecting": "Kapcsolódás az adóhoz...",
     "stream.retrying": "A stream megszakadt · újrapróbálkozás...",

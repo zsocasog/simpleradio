@@ -59,6 +59,8 @@
     "status.stopped": "Stopped",
     "status.playbackDetail": "{station} · volume {volume}% · {clients} web clients",
     "status.versionPair": "Firmware {firmware} · WebUI {webui}",
+    "about.label": "About",
+    "about.tagline": "ESP32 internet radio",
     "stream.waitingForNetwork": "WiFi lost · reconnecting...",
     "stream.connecting": "Connecting to station...",
     "stream.retrying": "Stream interrupted · retrying...",
