@@ -1678,6 +1678,30 @@ static bool readArtworkImageSize(const String& path, ArtworkImageSize& size) {
   return false;
 }
 
+static bool artworkFileFingerprint(const String& path, uint64_t& fingerprint) {
+  File file = LittleFS.open(path, "r");
+  if (!file) return false;
+
+  uint64_t hash = 14695981039346656037ULL;
+  uint8_t buffer[2048];
+  size_t total = 0;
+  while (file.available()) {
+    size_t read = file.read(buffer, sizeof(buffer));
+    if (!read) break;
+    total += read;
+    for (size_t i = 0; i < read; ++i) {
+      hash ^= buffer[i];
+      hash *= 1099511628211ULL;
+    }
+    vTaskDelay(1);
+  }
+  file.close();
+  if (!total) return false;
+
+  fingerprint = hash;
+  return true;
+}
+
 static uint16_t rgb565(uint8_t r, uint8_t g, uint8_t b) {
   return (static_cast<uint16_t>(r & 0xF8) << 8) |
          (static_cast<uint16_t>(g & 0xFC) << 3) |
@@ -1712,6 +1736,35 @@ String ArtworkCache::lcdThumbnailPath(const String& imagePath) const {
   String sizedExt = "_" + String(LCD_THUMB_SIZE) + LCD_THUMB_EXT;
   if (imagePath.startsWith("/cache/")) return fileStem(imagePath) + sizedExt;
   return cachePath(String("lcd:") + String(LCD_THUMB_SIZE) + ":" + imagePath, LCD_THUMB_EXT);
+}
+
+void ArtworkCache::invalidateLcdThumbnail(const String& imagePath) {
+  String localPath = imagePath;
+  localPath.trim();
+  if (!localPath.length() || isRemoteArtworkSource(localPath)) return;
+
+  localPath = preferredLocalArtworkPath(localPath);
+  String thumbPath = lcdThumbnailPath(localPath);
+  if (!thumbPath.length() || thumbPath == localPath) return;
+
+  clearThumbnailReady(localPath);
+  if (lastThumbnailAttemptSource == localPath) {
+    lastThumbnailAttemptSource = "";
+    lastThumbnailAttemptMs = 0;
+  }
+
+  bool removed = false;
+  if (LittleFS.exists(thumbPath)) {
+    removed = LittleFS.remove(thumbPath) || removed;
+  }
+  String tempPath = thumbPath + ".tmp";
+  if (LittleFS.exists(tempPath)) {
+    removed = LittleFS.remove(tempPath) || removed;
+  }
+
+  if (removed) {
+    Serial.printf("[artwork] lcd thumbnail invalidated: %s\n", localPath.c_str());
+  }
 }
 
 bool ArtworkCache::ensureLcdThumbnail(const String& imagePath) {
@@ -1763,6 +1816,13 @@ bool ArtworkCache::ensureLcdThumbnail(const String& imagePath) {
   }
   clearThumbnailReady(imagePath);
   if (LittleFS.exists(thumbPath)) LittleFS.remove(thumbPath);
+
+  const bool guardSourceChanges = imagePath.startsWith("/logos/");
+  uint64_t sourceFingerprint = 0;
+  if (guardSourceChanges && !artworkFileFingerprint(imagePath, sourceFingerprint)) {
+    unlock();
+    return false;
+  }
 
   ArtworkImageSize size;
   if (!readArtworkImageSize(imagePath, size)) {
@@ -1864,6 +1924,16 @@ bool ArtworkCache::ensureLcdThumbnail(const String& imagePath) {
     unlock();
     Serial.printf("[artwork] lcd thumbnail write failed: %s\n", tempPath.c_str());
     return false;
+  }
+
+  if (guardSourceChanges) {
+    uint64_t currentFingerprint = 0;
+    if (!artworkFileFingerprint(imagePath, currentFingerprint) || currentFingerprint != sourceFingerprint) {
+      LittleFS.remove(tempPath);
+      unlock();
+      Serial.printf("[artwork] lcd thumbnail source changed, retrying: %s\n", imagePath.c_str());
+      return false;
+    }
   }
 
   if (LittleFS.exists(thumbPath)) LittleFS.remove(thumbPath);

@@ -676,6 +676,43 @@ static bool isPngFile(const String& path) {
   return ok;
 }
 
+static bool commitLogoUpload(const String& tempPath, const String& targetPath, String& error) {
+  if (!tempPath.length() || !targetPath.length() || !LittleFS.exists(tempPath) || !isPngFile(tempPath)) {
+    if (tempPath.length() && LittleFS.exists(tempPath)) LittleFS.remove(tempPath);
+    error = "Invalid PNG";
+    return false;
+  }
+
+  String backupPath = targetPath + ".bak";
+  if (LittleFS.exists(backupPath)) LittleFS.remove(backupPath);
+
+  bool hadTarget = LittleFS.exists(targetPath);
+  if (hadTarget && !LittleFS.rename(targetPath, backupPath)) {
+    LittleFS.remove(tempPath);
+    error = "Existing logo backup failed";
+    return false;
+  }
+
+  if (!LittleFS.rename(tempPath, targetPath)) {
+    if (hadTarget && LittleFS.exists(backupPath)) {
+      LittleFS.rename(backupPath, targetPath);
+    }
+    LittleFS.remove(tempPath);
+    error = "Logo replace failed";
+    return false;
+  }
+
+  ArtworkCache::instance().invalidateLcdThumbnail(targetPath);
+  if (LittleFS.exists(backupPath)) LittleFS.remove(backupPath);
+  return true;
+}
+
+static void removeLocalLogoWithThumbnail(const String& path) {
+  if (!path.length()) return;
+  ArtworkCache::instance().invalidateLcdThumbnail(path);
+  if (LittleFS.exists(path)) LittleFS.remove(path);
+}
+
 static bool supportedLogoExtension(const String& filename) {
   String lower = filename;
   lower.toLowerCase();
@@ -861,7 +898,7 @@ static void removeOldStationLogoUploads(int id, const String& keepPath) {
       bool owned = path == exact || (path.startsWith(prefix) && lower.endsWith(".png"));
       file.close();
       if (owned && path != keepPath) {
-        LittleFS.remove(path);
+        removeLocalLogoWithThumbnail(path);
       }
     } else {
       file.close();
@@ -992,6 +1029,7 @@ static bool commitPendingDelete() {
 
   bool deleted = StationManager::instance().deleteStation(op.stationId);
   if (!deleted) return false;
+  removeOldStationLogoUploads(op.stationId, "");
 
   PlayerStateSnapshot state = PlayerState::instance().snapshot();
   bool changed = false;
@@ -1210,6 +1248,7 @@ void webServerBegin() {
       request->send(404, "text/plain", "Station not found");
       return;
     }
+    removeOldStationLogoUploads(id, "");
 
     request->send(200, "text/plain", "OK");
   });
@@ -1253,16 +1292,16 @@ void webServerBegin() {
     [](AsyncWebServerRequest* request) {
       String error = request->getAttribute("error");
       String path = request->getAttribute("path");
+      String tempPath = request->getAttribute("temp");
 
       if (error.length()) {
-        if (path.length() && LittleFS.exists(path)) LittleFS.remove(path);
+        if (tempPath.length() && LittleFS.exists(tempPath)) LittleFS.remove(tempPath);
         request->send(400, "text/plain", error);
         return;
       }
 
-      if (!path.length() || !LittleFS.exists(path) || !isPngFile(path)) {
-        if (path.length() && LittleFS.exists(path)) LittleFS.remove(path);
-        request->send(400, "text/plain", "Invalid PNG");
+      if (!commitLogoUpload(tempPath, path, error)) {
+        request->send(400, "text/plain", error);
         return;
       }
       ArtworkCache::instance().requestPrewarm(path, true);
@@ -1281,6 +1320,7 @@ void webServerBegin() {
     [](AsyncWebServerRequest* request, uint8_t* data, size_t len, size_t index, size_t total) {
       static File logoFile;
       static String logoPath;
+      static String logoTempPath;
       static bool failed = false;
       static bool uploadActive = false;
       static unsigned long uploadLastMs = 0;
@@ -1290,9 +1330,12 @@ void webServerBegin() {
       if (index == 0) {
         failed = false;
         logoPath = "";
+        logoTempPath = "";
         if (logoFile) logoFile.close();
 
         if (uploadActive && millis() - uploadLastMs > UPLOAD_STALE_MS) {
+          if (logoFile) logoFile.close();
+          if (logoTempPath.length() && LittleFS.exists(logoTempPath)) LittleFS.remove(logoTempPath);
           uploadActive = false;
         }
 
@@ -1320,10 +1363,12 @@ void webServerBegin() {
         }
 
         logoPath = stationLogoUploadPath(id);
+        logoTempPath = logoPath + ".upload";
         request->setAttribute("path", logoPath.c_str());
-        if (LittleFS.exists(logoPath)) LittleFS.remove(logoPath);
+        request->setAttribute("temp", logoTempPath.c_str());
+        if (LittleFS.exists(logoTempPath)) LittleFS.remove(logoTempPath);
 
-        logoFile = LittleFS.open(logoPath, "w");
+        logoFile = LittleFS.open(logoTempPath, "w");
         if (!logoFile) {
           request->setAttribute("error", "Logo file open failed");
           failed = true;
@@ -1333,7 +1378,11 @@ void webServerBegin() {
       }
 
       if (failed) {
-        if (index + len >= total) uploadActive = false;
+        if (index + len >= total) {
+          if (logoFile) logoFile.close();
+          if (logoTempPath.length() && LittleFS.exists(logoTempPath)) LittleFS.remove(logoTempPath);
+          uploadActive = false;
+        }
         return;
       }
 
@@ -1379,6 +1428,7 @@ void webServerBegin() {
       static uint16_t uploadedCount = 0;
       static size_t uploadedBytes = 0;
       static String uploadPath;
+      static String uploadTempPath;
       static constexpr size_t MAX_BULK_LOGO_BYTES = 240 * 1024;
       static constexpr unsigned long UPLOAD_STALE_MS = 15000;
 
@@ -1390,12 +1440,14 @@ void webServerBegin() {
           uploadedCount = 0;
           uploadedBytes = 0;
           uploadPath = "";
+          uploadTempPath = "";
           request->setAttribute("started", "1");
           request->setAttribute("count", "0");
         }
 
         if (fileActive && millis() - uploadLastMs > UPLOAD_STALE_MS) {
           if (uploadFile) uploadFile.close();
+          if (uploadTempPath.length() && LittleFS.exists(uploadTempPath)) LittleFS.remove(uploadTempPath);
           fileActive = false;
         }
 
@@ -1408,6 +1460,7 @@ void webServerBegin() {
         fileFailed = false;
         uploadedBytes = 0;
         uploadPath = "";
+        uploadTempPath = "";
         uploadLastMs = millis();
 
         String cleanFilename = safeLogoFilename(filename);
@@ -1418,8 +1471,9 @@ void webServerBegin() {
         }
 
         uploadPath = "/logos/" + cleanFilename;
-        if (LittleFS.exists(uploadPath)) LittleFS.remove(uploadPath);
-        uploadFile = LittleFS.open(uploadPath, "w");
+        uploadTempPath = uploadPath + ".upload";
+        if (LittleFS.exists(uploadTempPath)) LittleFS.remove(uploadTempPath);
+        uploadFile = LittleFS.open(uploadTempPath, "w");
         if (!uploadFile) {
           request->setAttribute("error", "Logo file open failed");
           fileFailed = true;
@@ -1431,7 +1485,7 @@ void webServerBegin() {
       if (fileFailed) {
         if (final) {
           if (uploadFile) uploadFile.close();
-          if (uploadPath.length() && LittleFS.exists(uploadPath)) LittleFS.remove(uploadPath);
+          if (uploadTempPath.length() && LittleFS.exists(uploadTempPath)) LittleFS.remove(uploadTempPath);
           fileActive = false;
         }
         return;
@@ -1451,11 +1505,18 @@ void webServerBegin() {
         if (uploadFile) uploadFile.close();
         fileActive = false;
         if (!fileFailed) {
-          uploadedCount++;
-          request->setAttribute("count", String(uploadedCount).c_str());
-          ArtworkCache::instance().requestPrewarm(uploadPath, false);
-        } else if (uploadPath.length() && LittleFS.exists(uploadPath)) {
-          LittleFS.remove(uploadPath);
+          String commitError;
+          if (commitLogoUpload(uploadTempPath, uploadPath, commitError)) {
+            uploadedCount++;
+            request->setAttribute("count", String(uploadedCount).c_str());
+            ArtworkCache::instance().requestPrewarm(uploadPath, false);
+          } else {
+            request->setAttribute("error", commitError.c_str());
+            fileFailed = true;
+          }
+        }
+        if (fileFailed && uploadTempPath.length() && LittleFS.exists(uploadTempPath)) {
+          LittleFS.remove(uploadTempPath);
         }
       }
     },

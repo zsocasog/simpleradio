@@ -19,6 +19,7 @@ public:
   bool findExistingCachePath(const String& url, String& outPath) const;
   bool findExistingLcdArtworkPath(const String& source, String& outPath) const;
   String lcdThumbnailPath(const String& imagePath) const;
+  void invalidateLcdThumbnail(const String& imagePath);
   bool ensureLcdThumbnail(const String& imagePath);
   bool requestLcdThumbnail(const String& imagePath, bool idlePrewarm = false);
   bool requestPrewarm(const String& source, bool highPriority = false);

@@ -1054,14 +1054,23 @@ async function uploadBulkLogos(fileList) {
   const form = new FormData();
   setLogoUploadStatus(t("logos.preparing", "{count} logó előkészítése...", { count: files.length }), "busy");
 
-  for (const file of files) {
-    const blob = await logoPngBlobFromFile(file);
-    form.append("logos", blob, pngLogoFilename(file.name));
-  }
-
-  setLogoUploadStatus(t("logos.uploading", "{count} logó feltöltése...", { count: files.length }), "busy");
-
   try {
+    let preparedCount = 0;
+    for (const file of files) {
+      try {
+        const blob = await logoPngBlobFromFile(file);
+        form.append("logos", blob, pngLogoFilename(file.name));
+        preparedCount++;
+      } catch (err) {
+        console.warn(`Logo preparation failed: ${file.name}`, err);
+      }
+    }
+
+    if (!preparedCount) {
+      throw new Error(t("logos.noReadableImages", "A kiválasztott képek egyike sem olvasható."));
+    }
+
+    setLogoUploadStatus(t("logos.uploading", "{count} logó feltöltése...", { count: preparedCount }), "busy");
     const response = await fetch("/api/logos/upload", {
       method: "POST",
       body: form
@@ -1072,7 +1081,7 @@ async function uploadBulkLogos(fileList) {
     renderStations();
     await loadLogoChoices();
     const count = Number(data.count || 0);
-    const label = count && count !== files.length
+    const label = count !== files.length
       ? t("logos.uploadedPartial", "{count}/{total} logó feltöltve.", { count, total: files.length })
       : t("logos.uploaded", "{count} logó feltöltve.", { count: files.length });
     setLogoUploadStatus(label, "ok");

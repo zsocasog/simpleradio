@@ -136,6 +136,7 @@
     "logos.uploadedPartial": "{count}/{total} logó feltöltve.",
     "logos.uploaded": "{count} logó feltöltve.",
     "logos.uploadFailed": "Nem sikerült feltölteni: {error}",
+    "logos.noReadableImages": "A kiválasztott képek egyike sem olvasható.",
     "logos.browseUploaded": "Tallózás a feltöltött logók között",
     "ir.pageTitle": "Távirányító",
     "ir.recorder": "Gombok tanítása",

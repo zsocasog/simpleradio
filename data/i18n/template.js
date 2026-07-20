@@ -134,6 +134,7 @@
     "logos.uploadedPartial": "{count}/{total} logos uploaded.",
     "logos.uploaded": "{count} logos uploaded.",
     "logos.uploadFailed": "Upload failed: {error}",
+    "logos.noReadableImages": "None of the selected images can be read.",
     "logos.browseUploaded": "Browse uploaded logos",
     "ir.pageTitle": "Remote control",
     "ir.recorder": "Button assignment",
