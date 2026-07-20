@@ -66,31 +66,46 @@ void setup() {
 
   AppConfig::instance().load();
   StatusLed::instance().begin();
-  Display::instance().begin();
+  Display& display = Display::instance();
+  display.begin();
+  display.showBootProgress(10);
   ArtworkCache::instance().begin();
+  display.showBootProgress(20);
 
   WifiManager& wifi = WifiManager::instance();
+  display.showBootProgress(30);
   wifi.begin();
   
   if (wifi.mode() == WifiRunMode::STA_OK) {
     Serial.println("[setup] STA ready");
+    display.showBootProgress(55);
     configureLocalTime();
     Serial.println("[setup] time configured");
+    display.showBootProgress(62);
     StationManager::instance().begin();
     Serial.println("[setup] stations loaded");
+    display.showBootProgress(70);
     StateStorage::instance().load();
     Serial.println("[setup] state loaded");
+    display.showBootProgress(76);
     webServerBegin();
     Serial.println("[setup] web started");
+    display.showBootProgress(84);
     MqttController::instance().begin();
     Serial.println("[setup] mqtt started");
+    display.showBootProgress(89);
     InputController::instance().begin();
     Serial.println("[setup] input started");
+    display.showBootProgress(94);
     audioPlayer.begin();
     Serial.println("[setup] audio started");
+    display.showBootProgress(98);
     broadcastState();
     Serial.println("[setup] initial state broadcast");
   }
+
+  display.showBootProgress(100);
+  display.finishBoot();
 }
 
 void loop() {

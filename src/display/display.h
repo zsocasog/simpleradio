@@ -11,6 +11,8 @@ public:
   static Display& instance();
 
   void begin();
+  void showBootProgress(uint8_t progress);
+  void finishBoot();
   void render(const DisplayModel& model);
   void tick();
   void applyConfig();
@@ -25,6 +27,8 @@ private:
   Display() = default;
 
   void startTask();
+  void showBootProgressNow(uint8_t progress);
+  void finishBootNow();
   void renderNow(const DisplayModel& model);
   void tickNow();
   void applyConfigNow();
@@ -53,9 +57,19 @@ private:
   bool pendingActivity = false;
   bool pendingArtworkRefresh = false;
   bool deferredArtworkRefresh = false;
+  int pendingBootProgress = -1;
+  bool pendingBootFinish = false;
   int pendingPickerAction = 0;
   int pendingPickerStationId = -1;
   DisplayModel lastModel;
+  DisplayModel deferredBootModel;
+  bool hasDeferredBootModel = false;
+  bool bootActive = false;
+  bool bootFinishRequested = false;
+  uint8_t bootProgress = 0;
+  uint8_t bootProgressTarget = 0;
+  unsigned long lastBootFrameMs = 0;
+  unsigned long bootFullSinceMs = 0;
   unsigned long lastTickMs = 0;
   uint8_t lastBrightness = 255;
   bool lastInvert = false;

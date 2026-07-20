@@ -2335,6 +2335,94 @@ static void drawVolumeMeter(uint8_t volume, bool playing) {
   }
 }
 
+static VuLayout bootMeterLayout() {
+  VuLayout layout = volumeMeterLayout();
+  layout.axisY = sy(198);
+  layout.clearY = layout.axisY - layout.maxH - sy(7);
+  return layout;
+}
+
+static void drawBootProgressMeter(uint8_t progress, unsigned long now) {
+  const uint16_t bg = cBg;
+  const VuLayout layout = bootMeterLayout();
+  const int drawX = layout.meterX - sx(6);
+  const int drawW = layout.meterW + sx(12);
+  const uint32_t fillUnits = volumeMeterFillUnits(progress);
+  const uint16_t ghost = blend565(cLine, bg, 118);
+  const uint16_t glint = lcd.color565(255, 255, 244);
+  const int32_t sweepSpan = static_cast<int32_t>(fillUnits) + 768;
+  const int32_t sweepUnits = fillUnits
+                                 ? static_cast<int32_t>((static_cast<uint32_t>(now) * 4U) % sweepSpan) - 384
+                                 : -1024;
+
+  static lgfx::LGFX_Sprite bootMeterSprite(&lcd);
+  static int spriteW = 0;
+  static int spriteH = 0;
+  static bool spriteReady = false;
+  if (!spriteReady || spriteW != drawW || spriteH != layout.clearH) {
+    if (spriteW || spriteH) bootMeterSprite.deleteSprite();
+    bootMeterSprite.setPsram(true);
+    bootMeterSprite.setColorDepth(16);
+    spriteReady = bootMeterSprite.createSprite(drawW, layout.clearH) != nullptr;
+    spriteW = spriteReady ? drawW : 0;
+    spriteH = spriteReady ? layout.clearH : 0;
+  }
+
+  lgfx::LGFX_Sprite* canvas = spriteReady ? &bootMeterSprite : nullptr;
+  if (canvas) {
+    canvas->fillSprite(bg);
+  } else {
+    lcd.startWrite();
+    lcd.fillRect(drawX, layout.clearY, drawW, layout.clearH, bg);
+  }
+
+  for (int i = 0; i < VU_BAR_COUNT; ++i) {
+    drawVolumeMeterBar(canvas,
+                       layout,
+                       i,
+                       drawX,
+                       volumeMeterGhostHeight(i, layout.maxH),
+                       ghost);
+
+    const int32_t rawFill = static_cast<int32_t>(fillUnits) - i * 256;
+    if (rawFill <= 0) continue;
+
+    const uint16_t barFill = static_cast<uint16_t>(min<int32_t>(256, rawFill));
+    const uint8_t baseHeight = volumeMeterTargetHeight(i, layout.maxH, now, false);
+    uint8_t height = static_cast<uint8_t>(
+        max<uint16_t>(VU_MIN_H, (static_cast<uint16_t>(baseHeight) * barFill) / 256U));
+    uint16_t color = vuBarColor();
+
+    const int32_t distance = abs(i * 256 + 128 - sweepUnits);
+    if (distance < 384) {
+      const uint8_t highlight = static_cast<uint8_t>(
+          max<int32_t>(0, 220 - (distance * 220) / 384));
+      color = blend565(glint, color, highlight);
+      height = min<uint8_t>(layout.maxH, height + 1 + highlight / 74);
+    }
+    drawVolumeMeterBar(canvas, layout, i, drawX, height, color);
+  }
+
+  if (canvas) {
+    canvas->pushSprite(drawX, layout.clearY);
+  } else {
+    lcd.endWrite();
+  }
+}
+
+static void drawBootScreen(uint8_t progress) {
+  lcd.fillScreen(cBg);
+  setUiFont(3);
+  drawUiText("SimpleRadio",
+             SCREEN_W / 2,
+             sy(112),
+             *currentUiFont,
+             cText,
+             cBg,
+             middle_center);
+  drawBootProgressMeter(progress, millis());
+}
+
 static void drawVolumeScreenValue(uint8_t volume) {
   const uint16_t bg = volumeScreenBg();
   lcd.fillRect(0, VOLUME_VALUE_Y - sy(30), SCREEN_W, sy(62), bg);
@@ -2708,6 +2796,8 @@ void Display::taskLoop() {
   bool applyConfigRequest = false;
   bool activityRequest = false;
   bool artworkRefreshRequest = false;
+  int bootProgressRequest = -1;
+  bool bootFinishRequest = false;
   int pickerAction = 0;
   int pickerStationId = -1;
 
@@ -2723,6 +2813,10 @@ void Display::taskLoop() {
     pendingActivity = false;
     artworkRefreshRequest = pendingArtworkRefresh;
     pendingArtworkRefresh = false;
+    bootProgressRequest = pendingBootProgress;
+    pendingBootProgress = -1;
+    bootFinishRequest = pendingBootFinish;
+    pendingBootFinish = false;
     pickerAction = pendingPickerAction;
     pickerStationId = pendingPickerStationId;
     pendingPickerAction = 0;
@@ -2732,6 +2826,8 @@ void Display::taskLoop() {
 
   if (activityRequest) notifyActivityNow();
   if (applyConfigRequest) applyConfigNow();
+  if (bootProgressRequest >= 0) showBootProgressNow(static_cast<uint8_t>(bootProgressRequest));
+  if (bootFinishRequest) finishBootNow();
   if (hasModel) renderNow(model);
   if (artworkRefreshRequest) refreshArtworkNow();
   if (pickerAction == 1) {
@@ -2760,7 +2856,52 @@ void Display::begin() {
   lcd.fillScreen(cBg);
   lastActivityMs = millis();
   applyConfigNow();
+  bootActive = true;
+  bootFinishRequested = false;
+  bootProgress = 0;
+  bootProgressTarget = 0;
+  lastBootFrameMs = 0;
+  bootFullSinceMs = 0;
+  hasDeferredBootModel = false;
+  drawBootScreen(0);
   startTask();
+}
+
+void Display::showBootProgress(uint8_t progress) {
+  progress = constrain(progress, 0, 100);
+  if (!taskStarted || !pendingMutex) {
+    showBootProgressNow(progress);
+    return;
+  }
+
+  if (xSemaphoreTake(pendingMutex, pdMS_TO_TICKS(20)) == pdTRUE) {
+    pendingBootProgress = max<int>(pendingBootProgress, progress);
+    xSemaphoreGive(pendingMutex);
+  }
+}
+
+void Display::finishBoot() {
+  if (!taskStarted || !pendingMutex) {
+    finishBootNow();
+    return;
+  }
+
+  if (xSemaphoreTake(pendingMutex, pdMS_TO_TICKS(20)) == pdTRUE) {
+    pendingBootProgress = 100;
+    pendingBootFinish = true;
+    xSemaphoreGive(pendingMutex);
+  }
+}
+
+void Display::showBootProgressNow(uint8_t progress) {
+  if (!bootActive) return;
+  bootProgressTarget = max<uint8_t>(bootProgressTarget, constrain(progress, 0, 100));
+}
+
+void Display::finishBootNow() {
+  if (!bootActive) return;
+  bootProgressTarget = 100;
+  bootFinishRequested = true;
 }
 
 void Display::applyConfig() {
@@ -2887,6 +3028,12 @@ void Display::render(const DisplayModel& m) {
 }
 
 void Display::renderNow(const DisplayModel& m) {
+  if (bootActive) {
+    deferredBootModel = m;
+    hasDeferredBootModel = true;
+    return;
+  }
+
   auto finishRender = [](bool) {};
 
   uint8_t currentFooterMode = footerRenderKey();
@@ -3116,6 +3263,37 @@ void Display::renderStationPickerMarqueeFrame() {
 }
 
 void Display::tickNow() {
+  if (bootActive) {
+    unsigned long now = millis();
+    if (!lastBootFrameMs || now - lastBootFrameMs >= METER_RENDER_MS) {
+      if (bootProgress < bootProgressTarget) {
+        uint8_t remaining = bootProgressTarget - bootProgress;
+        uint8_t step = max<uint8_t>(1, static_cast<uint8_t>((remaining + 5) / 6));
+        bootProgress = min<uint8_t>(bootProgressTarget, bootProgress + step);
+      }
+      drawBootProgressMeter(bootProgress, now);
+      lastBootFrameMs = now;
+
+      if (bootFinishRequested && bootProgress >= 100) {
+        if (!bootFullSinceMs) {
+          bootFullSinceMs = now;
+        } else if (now - bootFullSinceMs >= 220) {
+          bootActive = false;
+          bootFinishRequested = false;
+          bootFullSinceMs = 0;
+          if (hasDeferredBootModel) {
+            DisplayModel model = deferredBootModel;
+            hasDeferredBootModel = false;
+            renderNow(model);
+          }
+          return;
+        }
+      }
+    }
+    applyConfigNow();
+    return;
+  }
+
   if (idleGuardBlanked) {
     unsigned long now = millis();
     if (now < idleGuardRestoreMs) return;

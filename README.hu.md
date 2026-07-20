@@ -4,7 +4,7 @@
 
 **SimpleRadio** egy ESP32-S3 alapú internet-rádió firmware modern webes felülettel és külön LCD-lejátszóképernyővel. Saját építésű, I2S hangkimenetes, fizikai vezérlős és opcionális otthonautomatizálási integrációjú rádióhoz készült.
 
-> Jelenlegi verzió: **0.8.23** · ESP32-S3 N16R8 · LittleFS · magyar és angol felület
+> Jelenlegi verzió: **0.8.24** · ESP32-S3 N16R8 · LittleFS · magyar és angol felület
 
 ![SimpleRadio LCD lejátszó](.screenshots/lcd/player1.jpg)
 
