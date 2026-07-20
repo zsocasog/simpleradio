@@ -92,7 +92,7 @@
               <label class="saved-search search-box">
                 Keresés
                 <span>
-                  <input id="savedStationSearch" type="search" placeholder="Mentett állomás..." autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false" oninput="filterSavedStations()">
+                  <input id="savedStationSearch" name="station-filter" type="search" placeholder="Mentett állomás..." autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false" oninput="filterSavedStations()">
                   <button type="button" onclick="clearSavedStationSearch()" title="Törlés" aria-label="Mentett állomások keresés törlése">×</button>
                 </span>
               </label>
@@ -145,7 +145,7 @@
                   <label class="search-box">
                     Keresés
                     <span>
-                      <input id="searchName" type="search" placeholder="Rádió neve..." autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false" oninput="queueOnlineSearch()">
+                      <input id="searchName" name="radio-browser-search" type="search" placeholder="Rádió neve..." autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false" oninput="queueOnlineSearch()">
                       <button type="button" onclick="clearStationSearch()" title="Törlés" aria-label="Keresés törlése">×</button>
                     </span>
                   </label>
@@ -543,7 +543,7 @@
             <span class="toggle-copy"><strong>Megértettem, frissíteni szeretnék</strong></span>
             <span class="toggle-switch"><input id="otaConfirm" type="checkbox"><span></span></span>
           </label>
-          <label>OTA jelszó<input id="otaPassword" type="password" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="simpleradio"></label>
+          <label>OTA jelszó<input id="otaPassword" name="ota-device-secret" type="password" autocomplete="one-time-code" autocapitalize="none" spellcheck="false" data-form-type="other" data-1p-ignore data-lpignore="true" data-bwignore placeholder="simpleradio"></label>
           <div class="ota-grid">
             <div id="otaFirmwareDrop" class="upload-drop ota-drop" tabindex="0">
               <strong>Firmware feltöltése</strong>
@@ -582,17 +582,17 @@
             </div>
 
             <div class="settings-column">
-              <section class="settings-section">
+              <form id="mqttSettingsForm" class="settings-section" autocomplete="off" data-form-type="other" onsubmit="return false">
                 <header class="settings-section-head"><h2 id="mqttTitle">MQTT</h2><small>Kapcsolódás az otthonautomatizálási rendszerhez</small></header>
                 <div class="settings-fields">
                   <label class="setting-row setting-toggle"><span class="setting-copy"><strong>MQTT használata</strong></span><span class="toggle-switch"><input id="mqttEnabled" type="checkbox" onchange="saveConfigNow()"><span></span></span></label>
-                  <label class="setting-row"><span>Host</span><input id="mqttHost" type="text" autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false" onchange="saveConfigNow()"></label>
+                  <label class="setting-row"><span>Host</span><input id="mqttHost" name="mqtt-broker-host" type="text" autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false" onchange="saveConfigNow()"></label>
                   <label class="setting-row"><span>Port</span><input id="mqttPort" type="number" min="1" max="65535" onchange="saveConfigNow()"></label>
-                  <label class="setting-row"><span>Felhasználónév</span><input id="mqttUser" type="text" autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false" onchange="saveConfigNow()"></label>
-                  <label class="setting-row"><span>Jelszó</span><input id="mqttPassword" type="password" autocomplete="off" autocapitalize="none" spellcheck="false" onchange="saveConfigNow()"></label>
-                  <label class="setting-row"><span>Root topic</span><input id="mqttRootTopic" type="text" autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false" onchange="saveConfigNow()"></label>
+                  <label class="setting-row"><span>Felhasználónév</span><input id="mqttUser" name="mqtt-broker-user" type="text" autocomplete="section-mqtt one-time-code" autocorrect="off" autocapitalize="none" spellcheck="false" data-form-type="other" data-1p-ignore data-lpignore="true" data-bwignore onchange="saveConfigNow()"></label>
+                  <label class="setting-row"><span>Jelszó</span><input id="mqttPassword" name="mqtt-broker-secret" type="password" autocomplete="section-mqtt one-time-code" autocapitalize="none" spellcheck="false" data-form-type="other" data-1p-ignore data-lpignore="true" data-bwignore onchange="saveConfigNow()"></label>
+                  <label class="setting-row"><span>Root topic</span><input id="mqttRootTopic" name="mqtt-root-topic" type="text" autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false" onchange="saveConfigNow()"></label>
                 </div>
-              </section>
+              </form>
 
               <section class="settings-section">
                 <header class="settings-section-head"><h2 id="streamTitle">Stream kapcsolat</h2><small>A megszakadt lejátszás automatikus helyreállítása</small></header>
@@ -615,6 +615,6 @@
     </footer>
   </div>
   <script src="i18n.js?v=0.8.21"></script>
-  <script src="app.js?v=0.8.21"></script>
+  <script src="app.js?v=0.8.21-autofill"></script>
 </body>
 </html>

@@ -20,7 +20,7 @@
 
       <label>
         <span data-i18n="wifi.password">Jelszó</span>
-        <input id="pass" type="password" placeholder="WiFi jelszó" autocomplete="off" autocapitalize="none" spellcheck="false">
+        <input id="pass" name="wifi-network-secret" type="password" placeholder="WiFi jelszó" autocomplete="one-time-code" autocapitalize="none" spellcheck="false" data-form-type="other" data-1p-ignore data-lpignore="true" data-bwignore>
       </label>
 
       <button type="button" onclick="save()" data-i18n="save.idle">Mentés</button>
