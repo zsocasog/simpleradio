@@ -43,6 +43,8 @@ public:
   bool displayClockEnabled = false;
   String displayClockStyle = "digital";
   String displayFooterMode = "volume";
+  String displayArtworkMode = "logo";
+  String lastFmApiKey;
   String displayVuStyle = "bars";
   uint8_t displayVuSensitivity = 100;
   String themeAccent = "green";

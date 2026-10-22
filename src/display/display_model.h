@@ -21,6 +21,8 @@ struct DisplayModel {
   String logoPath;
   String streamLogoUrl;
   bool hasStreamImage = false;
+  bool albumArtworkMode = false;
+  bool isAlbumArtwork = false;
 
   String metaText;
   int16_t metaOffset = 0;
@@ -43,6 +45,8 @@ struct DisplayModel {
            logoPath == o.logoPath &&
            streamLogoUrl == o.streamLogoUrl &&
            hasStreamImage == o.hasStreamImage &&
+           albumArtworkMode == o.albumArtworkMode &&
+           isAlbumArtwork == o.isAlbumArtwork &&
            metaText == o.metaText &&
            metaOffset == o.metaOffset &&
            metaScrollable == o.metaScrollable;

@@ -190,6 +190,7 @@ static void processDisplayRequests() {
   if (displayConfigRefreshPending) {
     displayConfigRefreshPending = false;
     Display::instance().applyConfig();
+    Display::instance().render(DisplayPresenter::build(PlayerState::instance()));
     broadcastState(true);
   }
 }
@@ -1725,6 +1726,9 @@ void webServerBegin() {
     setBool("displayClockEnabled");
     setString("displayClockStyle");
     setString("displayFooterMode");
+    setString("displayArtworkMode");
+    setString("lastFmApiKey");
+    setBool("clearLastFmApiKey");
     setString("displayVuStyle");
     setInt("displayVuSensitivity");
     setString("themeAccent");
@@ -1793,7 +1797,11 @@ void webServerBegin() {
     setInt("frontLedStandbyBrightness");
     setString("frontLedColor");
 
+    String previousLastFmApiKey = AppConfig::instance().lastFmApiKey;
     AppConfig::instance().applyJson(doc);
+    if (previousLastFmApiKey != AppConfig::instance().lastFmApiKey) {
+      ArtworkCache::instance().retryCurrentAlbumLookup();
+    }
     if (!AppConfig::instance().save()) {
       request->send(500, "text/plain", "Failed to save config");
       return;

@@ -1,6 +1,7 @@
 #include "artwork_cache.h"
 
 #include <Arduino.h>
+static auto& artworkTraceSerial = Serial;
 #include <ArduinoJson.h>
 #include <HTTPClient.h>
 #include <LittleFS.h>
@@ -14,11 +15,14 @@
 #include <math.h>
 #include <WiFi.h>
 #include <new>
+#include <stdarg.h>
+#include <stdio.h>
 
 #include "../display/display.h"
 #include "../display/display_presenter.h"
 #include "../state/player_state.h"
 #include "../stations/station_manager.h"
+#include "../config/app_config.h"
 #include "../config/hardware_config.h"
 #include "../config/logging.h"
 #include "../web/web_server.h"
@@ -39,6 +43,8 @@ static constexpr unsigned long TLS_FAILURE_COOLDOWN_MS = 300000;
 static constexpr unsigned long CURRENT_ARTWORK_TLS_RETRY_MS = 30000;
 static constexpr unsigned long CURRENT_ARTWORK_TLS_GRACE_MS = 5000;
 static constexpr unsigned long READ_IDLE_TIMEOUT_MS = 3500;
+static constexpr unsigned long ALBUM_ART_LOOKUP_BUDGET_MS = 22000;
+static constexpr unsigned long ALBUM_ART_IMAGE_BUDGET_MS = 3500;
 static constexpr size_t PREWARM_QUEUE_LIMIT = 160;
 static constexpr uint32_t MIN_BUDGETED_HTTP_MS = 500;
 static constexpr BaseType_t ARTWORK_TASK_CORE = 1;
@@ -52,8 +58,18 @@ static constexpr uint16_t LCD_THUMB_SIZE = LCD_THUMB_SIZE_X < LCD_THUMB_SIZE_Y ?
 static constexpr size_t LCD_THUMB_BYTES = 8 + static_cast<size_t>(LCD_THUMB_SIZE) * LCD_THUMB_SIZE * 2;
 static constexpr const char* LCD_THUMB_EXT = ".sr565";
 
+static void albumArtTrace(const char* format, ...) {
+  char message[240];
+  va_list args;
+  va_start(args, format);
+  vsnprintf(message, sizeof(message), format, args);
+  va_end(args);
+  artworkTraceSerial.printf("[album-art] %s\n", message);
+}
+
 enum class ArtworkJobKind {
   Url,
+  AlbumSearch,
   Embedded,
   Thumbnail,
   BrowserImport
@@ -64,8 +80,11 @@ struct ArtworkDownloadJob {
   ArtworkJobKind kind = ArtworkJobKind::Url;
   bool idlePrewarm = false;
   bool allowSecureFallback = true;
+  bool fillFrame = false;
   String key;
   String url;
+  String artist;
+  String title;
   std::vector<uint32_t> segments;
 };
 
@@ -150,6 +169,7 @@ ArtworkCache& ArtworkCache::instance() {
 }
 
 void ArtworkCache::begin() {
+  artworkTraceSerial.begin(115200);
   artworkStartedMs = millis();
   lastArtworkPlaying = false;
   audioConnectionReady = false;
@@ -195,6 +215,12 @@ static uint32_t boundedTimeoutMs(uint32_t normalMs, uint32_t deadlineMs) {
 void ArtworkCache::loop() {
   PlayerStateSnapshot state = PlayerState::instance().snapshot();
 
+  if (albumLookupRetryRequested && !isDownloadActive()) {
+    albumLookupRetryRequested = false;
+    lastAlbumLookupKey = "";
+    lastAlbumLookupMs = 0;
+  }
+
   auto serviceIdlePrewarmAndPendingPlayback = [this]() {
     PlayerStateSnapshot currentState = PlayerState::instance().snapshot();
     processPrewarmQueue(currentState);
@@ -220,25 +246,51 @@ void ArtworkCache::loop() {
   bool completedOk = false;
   if (takeDownloadResult(completedUrl, completedPath, completedOk)) {
     if (!completedOk) {
-      String activeArtwork = currentArtworkUrl();
-      if (!activeArtwork.length() &&
-          state.stationId == deferredArtworkStationId &&
-          deferredArtworkUrl.length()) {
-        activeArtwork = deferredArtworkUrl;
+      if (completedUrl.startsWith("album:")) {
+        String activeKey = "album:v2:" + state.artist + "|" + state.title;
+        if (state.playing && completedUrl == activeKey) {
+          lastAlbumLookupKey = completedUrl;
+          lastAlbumLookupMs = millis();
+          String oldPath = previousAlbumArtworkPath;
+          PlayerState::instance().setAlbumArtworkPath("");
+          previousAlbumArtworkPath = "";
+          if (oldPath.length()) removeCachedArtworkFamily(oldPath);
+          Display::instance().render(DisplayPresenter::build(PlayerState::instance()));
+        }
+      } else {
+        String activeArtwork = currentArtworkUrl();
+        if (!activeArtwork.length() &&
+            state.stationId == deferredArtworkStationId &&
+            deferredArtworkUrl.length()) {
+          activeArtwork = deferredArtworkUrl;
+        }
+        if (state.playing &&
+            completedUrl == activeArtwork &&
+            completedUrl.startsWith("https://")) {
+          deferredArtworkUrl = completedUrl;
+          deferredArtworkStationId = state.stationId;
+          Serial.printf("[artwork] secure artwork deferred for station %d: %s\n",
+                        state.stationId,
+                        completedUrl.c_str());
+        }
+        if (!completedUrl.startsWith("thumb")) notePrewarmFailure(completedUrl);
       }
-      if (state.playing &&
-          completedUrl == activeArtwork &&
-          completedUrl.startsWith("https://")) {
-        deferredArtworkUrl = completedUrl;
-        deferredArtworkStationId = state.stationId;
-        Serial.printf("[artwork] secure artwork deferred for station %d: %s\n",
-                      state.stationId,
-                      completedUrl.c_str());
+    } else if (completedUrl.startsWith("album:")) {
+      String activeKey = "album:v2:" + state.artist + "|" + state.title;
+      if (state.playing && completedUrl == activeKey) {
+        String oldPath = previousAlbumArtworkPath;
+        if (completedPath.length()) {
+          PlayerState::instance().setAlbumArtworkPath(completedPath);
+          previousAlbumArtworkPath = completedPath;
+        }
+        if (oldPath.length() && oldPath != completedPath) removeCachedArtworkFamily(oldPath);
+        Display::instance().render(DisplayPresenter::build(PlayerState::instance()));
+      } else if (completedPath.length()) {
+        removeCachedArtworkFamily(completedPath);
       }
-      if (!completedUrl.startsWith("thumb:")) notePrewarmFailure(completedUrl);
-    } else if (completedUrl.startsWith("thumb:")) {
+    } else if (completedUrl.startsWith("thumb:") || completedUrl.startsWith("thumbfill:")) {
       PlayerStateSnapshot currentState = PlayerState::instance().snapshot();
-      refreshArtworkIfThumbnailReady(completedPath, currentState);
+      refreshArtworkIfThumbnailReady(completedPath, currentState, completedUrl.startsWith("thumbfill:"));
     } else {
       String currentUrl = currentArtworkUrl();
       if (!currentUrl.length() &&
@@ -266,7 +318,88 @@ void ArtworkCache::loop() {
     return;
   }
 
-  if (state.embeddedArtworkKey.length()) {
+  AppConfig& config = AppConfig::instance();
+  const String requestedAlbumKey = "album:v2:" + state.artist + "|" + state.title;
+  String sourceUrl = currentArtworkUrl();
+  if (!sourceUrl.length() &&
+      state.stationId == deferredArtworkStationId &&
+      deferredArtworkUrl.length()) {
+    sourceUrl = deferredArtworkUrl;
+  }
+
+  // In album-art mode the station logo remains the visible fallback.  If it
+  // only exists remotely, fetch it before launching a potentially slower
+  // multi-provider album lookup so the LCD never has to show an empty frame.
+  if (config.displayArtworkMode == "album" && state.playing &&
+      !state.hasStreamImage && sourceUrl.length() && !isDownloadActive()) {
+    String cachedFallback;
+    const bool hasLocalFallback = state.stationLogo.startsWith("/") && LittleFS.exists(state.stationLogo);
+    const bool hasCachedFallback = findExistingLcdArtworkPath(sourceUrl, cachedFallback) ||
+                                   findExistingCachePath(sourceUrl, cachedFallback);
+    if (!hasLocalFallback && !hasCachedFallback &&
+        !(sourceUrl == lastUrl && millis() - lastAttemptMs < MISSING_ARTWORK_RETRY_MS)) {
+      const bool secureFallbackAllowed = !sourceUrl.startsWith("https://") ||
+          (audioConnectionReady && audioConnectionReadyMs > 0 &&
+           millis() - audioConnectionReadyMs >= CURRENT_ARTWORK_TLS_GRACE_MS);
+      if (secureFallbackAllowed) {
+        lastUrl = sourceUrl;
+        lastAttemptMs = millis();
+        albumArtTrace("station-logo fallback download start: %s", sourceUrl.c_str());
+        if (startDownloadTask(sourceUrl, false, true)) return;
+      }
+    }
+  }
+
+  if (config.displayArtworkMode == "album" && state.playing &&
+      state.artist.length() && state.title.length() &&
+      !state.hasStreamImage && activeAlbumArtworkKey != requestedAlbumKey) {
+    activeAlbumArtworkKey = requestedAlbumKey;
+    String existingAlbumPath;
+    if (findExistingCachePath(requestedAlbumKey, existingAlbumPath)) {
+      String oldPath = state.albumArtworkPath;
+      previousAlbumArtworkPath = existingAlbumPath;
+      if (state.albumArtworkPath != existingAlbumPath) {
+        PlayerState::instance().setAlbumArtworkPath(existingAlbumPath);
+        Display::instance().render(DisplayPresenter::build(PlayerState::instance()));
+      }
+      if (oldPath.length() && oldPath != existingAlbumPath) removeCachedArtworkFamily(oldPath);
+      requestLcdThumbnail(existingAlbumPath, false, true);
+      refreshArtworkIfThumbnailReady(existingAlbumPath, PlayerState::instance().snapshot(), true);
+    } else {
+      previousAlbumArtworkPath = state.albumArtworkPath;
+      if (state.albumArtworkPath.length()) {
+        PlayerState::instance().setAlbumArtworkPath("");
+        Display::instance().render(DisplayPresenter::build(PlayerState::instance()));
+      }
+    }
+  }
+
+  bool cachedEmbeddedPathMatches = false;
+  bool embeddedThumbnailReady = false;
+  if (state.embeddedArtworkKey.length() && state.hasStreamImage) {
+    const String embeddedStem = cachePath(state.embeddedArtworkKey, "");
+    cachedEmbeddedPathMatches =
+        state.cachedArtworkPath.startsWith(embeddedStem + ".") ||
+        state.cachedArtworkPath.startsWith(embeddedStem + "_");
+    if (cachedEmbeddedPathMatches && config.displayArtworkMode == "album") {
+      embeddedThumbnailReady = lcdThumbnailReady(state.cachedArtworkPath, true);
+      if (!embeddedThumbnailReady) {
+        static unsigned long lastEmbeddedThumbnailProbeMs = 0;
+        if (millis() - lastEmbeddedThumbnailProbeMs >= 1000) {
+          lastEmbeddedThumbnailProbeMs = millis();
+          requestLcdThumbnail(state.cachedArtworkPath, false, true);
+        }
+      }
+    }
+    if (cachedEmbeddedPathMatches && lastUrl == state.embeddedArtworkKey &&
+        (config.displayArtworkMode != "album" || embeddedThumbnailReady)) {
+      serviceIdlePrewarmAndPendingPlayback();
+      return;
+    }
+  }
+
+  if (state.embeddedArtworkKey.length() &&
+      !(cachedEmbeddedPathMatches && lastUrl == state.embeddedArtworkKey)) {
     String existingEmbeddedPath;
     if (findExistingCachePath(state.embeddedArtworkKey, existingEmbeddedPath)) {
       if (state.cachedArtworkPath != existingEmbeddedPath) {
@@ -274,22 +407,49 @@ void ArtworkCache::loop() {
         PlayerState::instance().setCachedArtworkPath(existingEmbeddedPath);
         Display::instance().render(DisplayPresenter::build(PlayerState::instance()));
       }
-      requestLcdThumbnail(existingEmbeddedPath);
+      requestLcdThumbnail(existingEmbeddedPath, false, config.displayArtworkMode == "album");
       lastUrl = state.embeddedArtworkKey;
       serviceIdlePrewarmAndPendingPlayback();
       return;
     }
   }
 
-  String sourceUrl = currentArtworkUrl();
-  if (!sourceUrl.length() &&
-      state.stationId == deferredArtworkStationId &&
-      deferredArtworkUrl.length()) {
-    sourceUrl = deferredArtworkUrl;
-  }
   if (isDownloadActive()) {
     processPendingPlayback(state);
     return;
+  }
+
+  if (config.displayArtworkMode == "album" && state.playing &&
+      state.artist.length() && state.title.length() &&
+      !state.hasStreamImage && activeAlbumArtworkKey == requestedAlbumKey &&
+      !state.albumArtworkPath.length()) {
+    String existingAlbumPath;
+    if (findExistingCachePath(requestedAlbumKey, existingAlbumPath)) {
+      if (state.albumArtworkPath != existingAlbumPath) {
+        PlayerState::instance().setAlbumArtworkPath(existingAlbumPath);
+        Display::instance().render(DisplayPresenter::build(PlayerState::instance()));
+      }
+      requestLcdThumbnail(existingAlbumPath, false, true);
+      refreshArtworkIfThumbnailReady(existingAlbumPath, PlayerState::instance().snapshot(), true);
+    } else if (!(lastAlbumLookupKey == requestedAlbumKey &&
+                 millis() - lastAlbumLookupMs < MISSING_ARTWORK_RETRY_MS)) {
+      lastAlbumLookupKey = requestedAlbumKey;
+      lastAlbumLookupMs = millis();
+      if (startAlbumArtworkTask(state.artist, state.title, requestedAlbumKey)) return;
+    }
+  }
+
+  bool albumThumbnailReady = false;
+  if (config.displayArtworkMode == "album" && state.playing &&
+      !state.hasStreamImage && state.albumArtworkPath.length()) {
+    albumThumbnailReady = lcdThumbnailReady(state.albumArtworkPath, true);
+    if (!albumThumbnailReady) {
+      static unsigned long lastAlbumThumbnailProbeMs = 0;
+      if (millis() - lastAlbumThumbnailProbeMs >= 1000) {
+        lastAlbumThumbnailProbeMs = millis();
+        requestLcdThumbnail(state.albumArtworkPath, false, true);
+      }
+    }
   }
 
   if (sourceUrl.length()) {
@@ -394,8 +554,14 @@ void ArtworkCache::loop() {
     }
   }
 
+  const bool albumArtworkAlreadySelected =
+      config.displayArtworkMode == "album" && state.playing &&
+      ((state.hasStreamImage && embeddedThumbnailReady) || albumThumbnailReady);
   String localArtwork = state.cachedArtworkPath.length() ? state.cachedArtworkPath : state.stationLogo;
-  if (localArtwork.length() &&
+  if (config.displayArtworkMode == "album" && state.playing && !albumArtworkAlreadySelected) {
+    localArtwork = state.stationLogo;
+  }
+  if (!albumArtworkAlreadySelected && localArtwork.length() &&
       localArtwork.startsWith("/")) {
     requestLcdThumbnail(localArtwork);
     refreshArtworkIfThumbnailReady(localArtwork, state);
@@ -509,6 +675,34 @@ bool ArtworkCache::startDownloadTask(const String& url, bool idlePrewarm, bool a
   return true;
 }
 
+void ArtworkCache::retryCurrentAlbumLookup() {
+  albumLookupRetryRequested = true;
+}
+
+bool ArtworkCache::startAlbumArtworkTask(const String& artist, const String& title, const String& key) {
+  if (!markDownloadStarted(key)) return false;
+  ArtworkDownloadJob* job = new (std::nothrow) ArtworkDownloadJob();
+  if (!job) {
+    markDownloadFinished();
+    return false;
+  }
+  job->cache = this;
+  job->kind = ArtworkJobKind::AlbumSearch;
+  job->key = key;
+  job->artist = artist;
+  job->title = title;
+  TaskHandle_t handle = nullptr;
+  BaseType_t ok = xTaskCreatePinnedToCore(ArtworkCache::downloadTask, "album-art", 12288,
+                                           job, ARTWORK_TASK_PRIORITY, &handle, ARTWORK_TASK_CORE);
+  if (ok != pdPASS) {
+    markDownloadFinished();
+    delete job;
+    return false;
+  }
+  setDownloadTaskHandle(handle);
+  return true;
+}
+
 bool ArtworkCache::startEmbeddedDownloadTask(const String& key, const String& url, const std::vector<uint32_t>& segments) {
   if (!markDownloadStarted(key.length() ? key : url)) return false;
 
@@ -545,7 +739,7 @@ bool ArtworkCache::startEmbeddedDownloadTask(const String& key, const String& ur
   return true;
 }
 
-bool ArtworkCache::startThumbnailTask(const String& imagePath, bool idlePrewarm) {
+bool ArtworkCache::startThumbnailTask(const String& imagePath, bool idlePrewarm, bool fillFrame) {
   if (!markDownloadStarted(String("thumb:") + imagePath, nullptr, idlePrewarm)) return false;
 
   ArtworkDownloadJob* job = new (std::nothrow) ArtworkDownloadJob();
@@ -557,7 +751,8 @@ bool ArtworkCache::startThumbnailTask(const String& imagePath, bool idlePrewarm)
   job->cache = this;
   job->kind = ArtworkJobKind::Thumbnail;
   job->idlePrewarm = idlePrewarm;
-  job->key = "thumb:" + imagePath;
+  job->fillFrame = fillFrame;
+  job->key = String(fillFrame ? "thumbfill:" : "thumb:") + imagePath;
   job->url = imagePath;
   TaskHandle_t handle = nullptr;
 
@@ -700,7 +895,8 @@ void ArtworkCache::markThumbnailReady(const String& imagePath, const String& thu
   if (!imagePath.length() || !thumbPath.length()) return;
   readyThumbnailSource = imagePath;
   readyThumbnailPath = thumbPath;
-  if (lastThumbnailAttemptSource == imagePath) {
+  if (lastThumbnailAttemptSource == imagePath ||
+      lastThumbnailAttemptSource == imagePath + ":fill") {
     lastThumbnailAttemptSource = "";
     lastThumbnailAttemptMs = 0;
   }
@@ -711,7 +907,8 @@ void ArtworkCache::clearThumbnailReady(const String& imagePath) {
     readyThumbnailSource = "";
     readyThumbnailPath = "";
   }
-  if (!imagePath.length() || lastArtworkRefreshPath == imagePath) {
+  if (!imagePath.length() || lastArtworkRefreshPath == imagePath ||
+      lastArtworkRefreshPath == imagePath + ":fill") {
     lastArtworkRefreshPath = "";
   }
 }
@@ -900,23 +1097,28 @@ void ArtworkCache::downloadTask(void* param) {
   ArtworkJobKind kind = job ? job->kind : ArtworkJobKind::Url;
   bool idlePrewarm = job ? job->idlePrewarm : false;
   bool allowSecureFallback = job ? job->allowSecureFallback : true;
+  bool fillFrame = job ? job->fillFrame : false;
   String key = job ? job->key : "";
   String url = job ? job->url : "";
+  String artist = job ? job->artist : "";
+  String title = job ? job->title : "";
   std::vector<uint32_t> segments = job ? job->segments : std::vector<uint32_t>();
   delete job;
 
-  if (cache && url.length()) {
+  if (cache && (url.length() || kind == ArtworkJobKind::AlbumSearch)) {
     String path;
     bool ok = false;
     bool cancelled = idlePrewarm && cache->idlePrewarmCancellationRequested();
     if (!cancelled && kind == ArtworkJobKind::Embedded) {
       ok = cache->downloadEmbedded(url, segments, key, path);
     } else if (!cancelled && kind == ArtworkJobKind::Thumbnail) {
-      ok = cache->ensureLcdThumbnail(url);
+      ok = cache->ensureLcdThumbnail(url, fillFrame);
       path = url;
     } else if (!cancelled && kind == ArtworkJobKind::BrowserImport) {
       ok = cache->importLocalImage(key, url, path);
       if (!ok && LittleFS.exists(url)) LittleFS.remove(url);
+    } else if (!cancelled && kind == ArtworkJobKind::AlbumSearch) {
+      ok = cache->resolveAndDownloadAlbumArtwork(artist, title, key, path);
     } else if (!cancelled) {
       ok = cache->download(url, path, 0, allowSecureFallback);
     }
@@ -928,6 +1130,7 @@ void ArtworkCache::downloadTask(void* param) {
     } else {
       cache->storeDownloadResult(key.length() ? key : url, "", false);
       if (kind == ArtworkJobKind::Thumbnail) {
+        if (fillFrame) albumArtTrace("fill-cropped LCD thumbnail failed: %s", url.c_str());
         Serial.println("[artwork] lcd thumbnail task failed");
       } else if (kind == ArtworkJobKind::BrowserImport) {
         Serial.println("[artwork] browser cache import failed");
@@ -953,6 +1156,511 @@ String ArtworkCache::currentArtworkUrl() const {
   }
 
   return "";
+}
+
+static String encodeArtworkQuery(const String& value) {
+  String output;
+  static const char hex[] = "0123456789ABCDEF";
+  for (size_t i = 0; i < value.length(); ++i) {
+    uint8_t c = static_cast<uint8_t>(value[i]);
+    if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+        (c >= '0' && c <= '9') || c == '-' || c == '_' || c == '.' || c == '~') {
+      output += static_cast<char>(c);
+    } else {
+      output += '%';
+      output += hex[c >> 4];
+      output += hex[c & 0x0F];
+    }
+  }
+  return output;
+}
+
+static bool fetchArtworkJson(const String& url, JsonDocument& doc) {
+  HTTPClient http;
+  NetworkClient plainClient;
+  NetworkClientSecure secureClient;
+  NetworkClient* client = &plainClient;
+  if (url.startsWith("https://")) {
+    secureClient.setInsecure();
+    client = &secureClient;
+  }
+  http.setConnectTimeout(3500);
+  http.setTimeout(4000);
+  http.setUserAgent("SimpleRadio/0.8.24 (https://github.com/gidano/SimpleRadio)");
+  http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
+  http.setRedirectLimit(4);
+  if (!http.begin(*client, url)) return false;
+  http.addHeader("Accept", "application/json");
+  int code = http.GET();
+  bool ok = code == HTTP_CODE_OK && deserializeJson(doc, http.getStream()) == DeserializationError::Ok;
+  http.end();
+  return ok;
+}
+
+static bool exactTrackMatch(String foundArtist, String foundTitle,
+                            const String& wantedArtist, const String& wantedTitle) {
+  auto normalize = [](const String& input) {
+    String mapped;
+    mapped.reserve(input.length());
+    for (size_t i = 0; i < input.length();) {
+      uint8_t a = static_cast<uint8_t>(input[i]);
+      uint8_t b = i + 1 < input.length() ? static_cast<uint8_t>(input[i + 1]) : 0;
+      char replacement = 0;
+      if (a == 0xC3) {
+        switch (b) {
+          case 0x80: case 0x81: case 0x82: case 0x83: case 0x84: case 0x85:
+          case 0xA0: case 0xA1: case 0xA2: case 0xA3: case 0xA4: case 0xA5: replacement = 'a'; break;
+          case 0x87: case 0xA7: replacement = 'c'; break;
+          case 0x88: case 0x89: case 0x8A: case 0x8B:
+          case 0xA8: case 0xA9: case 0xAA: case 0xAB: replacement = 'e'; break;
+          case 0x8C: case 0x8D: case 0x8E: case 0x8F:
+          case 0xAC: case 0xAD: case 0xAE: case 0xAF: replacement = 'i'; break;
+          case 0x91: case 0xB1: replacement = 'n'; break;
+          case 0x92: case 0x93: case 0x94: case 0x95: case 0x96: case 0x98:
+          case 0xB2: case 0xB3: case 0xB4: case 0xB5: case 0xB6: case 0xB8: replacement = 'o'; break;
+          case 0x99: case 0x9A: case 0x9B: case 0x9C:
+          case 0xB9: case 0xBA: case 0xBB: case 0xBC: replacement = 'u'; break;
+          case 0x9D: case 0xBD: replacement = 'y'; break;
+          case 0x9F: replacement = 's'; break;
+          default: break;
+        }
+        if (replacement) i += 2;
+      } else if (a == 0xC5) {
+        switch (b) {
+          case 0x90: case 0x91: replacement = 'o'; break; // Ő ő
+          case 0xB0: case 0xB1: replacement = 'u'; break; // Ű ű
+          case 0x98: case 0x99: replacement = 's'; break;
+          case 0x9A: case 0x9B: replacement = 't'; break;
+          case 0xBD: case 0xBE: replacement = 'z'; break;
+          default: break;
+        }
+        if (replacement) i += 2;
+      } else if (a == 0xC4) {
+        switch (b) {
+          case 0xB0: case 0xB1: replacement = 'i'; break;
+          case 0x86: case 0x87: replacement = 'c'; break;
+          case 0x8C: case 0x8D: replacement = 'c'; break;
+          case 0x9E: case 0x9F: replacement = 'g'; break;
+          case 0xB9: case 0xBA: replacement = 'l'; break;
+          default: break;
+        }
+        if (replacement) i += 2;
+      } else if (a == 0xC6 && (b == 0x92 || b == 0x93)) {
+        replacement = 'a';
+        i += 2;
+      }
+      if (replacement) {
+        mapped += replacement;
+      } else {
+        char ch = static_cast<char>(a);
+        if (ch >= 'A' && ch <= 'Z') ch = static_cast<char>(ch - 'A' + 'a');
+        mapped += ch;
+        ++i;
+      }
+    }
+    String out;
+    bool previousSpace = true;
+    for (size_t i = 0; i < mapped.length(); ++i) {
+      char ch = mapped[i];
+      if ((ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') || ch == '&' || ch == ',') {
+        out += ch;
+        previousSpace = false;
+      } else if (!previousSpace) {
+        out += ' ';
+        previousSpace = true;
+      }
+    }
+    out.trim();
+    return out;
+  };
+
+  auto artistCredits = [&](String value) {
+    value = normalize(value);
+    const char* separators[] = {
+      " feat ", " ft ", " featuring ", " with ", " and ", "&", ","
+    };
+    for (const char* separator : separators) value.replace(separator, ",");
+
+    std::vector<String> credits;
+    int start = 0;
+    while (start <= static_cast<int>(value.length())) {
+      int separator = value.indexOf(',', start);
+      String credit = separator < 0 ? value.substring(start) : value.substring(start, separator);
+      credit.trim();
+      if (credit.length()) credits.push_back(credit);
+      if (separator < 0) break;
+      start = separator + 1;
+    }
+    return credits;
+  };
+
+  auto sameArtistName = [](String left, String right) {
+    std::vector<String> leftWords;
+    std::vector<String> rightWords;
+    auto splitWords = [](String value, std::vector<String>& words) {
+      value.trim();
+      int start = 0;
+      while (start < static_cast<int>(value.length())) {
+        while (start < static_cast<int>(value.length()) && value[start] == ' ') ++start;
+        int end = value.indexOf(' ', start);
+        String word = end < 0 ? value.substring(start) : value.substring(start, end);
+        if (word.length()) words.push_back(word);
+        if (end < 0) break;
+        start = end + 1;
+      }
+      std::sort(words.begin(), words.end());
+    };
+    splitWords(left, leftWords);
+    splitWords(right, rightWords);
+    if (leftWords.empty() || leftWords.size() != rightWords.size()) return false;
+    for (size_t i = 0; i < leftWords.size(); ++i) {
+      if (leftWords[i] != rightWords[i]) return false;
+    }
+    return true;
+  };
+
+  auto artistsMatch = [&](const String& found, const String& wanted) {
+    std::vector<String> foundCredits = artistCredits(found);
+    std::vector<String> wantedCredits = artistCredits(wanted);
+    if (foundCredits.empty() || wantedCredits.empty()) return false;
+
+    // A single station artist may be credited alongside a guest on a provider;
+    // for explicit duets, require every requested artist to be present.
+    if (wantedCredits.size() == 1) {
+      for (const String& credit : foundCredits) {
+        if (sameArtistName(credit, wantedCredits[0])) return true;
+      }
+      return false;
+    }
+    if (foundCredits.size() != wantedCredits.size()) return false;
+    std::vector<bool> matched(foundCredits.size(), false);
+    for (const String& wantedCredit : wantedCredits) {
+      bool foundMatch = false;
+      for (size_t i = 0; i < foundCredits.size(); ++i) {
+        if (!matched[i] && sameArtistName(foundCredits[i], wantedCredit)) {
+          matched[i] = true;
+          foundMatch = true;
+          break;
+        }
+      }
+      if (!foundMatch) return false;
+    }
+    return true;
+  };
+
+  auto stripFeature = [](String value) {
+    const char* markers[] = { " feat ", " ft ", " featuring ", " with " };
+    int cutAt = -1;
+    for (const char* marker : markers) {
+      int position = value.indexOf(marker);
+      if (position > 0 && (cutAt < 0 || position < cutAt)) cutAt = position;
+    }
+    if (cutAt >= 0) value = value.substring(0, cutAt);
+    value.trim();
+    return value;
+  };
+
+  auto baseTitle = [&](String value) {
+    value = stripFeature(normalize(value));
+    const char* versionSuffixes[] = {
+      " country version", " radio version", " album version", " single version",
+      " radio edit", " single edit", " album edit", " original mix",
+      " remastered", " remaster", " clean version", " explicit version"
+    };
+    for (const char* suffix : versionSuffixes) {
+      size_t valueLength = value.length();
+      size_t suffixLength = strlen(suffix);
+      if (valueLength > suffixLength && value.endsWith(suffix)) {
+        value.remove(valueLength - suffixLength);
+        value.trim();
+        break;
+      }
+    }
+    return value;
+  };
+
+  String expectedTitle = baseTitle(wantedTitle);
+  String actualTitle = baseTitle(foundTitle);
+  return artistsMatch(foundArtist, wantedArtist) &&
+         expectedTitle.length() && expectedTitle == actualTitle;
+}
+
+static void addUniqueArtworkCandidate(std::vector<String>& urls, const String& url) {
+  if (!url.length()) return;
+  for (const String& existing : urls) {
+    if (existing == url) return;
+  }
+  urls.push_back(url);
+}
+
+static String albumTitleForSearch(String title) {
+  String lower = title;
+  lower.toLowerCase();
+  const char* featureMarkers[] = { " feat.", " feat ", " ft.", " ft ", " featuring ", " with " };
+  int featureAt = -1;
+  for (const char* marker : featureMarkers) {
+    int position = lower.indexOf(marker);
+    if (position > 0 && (featureAt < 0 || position < featureAt)) featureAt = position;
+  }
+  if (featureAt > 0) {
+    title = title.substring(0, featureAt);
+    lower = lower.substring(0, featureAt);
+  }
+
+  const char* versionSuffixes[] = {
+    " (country version)", " country version", " (acoustic version)", " acoustic version",
+    " (radio version)", " radio version", " (radio edit)", " radio edit",
+    " (live version)", " live version", " (album version)", " album version",
+    " (single version)", " single version"
+  };
+  for (const char* suffix : versionSuffixes) {
+    size_t length = strlen(suffix);
+    if (lower.length() > length && lower.endsWith(suffix)) {
+      title.remove(title.length() - length);
+      break;
+    }
+  }
+  title.trim();
+  return title;
+}
+
+std::vector<String> ArtworkCache::resolveAlbumArtworkUrls(const String& artist, const String& title,
+                                                           AlbumArtworkProvider provider) {
+  std::vector<String> urls;
+  const String artistQuery = encodeArtworkQuery(artist);
+  const String titleQuery = encodeArtworkQuery(albumTitleForSearch(title));
+  JsonDocument doc;
+
+  static unsigned long lastMusicBrainzRequestMs = 0;
+  if (provider == AlbumArtworkProvider::MusicBrainz) {
+    if (lastMusicBrainzRequestMs && millis() - lastMusicBrainzRequestMs < 1100) {
+      vTaskDelay(pdMS_TO_TICKS(1100 - (millis() - lastMusicBrainzRequestMs)));
+    }
+    lastMusicBrainzRequestMs = millis();
+    // Search by title first, then validate the complete artist credit locally.
+    // This avoids losing records when station metadata reverses first/last name
+    // order or supplies a duet as comma-separated credits.
+    String mbUrl = "https://musicbrainz.org/ws/2/recording/?query=recording%3A%22" +
+        titleQuery + "%22&fmt=json&limit=10";
+    albumArtTrace("MusicBrainz query: %s - %s", artist.c_str(), title.c_str());
+    unsigned long requestStartedMs = millis();
+    bool mbOk = fetchArtworkJson(mbUrl, doc);
+    albumArtTrace("MusicBrainz response: %s (%lums)", mbOk ? "ok" : "failed",
+                  static_cast<unsigned long>(millis() - requestStartedMs));
+    if (mbOk) {
+      std::vector<String> albumGroupUrls;
+      std::vector<String> otherGroupUrls;
+      std::vector<String> releaseUrls;
+      JsonArray recordings = doc["recordings"].as<JsonArray>();
+      albumArtTrace("MusicBrainz returned %u recording(s)", static_cast<unsigned>(recordings.size()));
+      for (JsonObject recording : recordings) {
+        int score = recording["score"] | 0;
+        if (score < 80 || recording["video"] == true) continue;
+        JsonArray credits = recording["artist-credit"].as<JsonArray>();
+        String foundArtist;
+        for (JsonVariant credit : credits) {
+          if (credit.is<JsonObject>()) {
+            JsonObject creditObject = credit.as<JsonObject>();
+            String name = creditObject["name"] | "";
+            if (!name.length()) name = creditObject["artist"]["name"] | "";
+            foundArtist += name;
+            foundArtist += creditObject["joinphrase"] | "";
+          } else if (credit.is<const char*>()) {
+            foundArtist += credit.as<String>();
+          }
+        }
+        String foundTitle = recording["title"] | "";
+        if (!exactTrackMatch(foundArtist, foundTitle, artist, title)) {
+          albumArtTrace("MusicBrainz reject: %s - %s (score %d)", foundArtist.c_str(),
+                        foundTitle.c_str(), score);
+          continue;
+        }
+        albumArtTrace("MusicBrainz exact match: %s - %s", foundArtist.c_str(), foundTitle.c_str());
+
+        JsonArray releases = recording["releases"].as<JsonArray>();
+        for (JsonObject release : releases) {
+          const char* releaseId = release["id"] | "";
+          if (strlen(releaseId) != 36) continue;
+          const char* groupId = release["release-group"]["id"] | "";
+          if (strlen(groupId) == 36) {
+            String groupUrl = String("https://coverartarchive.org/release-group/") + groupId + "/front-250";
+            String primaryType = release["release-group"]["primary-type"] | "";
+            bool compilation = false;
+            JsonArray secondaryTypes = release["release-group"]["secondary-types"].as<JsonArray>();
+            for (JsonVariant secondaryType : secondaryTypes) {
+              if (secondaryType.as<String>() == "Compilation") compilation = true;
+            }
+            addUniqueArtworkCandidate(primaryType == "Album" && !compilation ? albumGroupUrls : otherGroupUrls,
+                                      groupUrl);
+          }
+          addUniqueArtworkCandidate(releaseUrls,
+                                    String("https://coverartarchive.org/release/") + releaseId + "/front-250");
+        }
+      }
+
+      // Prefer the album cover over a standalone single or compilation.
+      auto appendLimited = [&](const std::vector<String>& candidates, size_t limit) {
+        for (const String& candidate : candidates) {
+          if (urls.size() >= limit) break;
+          addUniqueArtworkCandidate(urls, candidate);
+        }
+      };
+      appendLimited(albumGroupUrls, 1);
+      appendLimited(otherGroupUrls, 1);
+      appendLimited(releaseUrls, 1);
+      albumArtTrace("MusicBrainz Cover Art Archive candidates: %u", static_cast<unsigned>(urls.size()));
+    }
+    doc.clear();
+  }
+
+  String apiKey = AppConfig::instance().lastFmApiKey;
+  apiKey.trim();
+#ifdef SIMPLE_RADIO_LASTFM_API_KEY
+  if (!apiKey.length()) apiKey = SIMPLE_RADIO_LASTFM_API_KEY;
+#endif
+  if (provider == AlbumArtworkProvider::LastFm && apiKey.length()) {
+    String lastFmUrl = "https://ws.audioscrobbler.com/2.0/?method=track.getInfo&format=json&api_key=";
+    lastFmUrl += encodeArtworkQuery(apiKey);
+    lastFmUrl += "&artist=" + artistQuery + "&track=" + titleQuery;
+    unsigned long requestStartedMs = millis();
+    bool lastFmOk = fetchArtworkJson(lastFmUrl, doc);
+    albumArtTrace("Last.fm response: %s (%lums)", lastFmOk ? "ok" : "failed",
+                  static_cast<unsigned long>(millis() - requestStartedMs));
+    if (lastFmOk) {
+      String foundArtist = doc["track"]["artist"]["name"] | "";
+      String foundTitle = doc["track"]["name"] | "";
+      if (exactTrackMatch(foundArtist, foundTitle, artist, title)) {
+        albumArtTrace("Last.fm exact match: %s - %s", foundArtist.c_str(), foundTitle.c_str());
+        JsonArray images = doc["track"]["album"]["image"].as<JsonArray>();
+        String extraLargeCover;
+        String largeCover;
+        for (JsonObject image : images) {
+          String size = image["size"] | "";
+          const char* cover = image["#text"] | "";
+          if (size == "extralarge" && strlen(cover)) extraLargeCover = cover;
+          if (size == "large" && strlen(cover)) largeCover = cover;
+        }
+        // Last.fm's large and extralarge URLs usually identify the same file;
+        // trying both only repeats the same slow network failure.
+        if (extraLargeCover.length()) addUniqueArtworkCandidate(urls, extraLargeCover);
+        else if (largeCover.length()) addUniqueArtworkCandidate(urls, largeCover);
+      } else albumArtTrace("Last.fm returned a different track: %s - %s", foundArtist.c_str(), foundTitle.c_str());
+    }
+    doc.clear();
+  } else if (provider == AlbumArtworkProvider::LastFm) {
+    albumArtTrace("Last.fm skipped: no API key configured");
+  }
+
+  if (provider == AlbumArtworkProvider::Deezer) {
+    String deezerUrl = "https://api.deezer.com/search/track?q=" + artistQuery + "%20" + titleQuery + "&limit=5";
+    unsigned long requestStartedMs = millis();
+    bool deezerOk = fetchArtworkJson(deezerUrl, doc);
+    albumArtTrace("Deezer response: %s (%lums)", deezerOk ? "ok" : "failed",
+                  static_cast<unsigned long>(millis() - requestStartedMs));
+    if (deezerOk) {
+      JsonArray tracks = doc["data"].as<JsonArray>();
+      albumArtTrace("Deezer returned %u track(s)", static_cast<unsigned>(tracks.size()));
+      for (JsonObject track : tracks) {
+        String foundArtist = track["artist"]["name"] | "";
+        String foundTitle = track["title"] | "";
+        if (exactTrackMatch(foundArtist, foundTitle, artist, title)) {
+          albumArtTrace("Deezer exact match: %s - %s", foundArtist.c_str(), foundTitle.c_str());
+          const char* cover = track["album"]["cover_medium"] | "";
+          if (strlen(cover)) addUniqueArtworkCandidate(urls, String(cover));
+          if (urls.size() >= 1) break;
+        } else albumArtTrace("Deezer reject: %s - %s", foundArtist.c_str(), foundTitle.c_str());
+      }
+    }
+    doc.clear();
+  }
+
+  if (provider == AlbumArtworkProvider::ITunes) {
+    String itunesUrl = "https://itunes.apple.com/search?term=" + artistQuery + "%20" + titleQuery + "&entity=song&limit=8";
+    unsigned long requestStartedMs = millis();
+    bool itunesOk = fetchArtworkJson(itunesUrl, doc);
+    albumArtTrace("iTunes response: %s (%lums)", itunesOk ? "ok" : "failed",
+                  static_cast<unsigned long>(millis() - requestStartedMs));
+    if (itunesOk) {
+      JsonArray results = doc["results"].as<JsonArray>();
+      albumArtTrace("iTunes returned %u result(s)", static_cast<unsigned>(results.size()));
+      for (JsonObject result : results) {
+        String foundArtist = result["artistName"] | "";
+        String foundTitle = result["trackName"] | "";
+        if (exactTrackMatch(foundArtist, foundTitle, artist, title)) {
+          albumArtTrace("iTunes exact match: %s - %s", foundArtist.c_str(), foundTitle.c_str());
+          String cover = result["artworkUrl100"] | "";
+          if (cover.length()) {
+            cover.replace("100x100bb", "250x250bb");
+            addUniqueArtworkCandidate(urls, cover);
+          }
+          if (urls.size() >= 1) break;
+        } else albumArtTrace("iTunes reject: %s - %s", foundArtist.c_str(), foundTitle.c_str());
+      }
+    }
+  }
+  return urls;
+}
+
+bool ArtworkCache::resolveAndDownloadAlbumArtwork(const String& artist, const String& title,
+                                                   const String& key, String& outPath) {
+  const unsigned long searchStartedMs = millis();
+  albumArtTrace("search start: %s - %s", artist.c_str(), title.c_str());
+  const AlbumArtworkProvider providers[] = {
+    AlbumArtworkProvider::MusicBrainz,
+    AlbumArtworkProvider::LastFm,
+    AlbumArtworkProvider::ITunes,
+    AlbumArtworkProvider::Deezer
+  };
+  const char* providerNames[] = { "MusicBrainz/CAA", "Last.fm", "iTunes", "Deezer" };
+  for (size_t providerIndex = 0; providerIndex < sizeof(providers) / sizeof(providers[0]); ++providerIndex) {
+    if (millis() - searchStartedMs >= ALBUM_ART_LOOKUP_BUDGET_MS) {
+      albumArtTrace("search budget reached after %lums", static_cast<unsigned long>(millis() - searchStartedMs));
+      return false;
+    }
+    AlbumArtworkProvider provider = providers[providerIndex];
+    PlayerStateSnapshot current = PlayerState::instance().snapshot();
+    if (!current.playing || current.artist != artist || current.title != title) {
+      albumArtTrace("search cancelled: track changed before %s", providerNames[providerIndex]);
+      return false;
+    }
+    unsigned long providerStartedMs = millis();
+    std::vector<String> candidates = resolveAlbumArtworkUrls(artist, title, provider);
+    albumArtTrace("%s: %u image candidate(s), %lums", providerNames[providerIndex],
+                  static_cast<unsigned>(candidates.size()),
+                  static_cast<unsigned long>(millis() - providerStartedMs));
+    for (const String& candidate : candidates) {
+      const unsigned long elapsedMs = millis() - searchStartedMs;
+      if (elapsedMs >= ALBUM_ART_LOOKUP_BUDGET_MS) {
+        albumArtTrace("search budget reached before image download");
+        return false;
+      }
+      if (idlePrewarmCancellationRequested()) {
+        albumArtTrace("search cancelled: idle prewarm requested");
+        return false;
+      }
+      current = PlayerState::instance().snapshot();
+      if (!current.playing || current.artist != artist || current.title != title) {
+        albumArtTrace("search cancelled: track changed before image download");
+        return false;
+      }
+      unsigned long downloadStartedMs = millis();
+      albumArtTrace("trying image from %s: %s", providerNames[providerIndex], candidate.c_str());
+      const uint32_t imageBudgetMs = min<uint32_t>(
+          ALBUM_ART_IMAGE_BUDGET_MS, ALBUM_ART_LOOKUP_BUDGET_MS - elapsedMs);
+      if (download(candidate, outPath, imageBudgetMs, true, key)) {
+        albumArtTrace("image ready: %s (%lums; total %lums)", outPath.c_str(),
+                      static_cast<unsigned long>(millis() - downloadStartedMs),
+                      static_cast<unsigned long>(millis() - searchStartedMs));
+        return true;
+      }
+      albumArtTrace("image failed after %lums: %s",
+                    static_cast<unsigned long>(millis() - downloadStartedMs),
+                    lastDownloadStatus().c_str());
+    }
+  }
+  albumArtTrace("no cover found for %s - %s (%lums)", artist.c_str(), title.c_str(),
+                static_cast<unsigned long>(millis() - searchStartedMs));
+  return false;
 }
 
 String ArtworkCache::embeddedKey(const String& streamUrl, const std::vector<uint32_t>& segments) const {
@@ -998,19 +1706,43 @@ static String lcdThumbnailSizedSuffix() {
   return "_" + String(LCD_THUMB_SIZE) + LCD_THUMB_EXT;
 }
 
+static String lcdThumbnailFillSuffix() {
+  return "_" + String(LCD_THUMB_SIZE) + "_fill" + LCD_THUMB_EXT;
+}
+
 static bool isPairedCacheThumbnailPath(const String& path) {
   if (!path.startsWith("/cache/")) return false;
   String lower = path;
   lower.toLowerCase();
-  return lower.endsWith(lcdThumbnailSizedSuffix());
+  return lower.endsWith(lcdThumbnailSizedSuffix()) || lower.endsWith(lcdThumbnailFillSuffix());
 }
 
 static String cacheFamilyStemForPath(const String& path) {
   if (isPairedCacheThumbnailPath(path)) {
-    String suffix = lcdThumbnailSizedSuffix();
+    String suffix = path.endsWith(lcdThumbnailFillSuffix())
+                        ? lcdThumbnailFillSuffix()
+                        : lcdThumbnailSizedSuffix();
     return path.substring(0, path.length() - suffix.length());
   }
   return fileStem(path);
+}
+
+void ArtworkCache::removeCachedArtworkFamily(const String& imagePath) {
+  if (!imagePath.startsWith("/cache/")) return;
+  const String stem = cacheFamilyStemForPath(imagePath);
+  File root = LittleFS.open("/cache");
+  if (!root || !root.isDirectory()) return;
+  std::vector<String> removePaths;
+  File file = root.openNextFile();
+  while (file) {
+    String path = file.path();
+    if (!path.length()) path = String("/cache/") + file.name();
+    if (!file.isDirectory() && cacheFamilyStemForPath(path) == stem) removePaths.push_back(path);
+    file.close();
+    file = root.openNextFile();
+  }
+  root.close();
+  for (const String& path : removePaths) LittleFS.remove(path);
 }
 
 static String fileNameOnly(const String& path) {
@@ -1044,11 +1776,11 @@ bool ArtworkCache::findExistingLcdArtworkPath(const String& source, String& outP
   return true;
 }
 
-bool ArtworkCache::compactRemoteArtwork(const String& source, const String& imagePath, String& outPath) {
+bool ArtworkCache::compactRemoteArtwork(const String& source, const String& imagePath, String& outPath, bool fillFrame) {
   outPath = imagePath;
   if (!isRemoteArtworkSource(source) || !imagePath.startsWith("/cache/")) return false;
 
-  String thumbPath = lcdThumbnailPath(imagePath);
+  String thumbPath = lcdThumbnailPath(imagePath, fillFrame);
   String expectedStem = cachePath(source, "");
   if (cacheFamilyStemForPath(thumbPath) != expectedStem || !validLcdThumbnailFile(thumbPath)) {
     return false;
@@ -1728,14 +2460,14 @@ static bool validLcdThumbnailFile(const String& path) {
   return ok;
 }
 
-String ArtworkCache::lcdThumbnailPath(const String& imagePath) const {
+String ArtworkCache::lcdThumbnailPath(const String& imagePath, bool fillFrame) const {
   if (!imagePath.length()) return "";
   String lower = imagePath;
   lower.toLowerCase();
   if (lower.endsWith(LCD_THUMB_EXT)) return imagePath;
-  String sizedExt = "_" + String(LCD_THUMB_SIZE) + LCD_THUMB_EXT;
+  String sizedExt = "_" + String(LCD_THUMB_SIZE) + (fillFrame ? "_fill" : "") + LCD_THUMB_EXT;
   if (imagePath.startsWith("/cache/")) return fileStem(imagePath) + sizedExt;
-  return cachePath(String("lcd:") + String(LCD_THUMB_SIZE) + ":" + imagePath, LCD_THUMB_EXT);
+  return cachePath(String("lcd:") + String(LCD_THUMB_SIZE) + (fillFrame ? ":fill:" : ":") + imagePath, LCD_THUMB_EXT);
 }
 
 void ArtworkCache::invalidateLcdThumbnail(const String& imagePath) {
@@ -1767,7 +2499,7 @@ void ArtworkCache::invalidateLcdThumbnail(const String& imagePath) {
   }
 }
 
-bool ArtworkCache::ensureLcdThumbnail(const String& imagePath) {
+bool ArtworkCache::ensureLcdThumbnail(const String& imagePath, bool fillFrame) {
   if (!imagePath.length() || imagePath.startsWith("http://") || imagePath.startsWith("https://")) return false;
   if (idlePrewarmCancellationRequested()) return false;
 
@@ -1781,7 +2513,7 @@ bool ArtworkCache::ensureLcdThumbnail(const String& imagePath) {
   }
   if (!lower.endsWith(".png") && !lower.endsWith(".jpg") && !lower.endsWith(".jpeg") && !lower.endsWith(".bmp")) return false;
 
-  String thumbPath = lcdThumbnailPath(imagePath);
+  String thumbPath = lcdThumbnailPath(imagePath, fillFrame);
   if (thumbnailKnownReady(imagePath, thumbPath)) return true;
   if (!LittleFS.exists(imagePath)) {
     clearThumbnailReady(imagePath);
@@ -1827,6 +2559,7 @@ bool ArtworkCache::ensureLcdThumbnail(const String& imagePath) {
   ArtworkImageSize size;
   if (!readArtworkImageSize(imagePath, size)) {
     unlock();
+    if (fillFrame) albumArtTrace("cannot read cover image dimensions: %s", imagePath.c_str());
     return false;
   }
 
@@ -1849,14 +2582,18 @@ bool ArtworkCache::ensureLcdThumbnail(const String& imagePath) {
   if (!spriteBuffer) {
     unlock();
     Serial.printf("[artwork] lcd thumbnail sprite alloc failed: %s\n", imagePath.c_str());
+    if (fillFrame) albumArtTrace("cannot allocate LCD cover thumbnail buffer");
     return false;
   }
 
   uint16_t matBg = rgb565(7, 9, 9);
   thumb.fillSprite(matBg);
 
-  float scale = min(static_cast<float>(LCD_THUMB_SIZE) / size.width,
-                    static_cast<float>(LCD_THUMB_SIZE) / size.height);
+  float scale = fillFrame
+                  ? max(static_cast<float>(LCD_THUMB_SIZE) / size.width,
+                        static_cast<float>(LCD_THUMB_SIZE) / size.height)
+                  : min(static_cast<float>(LCD_THUMB_SIZE) / size.width,
+                        static_cast<float>(LCD_THUMB_SIZE) / size.height);
   int32_t scaledW = max<int32_t>(1, min<int32_t>(LCD_THUMB_SIZE, static_cast<int32_t>(ceilf(size.width * scale))));
   int32_t scaledH = max<int32_t>(1, min<int32_t>(LCD_THUMB_SIZE, static_cast<int32_t>(ceilf(size.height * scale))));
   int32_t drawX = (LCD_THUMB_SIZE - scaledW) / 2;
@@ -1877,6 +2614,7 @@ bool ArtworkCache::ensureLcdThumbnail(const String& imagePath) {
     thumb.deleteSprite();
     unlock();
     Serial.printf("[artwork] lcd thumbnail draw failed: %s\n", imagePath.c_str());
+    if (fillFrame) albumArtTrace("image decoder could not create cover thumbnail: %s", imagePath.c_str());
     return false;
   }
 
@@ -2030,12 +2768,14 @@ bool ArtworkCache::finalizeImagePayload(const String& sourcePath, size_t offset,
   }
 
   outPath = finalPath;
-  ensureLcdThumbnail(finalPath);
+  const bool fillFrame = key.startsWith("embedded:") &&
+                         AppConfig::instance().displayArtworkMode == "album";
+  ensureLcdThumbnail(finalPath, fillFrame);
   enforceCacheBudget(0, finalPath);
   return true;
 }
 
-bool ArtworkCache::requestLcdThumbnail(const String& imagePath, bool idlePrewarm) {
+bool ArtworkCache::requestLcdThumbnail(const String& imagePath, bool idlePrewarm, bool fillFrame) {
   if (!imagePath.length() || imagePath.startsWith("http://") || imagePath.startsWith("https://")) return false;
 
   String lower = imagePath;
@@ -2048,7 +2788,7 @@ bool ArtworkCache::requestLcdThumbnail(const String& imagePath, bool idlePrewarm
   }
   if (!lower.endsWith(".png") && !lower.endsWith(".jpg") && !lower.endsWith(".jpeg") && !lower.endsWith(".bmp")) return false;
 
-  String thumbPath = lcdThumbnailPath(imagePath);
+  String thumbPath = lcdThumbnailPath(imagePath, fillFrame);
   if (thumbnailKnownReady(imagePath, thumbPath)) return true;
   if (!LittleFS.exists(imagePath)) {
     clearThumbnailReady(imagePath);
@@ -2060,15 +2800,33 @@ bool ArtworkCache::requestLcdThumbnail(const String& imagePath, bool idlePrewarm
   }
   if (isDownloadActive()) return false;
   unsigned long now = millis();
-  if (lastThumbnailAttemptSource == imagePath &&
+  String attemptSource = imagePath + (fillFrame ? ":fill" : "");
+  if (lastThumbnailAttemptSource == attemptSource &&
       now - lastThumbnailAttemptMs < THUMBNAIL_RETRY_MS) {
     return false;
   }
-  lastThumbnailAttemptSource = imagePath;
+  lastThumbnailAttemptSource = attemptSource;
   lastThumbnailAttemptMs = now;
 
   Serial.printf("[artwork] lcd thumbnail task start: %s\n", imagePath.c_str());
-  return startThumbnailTask(imagePath, idlePrewarm);
+  return startThumbnailTask(imagePath, idlePrewarm, fillFrame);
+}
+
+bool ArtworkCache::lcdThumbnailReady(const String& imagePath, bool fillFrame) {
+  if (!imagePath.length() || imagePath.startsWith("http://") || imagePath.startsWith("https://")) return false;
+  String thumbPath = lcdThumbnailPath(imagePath, fillFrame);
+  if (!thumbPath.length()) return false;
+  if (thumbnailKnownReady(imagePath, thumbPath)) return true;
+  static String lastProbeKey;
+  static unsigned long lastProbeMs = 0;
+  const String probeKey = imagePath + (fillFrame ? ":fill" : "");
+  const unsigned long now = millis();
+  if (lastProbeKey == probeKey && now - lastProbeMs < 250) return false;
+  lastProbeKey = probeKey;
+  lastProbeMs = now;
+  if (!validLcdThumbnailFile(thumbPath)) return false;
+  markThumbnailReady(imagePath, thumbPath);
+  return true;
 }
 
 bool ArtworkCache::stationArtworkReady(int stationId, String* outPath) const {
@@ -2342,6 +3100,7 @@ bool ArtworkCache::prepareArtworkSourceForPlayback(const String& source, String&
 bool ArtworkCache::stateUsesArtworkPath(const PlayerStateSnapshot& state, const String& imagePath) const {
   if (!imagePath.length() || !imagePath.startsWith("/")) return false;
   if (state.cachedArtworkPath == imagePath) return true;
+  if (state.albumArtworkPath == imagePath) return true;
 
   if (state.stationLogo.length() && !isRemoteArtworkSource(state.stationLogo)) {
     if (preferredLocalArtworkPath(state.stationLogo) == imagePath) return true;
@@ -2369,20 +3128,27 @@ bool ArtworkCache::stateUsesArtworkPath(const PlayerStateSnapshot& state, const 
   return false;
 }
 
-bool ArtworkCache::refreshArtworkIfThumbnailReady(const String& imagePath, const PlayerStateSnapshot& state) {
+bool ArtworkCache::refreshArtworkIfThumbnailReady(const String& imagePath, const PlayerStateSnapshot& state, bool fillFrame) {
   if (!stateUsesArtworkPath(state, imagePath)) return false;
 
-  String thumbPath = lcdThumbnailPath(imagePath);
+  String thumbPath = lcdThumbnailPath(imagePath, fillFrame);
   if (!thumbPath.length()) return false;
   if (!thumbnailKnownReady(imagePath, thumbPath)) {
     if (!validLcdThumbnailFile(thumbPath)) return false;
     markThumbnailReady(imagePath, thumbPath);
   }
 
-  if (lastArtworkRefreshPath != imagePath) {
-    lastArtworkRefreshPath = imagePath;
+  String refreshKey = imagePath + (fillFrame ? ":fill" : "");
+  if (lastArtworkRefreshPath != refreshKey) {
+    lastArtworkRefreshPath = refreshKey;
     Serial.printf("[artwork] lcd thumbnail ready, refreshing display: %s\n", imagePath.c_str());
-    Display::instance().refreshArtwork();
+    if (AppConfig::instance().displayArtworkMode == "album" && state.playing) {
+      // Rebuild the model so it can switch from the station-logo fallback to
+      // album art only after the fill-cropped LCD thumbnail is valid.
+      Display::instance().render(DisplayPresenter::build(PlayerState::instance()));
+    } else {
+      Display::instance().refreshArtwork();
+    }
   }
   return true;
 }
@@ -2945,10 +3711,21 @@ bool ArtworkCache::importLocalImage(const String& url, const String& tempPath, S
   return true;
 }
 
-bool ArtworkCache::download(const String& url, String& outPath, uint32_t budgetMs, bool allowSecureFallback) {
+bool ArtworkCache::download(const String& url, String& outPath, uint32_t budgetMs, bool allowSecureFallback, const String& cacheKey) {
+  const String storageKey = cacheKey.length() ? cacheKey : url;
+  const bool fillFrame = cacheKey.startsWith("album:v2:") ||
+                         (cacheKey.startsWith("embedded:") &&
+                          AppConfig::instance().displayArtworkMode == "album");
   uint32_t deadlineMs = budgetMs > 0 ? millis() + budgetMs : 0;
 
+  auto albumSearchStillCurrent = [&]() {
+    if (!cacheKey.startsWith("album:v2:")) return true;
+    PlayerStateSnapshot current = PlayerState::instance().snapshot();
+    return current.playing && storageKey == String("album:v2:") + current.artist + "|" + current.title;
+  };
+
   auto attemptDownload = [&](const String& fetchUrl) -> bool {
+    if (!albumSearchStillCurrent()) return false;
     if (idlePrewarmCancellationRequested()) {
       noteDownloadStatus(String("idle prewarm cancelled ") + fetchUrl);
       return false;
@@ -2989,8 +3766,8 @@ bool ArtworkCache::download(const String& url, String& outPath, uint32_t budgetM
       client = &secureClient;
     }
 
-    uint32_t connectTimeout = boundedTimeoutMs(4000, deadlineMs);
-    uint32_t ioTimeout = boundedTimeoutMs(6000, deadlineMs);
+    uint32_t connectTimeout = boundedTimeoutMs(1800, deadlineMs);
+    uint32_t ioTimeout = boundedTimeoutMs(2500, deadlineMs);
     if (deadlineMs && (!connectTimeout || !ioTimeout)) {
       noteDownloadStatus(String("budget too small ") + fetchUrl);
       return false;
@@ -2999,10 +3776,10 @@ bool ArtworkCache::download(const String& url, String& outPath, uint32_t budgetM
     http.setConnectTimeout(connectTimeout);
     http.setTimeout(ioTimeout);
     http.setUserAgent("SimpleRadio/1.0 ESP32");
-    // Handle the HTTP-first -> HTTPS fallback ourselves. This prevents a
-    // hidden HTTPS redirect from opening a TLS connection while audio plays.
-    http.setFollowRedirects(HTTPC_DISABLE_FOLLOW_REDIRECTS);
-    http.setRedirectLimit(5);
+    http.setFollowRedirects(allowSecureFallback
+                                ? HTTPC_STRICT_FOLLOW_REDIRECTS
+                                : HTTPC_DISABLE_FOLLOW_REDIRECTS);
+    http.setRedirectLimit(4);
     const char* headerKeys[] = { "Content-Type" };
     http.collectHeaders(headerKeys, 1);
 
@@ -3052,7 +3829,7 @@ bool ArtworkCache::download(const String& url, String& outPath, uint32_t budgetM
     }
     enforceCacheBudget(length > 0 ? static_cast<size_t>(length) : MAX_ARTWORK_BYTES);
 
-    String tempPath = cachePath(url, ".tmp");
+    String tempPath = cachePath(storageKey, ".tmp");
     if (LittleFS.exists(tempPath)) {
       LittleFS.remove(tempPath);
     }
@@ -3071,11 +3848,20 @@ bool ArtworkCache::download(const String& url, String& outPath, uint32_t budgetM
     unsigned long lastReadMs = millis();
 
     bool cancelled = false;
+    bool albumCancelled = false;
+    unsigned long nextAlbumCheckMs = millis();
     while ((http.connected() || stream->available()) &&
            (length < 0 || written < static_cast<size_t>(length))) {
       if (idlePrewarmCancellationRequested()) {
         cancelled = true;
         break;
+      }
+      if (cacheKey.startsWith("album:v2:") && millis() >= nextAlbumCheckMs) {
+        nextAlbumCheckMs = millis() + 250;
+        if (!albumSearchStillCurrent()) {
+          albumCancelled = true;
+          break;
+        }
       }
       if (deadlineReached(deadlineMs)) break;
 
@@ -3096,8 +3882,12 @@ bool ArtworkCache::download(const String& url, String& outPath, uint32_t budgetM
         toRead = min(toRead, static_cast<size_t>(length) - written);
       }
 
-      int readLen = stream->readBytes(buffer, toRead);
-      if (readLen <= 0) break;
+      int readLen = stream->read(buffer, toRead);
+      if (readLen <= 0) {
+        if (millis() - lastReadMs > READ_IDLE_TIMEOUT_MS) break;
+        delay(1);
+        continue;
+      }
 
       file.write(buffer, readLen);
       written += readLen;
@@ -3113,9 +3903,9 @@ bool ArtworkCache::download(const String& url, String& outPath, uint32_t budgetM
     http.end();
     Serial.printf("[artwork] written=%u\n", static_cast<unsigned>(written));
 
-    if (cancelled || idlePrewarmCancellationRequested()) {
+    if (cancelled || albumCancelled || idlePrewarmCancellationRequested()) {
       LittleFS.remove(tempPath);
-      noteDownloadStatus(String("idle prewarm cancelled ") + fetchUrl);
+      noteDownloadStatus(String(albumCancelled ? "stale album lookup cancelled " : "idle prewarm cancelled ") + fetchUrl);
       return false;
     }
 
@@ -3130,10 +3920,11 @@ bool ArtworkCache::download(const String& url, String& outPath, uint32_t budgetM
 
     String extension = detectDownloadedExtension(tempPath);
     if (!extension.length()) {
-      if (extractIcoImage(tempPath, url, outPath)) {
+      if (extractIcoImage(tempPath, storageKey, outPath)) {
         LittleFS.remove(tempPath);
+        ensureLcdThumbnail(outPath, fillFrame);
         String compactedPath;
-        compactRemoteArtwork(url, outPath, compactedPath);
+        compactRemoteArtwork(storageKey, outPath, compactedPath, fillFrame);
         outPath = compactedPath;
         enforceCacheBudget(0, outPath);
         noteDownloadStatus(String("cached ico payload ") + outPath);
@@ -3144,7 +3935,7 @@ bool ArtworkCache::download(const String& url, String& outPath, uint32_t budgetM
       return false;
     }
 
-    String path = cachePath(url, extension);
+    String path = cachePath(storageKey, extension);
     if (LittleFS.exists(path)) {
       LittleFS.remove(path);
     }
@@ -3160,35 +3951,30 @@ bool ArtworkCache::download(const String& url, String& outPath, uint32_t budgetM
       lastTlsFailureUrl = "";
       lastTlsFailureMs = 0;
     }
-    if (ensureLcdThumbnail(path)) compactRemoteArtwork(url, path, outPath);
+    const bool thumbnailReady = ensureLcdThumbnail(path, fillFrame);
+    if (thumbnailReady) {
+      compactRemoteArtwork(storageKey, path, outPath, fillFrame);
+    } else if (fillFrame) {
+      albumArtTrace("image downloaded but LCD cover thumbnail failed: %s", path.c_str());
+    }
     enforceCacheBudget(0, outPath);
     noteDownloadStatus(String("cached ") + outPath);
     return true;
   };
 
-  if (url.startsWith("https://")) {
-    // Public artwork does not need a secure transport. Prefer plain HTTP so
-    // a secure audio stream does not have to coexist with a second TLS stack.
-    String httpUrl = "http://" + url.substring(8);
-    Serial.printf("[artwork] try without TLS first: %s\n", httpUrl.c_str());
-    noteDownloadStatus(String("try http first ") + httpUrl);
-    if (attemptDownload(httpUrl)) return true;
+  String smallerImageUrl = imgurThumbnailFallbackUrl(url);
+  if (!allowSecureFallback &&
+      (url.startsWith("https://") || smallerImageUrl.startsWith("https://"))) {
+    noteDownloadStatus(String("secure artwork deferred while audio plays ") + url);
+    return false;
+  }
+  if (smallerImageUrl.length() && smallerImageUrl != url) {
+    albumArtTrace("trying smaller Imgur image first");
+    if (attemptDownload(smallerImageUrl)) return true;
     if (deadlineReached(deadlineMs)) return false;
-    if (!allowSecureFallback) {
-      noteDownloadStatus(String("secure artwork deferred while audio plays ") + url);
-      return false;
-    }
   }
 
-  if (attemptDownload(url)) return true;
-  if (deadlineReached(deadlineMs)) return false;
-
-  String fallback = imgurThumbnailFallbackUrl(url);
-  if (fallback.length()) {
-    Serial.printf("[artwork] retry with thumbnail fallback: %s\n", fallback.c_str());
-    noteDownloadStatus(String("fallback ") + fallback);
-    return attemptDownload(fallback);
-  }
-
-  return false;
+  // Use the advertised HTTPS URL directly. Downgrading every provider URL to
+  // HTTP first wasted most of the per-image budget on redirects/timeouts.
+  return attemptDownload(url);
 }

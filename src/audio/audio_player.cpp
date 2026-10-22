@@ -15,6 +15,7 @@
 enum class QueuedAudioEventKind : uint8_t {
   Name,
   StreamTitle,
+  TrackMetadata,
   Bitrate,
   IcyLogo,
   Info,
@@ -42,8 +43,57 @@ static QueueHandle_t audioEventQueue = nullptr;
 static char lastQueuedName[AUDIO_EVENT_TEXT_BYTES] = {0};
 static char lastQueuedIcyLogo[AUDIO_EVENT_TEXT_BYTES] = {0};
 static char lastQueuedStreamTitle[AUDIO_EVENT_TEXT_BYTES] = {0};
+static char lastQueuedTrackMetadata[AUDIO_EVENT_TEXT_BYTES] = {0};
 static char lastQueuedBitrate[AUDIO_EVENT_TEXT_BYTES] = {0};
 static char lastQueuedInfo[AUDIO_EVENT_TEXT_BYTES] = {0};
+static String pendingMetadataArtist;
+static String pendingMetadataTitle;
+static String lastMetadataArtist;
+static String lastMetadataTitle;
+static bool pendingMetadataArtistSeen = false;
+static bool pendingMetadataTitleSeen = false;
+static unsigned long pendingMetadataSinceMs = 0;
+
+static bool parseTrackMetadataTag(const char* raw, String& field, String& value) {
+  if (!raw || !*raw) return false;
+  String text(raw);
+  text.trim();
+  int separator = text.indexOf('=');
+  if (separator < 0) separator = text.indexOf(':');
+  if (separator <= 0) return false;
+
+  String key = text.substring(0, separator);
+  key.trim();
+  key.toLowerCase();
+  if (key == "title" || key == "tit2" || key == "song" ||
+      key == "streamtitle" || key == "nowplaying") {
+    field = "title";
+  } else if (key == "artist" || key == "tpe1" || key == "performer" || key == "albumartist") {
+    field = "artist";
+  } else {
+    return false;
+  }
+
+  value = text.substring(separator + 1);
+  value.trim();
+  if (value.length() >= 2 &&
+      ((value[0] == '\"' && value[value.length() - 1] == '\"') ||
+       (value[0] == '\'' && value[value.length() - 1] == '\''))) {
+    value = value.substring(1, value.length() - 1);
+    value.trim();
+  }
+  return value.length() > 0;
+}
+
+static void resetTrackMetadataAccumulator() {
+  pendingMetadataArtist = "";
+  pendingMetadataTitle = "";
+  lastMetadataArtist = "";
+  lastMetadataTitle = "";
+  pendingMetadataArtistSeen = false;
+  pendingMetadataTitleSeen = false;
+  pendingMetadataSinceMs = 0;
+}
 
 static void copyEventText(char* out, size_t outSize, const char* text) {
   if (!out || outSize == 0) return;
@@ -84,8 +134,10 @@ static void resetQueuedAudioEventCache() {
   lastQueuedName[0] = '\0';
   lastQueuedIcyLogo[0] = '\0';
   lastQueuedStreamTitle[0] = '\0';
+  lastQueuedTrackMetadata[0] = '\0';
   lastQueuedBitrate[0] = '\0';
   lastQueuedInfo[0] = '\0';
+  resetTrackMetadataAccumulator();
 }
 
 static void enqueueDedupedTextEvent(QueuedAudioEventKind kind, const char* text) {
@@ -98,6 +150,8 @@ static void enqueueDedupedTextEvent(QueuedAudioEventKind kind, const char* text)
     previous = lastQueuedIcyLogo;
   } else if (kind == QueuedAudioEventKind::StreamTitle) {
     previous = lastQueuedStreamTitle;
+  } else if (kind == QueuedAudioEventKind::TrackMetadata) {
+    previous = lastQueuedTrackMetadata;
   } else if (kind == QueuedAudioEventKind::Bitrate) {
     previous = lastQueuedBitrate;
   } else if (kind == QueuedAudioEventKind::Info) {
@@ -212,6 +266,55 @@ static void updateCodecFromText(PlayerState& state, const char* text) {
   if (codec.length()) state.setCodec(codec);
 }
 
+static void processTrackMetadataTag(PlayerState& state, const char* raw) {
+  String field;
+  String value;
+  if (!parseTrackMetadataTag(raw, field, value)) return;
+
+  if (!pendingMetadataSinceMs) pendingMetadataSinceMs = millis();
+  if (field == "artist") {
+    pendingMetadataArtist = value;
+    pendingMetadataArtistSeen = true;
+  } else {
+    pendingMetadataTitle = value;
+    pendingMetadataTitleSeen = true;
+  }
+
+  if (pendingMetadataArtistSeen && pendingMetadataTitleSeen) {
+    lastMetadataArtist = pendingMetadataArtist;
+    lastMetadataTitle = pendingMetadataTitle;
+    state.setStreamArtistTitle(lastMetadataArtist, lastMetadataTitle);
+    pendingMetadataArtist = "";
+    pendingMetadataTitle = "";
+    pendingMetadataArtistSeen = false;
+    pendingMetadataTitleSeen = false;
+    pendingMetadataSinceMs = 0;
+  } else if (field == "artist" && !pendingMetadataTitleSeen && lastMetadataTitle.length()) {
+    lastMetadataArtist = value;
+    state.setStreamArtistTitle(lastMetadataArtist, lastMetadataTitle);
+    pendingMetadataArtist = "";
+    pendingMetadataArtistSeen = false;
+    pendingMetadataSinceMs = 0;
+  }
+}
+
+static void flushTrackMetadata(PlayerState& state) {
+  if (!pendingMetadataSinceMs || millis() - pendingMetadataSinceMs < 350) return;
+  if (pendingMetadataTitleSeen) {
+    lastMetadataTitle = pendingMetadataTitle;
+    lastMetadataArtist = pendingMetadataArtistSeen ? pendingMetadataArtist : "";
+    state.setStreamArtistTitle(lastMetadataArtist, lastMetadataTitle);
+  } else if (pendingMetadataArtistSeen && lastMetadataTitle.length()) {
+    lastMetadataArtist = pendingMetadataArtist;
+    state.setStreamArtistTitle(lastMetadataArtist, lastMetadataTitle);
+  }
+  pendingMetadataArtist = "";
+  pendingMetadataTitle = "";
+  pendingMetadataArtistSeen = false;
+  pendingMetadataTitleSeen = false;
+  pendingMetadataSinceMs = 0;
+}
+
 static String resolveStreamLogoUrl(const String& rawLogo, const String& streamUrl) {
   String logo = rawLogo;
   logo.trim();
@@ -249,6 +352,14 @@ static void audioInfo(Audio::msg_t m) {
     case Audio::evt_streamtitle:
       enqueueDedupedTextEvent(QueuedAudioEventKind::StreamTitle, m.msg);
       break;
+    case Audio::evt_id3data: {
+      String field;
+      String value;
+      if (parseTrackMetadataTag(m.msg, field, value)) {
+        enqueueDedupedTextEvent(QueuedAudioEventKind::TrackMetadata, m.msg);
+      }
+      break;
+    }
     case Audio::evt_bitrate:
       enqueueDedupedTextEvent(QueuedAudioEventKind::Bitrate, m.msg);
       break;
@@ -517,7 +628,12 @@ void AudioPlayer::processAudioEvents(uint8_t maxEvents) {
         break;
 
       case QueuedAudioEventKind::StreamTitle:
+        resetTrackMetadataAccumulator();
         state.setStreamTitle(event.text);
+        break;
+
+      case QueuedAudioEventKind::TrackMetadata:
+        processTrackMetadataTag(state, event.text);
         break;
 
       case QueuedAudioEventKind::Bitrate:
@@ -550,6 +666,7 @@ void AudioPlayer::processAudioEvents(uint8_t maxEvents) {
       }
     }
   }
+  flushTrackMetadata(state);
 }
 
 void AudioPlayer::abortStalledPlayback(uint32_t durationUs) {

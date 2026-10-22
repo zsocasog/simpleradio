@@ -82,6 +82,8 @@ bool AppConfig::save() {
   doc["displayClockEnabled"] = displayClockEnabled;
   doc["displayClockStyle"] = displayClockStyle;
   doc["displayFooterMode"] = displayFooterMode;
+  doc["displayArtworkMode"] = displayArtworkMode;
+  doc["lastFmApiKey"] = lastFmApiKey;
   doc["displayVuStyle"] = displayVuStyle;
   doc["displayVuSensitivity"] = displayVuSensitivity;
   doc["themeAccent"] = themeAccent;
@@ -164,6 +166,8 @@ String AppConfig::toJson() const {
   doc["displayClockEnabled"] = displayClockEnabled;
   doc["displayClockStyle"] = displayClockStyle;
   doc["displayFooterMode"] = displayFooterMode;
+  doc["displayArtworkMode"] = displayArtworkMode;
+  doc["hasLastFmApiKey"] = lastFmApiKey.length() > 0;
   doc["displayVuStyle"] = displayVuStyle;
   doc["displayVuSensitivity"] = displayVuSensitivity;
   doc["themeAccent"] = themeAccent;
@@ -258,6 +262,17 @@ bool AppConfig::applyJson(const JsonDocument& doc) {
       displayFooterMode = "volume";
     }
     displayFooterModeId = parseFooterMode(displayFooterMode);
+  }
+  if (doc["displayArtworkMode"].is<const char*>()) {
+    displayArtworkMode = doc["displayArtworkMode"].as<String>();
+    if (displayArtworkMode != "album") displayArtworkMode = "logo";
+  }
+  if (doc["clearLastFmApiKey"].is<bool>() && doc["clearLastFmApiKey"].as<bool>()) {
+    lastFmApiKey = "";
+  } else if (doc["lastFmApiKey"].is<const char*>()) {
+    String key = doc["lastFmApiKey"].as<String>();
+    key.trim();
+    if (key.length()) lastFmApiKey = key;
   }
   if (doc["displayVuStyle"].is<const char*>()) {
     displayVuStyle = doc["displayVuStyle"].as<String>();

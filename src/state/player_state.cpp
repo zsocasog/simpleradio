@@ -355,6 +355,7 @@ PlayerStateSnapshot PlayerState::snapshot() const {
   out.codec = codec;
   out.streamLogoUrl = streamLogoUrl;
   out.cachedArtworkPath = cachedArtworkPath;
+  out.albumArtworkPath = albumArtworkPath;
   out.embeddedArtworkKey = embeddedArtworkKey;
   out.hasStreamImage = hasStreamImage;
   return out;
@@ -384,6 +385,7 @@ String PlayerState::toJson() const {
   doc["codec"] = s.codec;
   doc["streamLogoUrl"] = s.streamLogoUrl;
   doc["cachedArtworkPath"] = s.cachedArtworkPath;
+  doc["albumArtworkPath"] = s.albumArtworkPath;
   doc["embeddedArtworkKey"] = s.embeddedArtworkKey;
   doc["hasStreamImage"] = s.hasStreamImage;
 
@@ -440,6 +442,7 @@ bool PlayerState::loadStation(int id, bool resetMetadata, bool markDirty) {
     changed |= clearStringIfNeeded(codec);
     changed |= clearStringIfNeeded(streamLogoUrl);
     changed |= clearStringIfNeeded(cachedArtworkPath);
+    changed |= clearStringIfNeeded(albumArtworkPath);
     changed |= clearStringIfNeeded(embeddedArtworkKey);
     if (hasStreamImage) {
       hasStreamImage = false;
@@ -480,6 +483,7 @@ bool PlayerState::clearStation(bool markDirty) {
   changed |= clearStringIfNeeded(codec);
   changed |= clearStringIfNeeded(streamLogoUrl);
   changed |= clearStringIfNeeded(cachedArtworkPath);
+  changed |= clearStringIfNeeded(albumArtworkPath);
   changed |= clearStringIfNeeded(embeddedArtworkKey);
 
   if (hasStreamImage) {
@@ -502,6 +506,7 @@ bool PlayerState::clearPlaybackMetadata(bool markDirty) {
   changed |= clearStringIfNeeded(codec);
   changed |= clearStringIfNeeded(streamLogoUrl);
   changed |= clearStringIfNeeded(cachedArtworkPath);
+  changed |= clearStringIfNeeded(albumArtworkPath);
   changed |= clearStringIfNeeded(embeddedArtworkKey);
 
   if (hasStreamImage) {
@@ -594,10 +599,6 @@ void PlayerState::setStreamConnectionState(StreamConnectionState state, uint8_t 
 }
 
 void PlayerState::setStreamTitle(const String& streamTitle) {
-  PlayerStateLock lock;
-  if (!lock.ok()) return;
-  if (!playing) return;
-
   String fullTitle = normalizeText(streamTitle);
   String nextArtist;
   String nextTitle = fullTitle;
@@ -608,10 +609,27 @@ void PlayerState::setStreamTitle(const String& streamTitle) {
     nextTitle = fullTitle.substring(sep + 3);
   }
 
+  setStreamArtistTitle(nextArtist, nextTitle);
+}
+
+void PlayerState::setStreamArtistTitle(const String& streamArtist, const String& streamTitle) {
+  PlayerStateLock lock;
+  if (!lock.ok() || !playing) return;
+
+  String nextArtist = normalizeText(streamArtist);
+  String nextTitle = normalizeText(streamTitle);
+  nextArtist.trim();
+  nextTitle.trim();
+
   if (artist == nextArtist && title == nextTitle) return;
 
+  const bool previousArtworkWasEmbedded = hasStreamImage || embeddedArtworkKey.length();
   artist = nextArtist;
   title = nextTitle;
+  albumArtworkPath = "";
+  embeddedArtworkKey = "";
+  hasStreamImage = false;
+  if (previousArtworkWasEmbedded) cachedArtworkPath = "";
   markPlayerStateDirty();
 }
 
@@ -636,12 +654,21 @@ void PlayerState::setCachedArtworkPath(const String& path) {
   markPlayerStateDirty();
 }
 
+void PlayerState::setAlbumArtworkPath(const String& path) {
+  PlayerStateLock lock;
+  if (!lock.ok()) return;
+  if (albumArtworkPath == path) return;
+  albumArtworkPath = path;
+  markPlayerStateDirty();
+}
+
 void PlayerState::setEmbeddedArtworkKey(const String& key) {
   PlayerStateLock lock;
   if (!lock.ok()) return;
   if (!playing) return;
 
   if (embeddedArtworkKey == key && hasStreamImage) return;
+  if (embeddedArtworkKey != key) cachedArtworkPath = "";
   embeddedArtworkKey = key;
   hasStreamImage = key.length() > 0;
   markPlayerStateDirty();

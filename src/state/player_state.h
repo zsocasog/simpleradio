@@ -32,6 +32,7 @@ struct PlayerStateSnapshot {
   String codec;
   String streamLogoUrl;
   String cachedArtworkPath;
+  String albumArtworkPath;
   String embeddedArtworkKey;
   bool hasStreamImage = false;
 };
@@ -60,6 +61,7 @@ public:
   String codec;
   String streamLogoUrl;
   String cachedArtworkPath;
+  String albumArtworkPath;
   String embeddedArtworkKey;
   bool hasStreamImage = false;
 
@@ -71,8 +73,10 @@ public:
   bool clearStation(bool markDirty = true);
   bool clearPlaybackMetadata(bool markDirty = true);
   void setStreamTitle(const String& streamTitle);
+  void setStreamArtistTitle(const String& streamArtist, const String& streamTitle);
   void setStreamLogoUrl(const String& logoUrl);
   void setCachedArtworkPath(const String& path);
+  void setAlbumArtworkPath(const String& path);
   void setEmbeddedArtworkKey(const String& key);
   void setStationName(const String& name);
   void setBitrate(const String& value);

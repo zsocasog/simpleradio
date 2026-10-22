@@ -977,7 +977,8 @@ async function uploadStationLogo(stationId, logoUrl) {
 
 async function cacheArtworkViaBrowser(state) {
   const sourceUrl = state?.streamLogoUrl || state?.stationLogo || "";
-  if (!remoteUrl(sourceUrl) || state?.cachedArtworkPath) return;
+  const cachedPath = String(state?.cachedArtworkPath || "");
+  if (!remoteUrl(sourceUrl) || (cachedPath && !cachedPath.toLowerCase().endsWith(".sr565"))) return;
 
   const cached = browserArtworkCache.get(sourceUrl);
   const now = Date.now();
@@ -1847,6 +1848,7 @@ function collectConfig() {
     displayClockEnabled: $("displayClockEnabled").checked ? "1" : "0",
     displayClockStyle: $("displayClockStyle").value,
     displayFooterMode: $("displayFooterMode").value,
+    displayArtworkMode: $("displayArtworkMode").value,
     displayVuStyle: $("displayVuStyle").value,
     displayVuSensitivity: $("displayVuSensitivity").value,
     themeAccent: normalizeThemeAccent($("themeAccent").value),
@@ -1884,6 +1886,9 @@ function collectConfig() {
     frontLedStandbyBrightness: $("frontLedStandbyBrightness").value,
     frontLedColor: normalizeHexColor($("frontLedColor").value)
   };
+  const lastFmApiKey = $("lastFmApiKey").value.trim();
+  if (lastFmApiKey) data.lastFmApiKey = lastFmApiKey;
+  data.clearLastFmApiKey = $("clearLastFmApiKey").checked ? "1" : "0";
   irActions.forEach(item => {
     data[irKey(item.action)] = String(currentConfig[irKey(item.action)] || "0");
   });
@@ -1905,17 +1910,31 @@ async function postConfig() {
   let savedOk = false;
 
   try {
+    const submittedConfig = collectConfig();
     const response = await fetch("/api/config/save", {
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams(collectConfig())
+      body: new URLSearchParams(submittedConfig)
     });
     if (!response.ok) throw new Error(`Config save failed: ${response.status}`);
-    applyConfigToUI(await response.json());
+    const savedConfig = await response.json();
+    applyConfigToUI(savedConfig);
+    const keyStatus = $("lastFmApiKeyStatus");
+    if (submittedConfig.lastFmApiKey) {
+      setText("lastFmApiKeyStatus", "A Last.fm API-kulcs sikeresen elmentve.");
+      keyStatus?.classList.add("is-saved");
+      keyStatus?.classList.remove("is-error");
+    } else if (submittedConfig.clearLastFmApiKey === "1") {
+      setText("lastFmApiKeyStatus", "A mentett Last.fm API-kulcs törölve.");
+      keyStatus?.classList.remove("is-saved", "is-error");
+    }
     savedOk = true;
     return true;
   } catch (err) {
     console.warn("Config save failed", err);
+    setText("lastFmApiKeyStatus", "A mentés nem sikerült. Ellenőrizd a kapcsolatot, majd próbáld újra.");
+    $("lastFmApiKeyStatus")?.classList.add("is-error");
+    $("lastFmApiKeyStatus")?.classList.remove("is-saved");
     return false;
   } finally {
     configSaving = false;
@@ -1937,6 +1956,13 @@ function queueConfigSave() {
 function saveConfigNow() {
   clearTimeout(configSaveTimer);
   postConfig();
+}
+
+function setLastFmKeyPending() {
+  const status = $("lastFmApiKeyStatus");
+  if (!status) return;
+  setText("lastFmApiKeyStatus", "A kulcs még nincs elmentve — kattints az API-kulcs mentése gombra.");
+  status.classList.remove("is-saved", "is-error");
 }
 
 function syncEqLabels(low, mid, high) {
@@ -2042,6 +2068,13 @@ function applyConfigToUI(config) {
   $("displayClockEnabled").checked = !!config.displayClockEnabled;
   setValue("displayClockStyle", config.displayClockStyle || "digital");
   setValue("displayFooterMode", config.displayFooterMode || "volume");
+  setValue("displayArtworkMode", config.displayArtworkMode || "logo");
+  setValue("lastFmApiKey", "");
+  $("lastFmApiKey").placeholder = config.hasLastFmApiKey ? "Van mentett kulcs — üresen hagyva megmarad" : "API-kulcs beillesztése";
+  $("clearLastFmApiKey").checked = false;
+  setText("lastFmApiKeyStatus", config.hasLastFmApiKey ? "API-kulcs elmentve. A mező biztonsági okból nem jeleníti meg." : "A kulcs nincs megadva.");
+  $("lastFmApiKeyStatus")?.classList.toggle("is-saved", !!config.hasLastFmApiKey);
+  $("lastFmApiKeyStatus")?.classList.remove("is-error");
   setValue("displayVuStyle", config.displayVuStyle || "bars");
   setValue("displayVuSensitivity", config.displayVuSensitivity || 100);
   setRawPercentLabel("displayVuSensitivity");
@@ -2152,10 +2185,15 @@ function applyArtworkNode(node, path, key, fallbackText = "SR") {
 function updateCover(state) {
   const cachedPath = String(state.cachedArtworkPath || "");
   const webCachedPath = cachedPath.toLowerCase().endsWith(".sr565") ? "" : cachedPath;
-  const path = webCachedPath || state.streamLogoUrl || state.stationLogo || "";
+  const albumPath = String(state.albumArtworkPath || "");
+  const webAlbumPath = albumPath.toLowerCase().endsWith(".sr565") ? "" : albumPath;
+  const useAlbum = currentConfig.displayArtworkMode === "album";
+  const path = (useAlbum && state.hasStreamImage && webCachedPath) ||
+    (useAlbum && webAlbumPath) || webCachedPath || state.streamLogoUrl || state.stationLogo || "";
   const logoKey = [
     state.stationId,
     state.cachedArtworkPath || "",
+    state.albumArtworkPath || "",
     state.streamLogoUrl || "",
     state.stationLogo || "",
   ].join("|");

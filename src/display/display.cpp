@@ -1035,7 +1035,7 @@ static void drawArt(const DisplayModel& m) {
   uint16_t matLine = logoMatLine();
   drawArtFrame(cBg, matLine);
 
-  String thumbPath = ArtworkCache::instance().lcdThumbnailPath(m.logoPath);
+  String thumbPath = ArtworkCache::instance().lcdThumbnailPath(m.logoPath, m.isAlbumArtwork);
   if (thumbPath.length()) {
     if (LittleFS.exists(thumbPath) && drawLcdThumbnail(thumbPath)) {
       return;
@@ -1044,7 +1044,7 @@ static void drawArt(const DisplayModel& m) {
       drawArtPlaceholder(m);
       return;
     }
-    ArtworkCache::instance().ensureLcdThumbnail(m.logoPath);
+    ArtworkCache::instance().ensureLcdThumbnail(m.logoPath, m.isAlbumArtwork);
     if (LittleFS.exists(thumbPath) && drawLcdThumbnail(thumbPath)) {
       return;
     }
@@ -1057,7 +1057,9 @@ static void drawArt(const DisplayModel& m) {
     return;
   }
 
-  float scale = min(static_cast<float>(ART_SIZE) / size.width, static_cast<float>(ART_SIZE) / size.height);
+  float scale = m.isAlbumArtwork
+                  ? max(static_cast<float>(ART_SIZE) / size.width, static_cast<float>(ART_SIZE) / size.height)
+                  : min(static_cast<float>(ART_SIZE) / size.width, static_cast<float>(ART_SIZE) / size.height);
   int32_t scaledW = static_cast<int32_t>(ceilf(size.width * scale));
   int32_t scaledH = static_cast<int32_t>(ceilf(size.height * scale));
   int32_t drawX = ART_X + (ART_SIZE - scaledW) / 2;
@@ -1110,7 +1112,7 @@ String Display::artRenderKeyFor(const DisplayModel& m) const {
     return String("placeholder:") + m.station;
   }
 
-  String thumbPath = ArtworkCache::instance().lcdThumbnailPath(m.logoPath);
+  String thumbPath = ArtworkCache::instance().lcdThumbnailPath(m.logoPath, m.isAlbumArtwork);
   if (thumbPath.length() && LittleFS.exists(thumbPath)) {
     return String("thumb:") + thumbPath;
   }
@@ -3147,6 +3149,8 @@ void Display::renderPartial(const DisplayModel& previous, bool footerModeChanged
                                    previous.station == m.station &&
                                    !previous.hasStreamImage &&
                                    !m.hasStreamImage &&
+                                   !previous.albumArtworkMode &&
+                                   !m.albumArtworkMode &&
                                    readyArtKey(previousArtKey) &&
                                    readyArtKey(currentArtKey);
   if (equivalentStationLogoSwap) {

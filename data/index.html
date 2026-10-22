@@ -300,6 +300,15 @@
 
             <div class="settings-column">
               <section class="settings-section">
+                <header class="settings-section-head"><h2>Lejátszó képe</h2><small>A főképernyőn és a webes lejátszón megjelenő kép</small></header>
+                <label class="setting-row"><span>Képforrás</span>
+                  <select id="displayArtworkMode" onchange="saveConfigNow()">
+                    <option value="logo">Állomáslogó</option>
+                    <option value="album">Albumborító, ha elérhető</option>
+                  </select>
+                </label>
+              </section>
+              <section class="settings-section">
                 <header class="settings-section-head"><h2>Alsó kijelzősáv</h2><small>A lejátszóképernyő alsó információs területe</small></header>
                 <label class="setting-row"><span>Alsó kijelzősáv</span>
                   <select id="displayFooterMode" onchange="syncDisplayFooterMode(); saveConfigNow()">
@@ -520,6 +529,24 @@
               <small id="statusAboutVersion">Firmware - · WebUI -</small>
             </div>
           </div>
+        </article>
+
+        <article class="panel settings-section lastfm-settings-panel">
+          <header class="settings-section-head">
+            <h2>Last.fm albumborító-keresés</h2>
+            <small>Másodlagos forrásként segíthet olyan számoknál, amelyekhez a többi adatbázis nem ad borítót.</small>
+          </header>
+          <div class="settings-fields">
+            <label class="lastfm-key-field"><span>Last.fm API key</span><input id="lastFmApiKey" name="lastfm-api-key" type="password" autocomplete="new-password" autocapitalize="none" spellcheck="false" data-form-type="other" data-1p-ignore data-lpignore="true" data-bwignore placeholder="API-kulcs beillesztése" oninput="setLastFmKeyPending()"></label>
+            <label class="setting-row setting-toggle"><span class="setting-copy"><strong>Mentett kulcs törlése</strong></span><span class="toggle-switch"><input id="clearLastFmApiKey" type="checkbox" onchange="saveConfigNow()"><span></span></span></label>
+          </div>
+          <small id="lastFmApiKeyStatus" class="form-note">A kulcs nincs megadva.</small>
+          <button class="primary" type="button" data-config-save onclick="saveConfigNow()">API-kulcs mentése</button>
+          <ol class="lastfm-key-help">
+            <li>Jelentkezz be a Last.fm-fiókodba, majd nyisd meg a <a href="https://www.last.fm/api/account/create" target="_blank" rel="noopener noreferrer">Last.fm API-fiók létrehozása</a> oldalt.</li>
+            <li>Adj nevet az alkalmazásnak (például SimpleRadio), töltsd ki a kért adatokat, majd hozd létre az API-fiókot.</li>
+            <li>Az ott megjelenő <strong>API key</strong> értéket másold a fenti mezőbe, és mentsd a beállításokat. A megosztott titok (shared secret) nem szükséges.</li>
+          </ol>
         </article>
 
         <article class="panel ota-panel">

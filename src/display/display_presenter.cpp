@@ -2,6 +2,7 @@
 #include <LittleFS.h>
 #include <WiFi.h>
 #include "../artwork/artwork_cache.h"
+#include "../config/app_config.h"
 #include "../wifi/wifi_manager.h"
 
 static constexpr int META_SCROLL_THRESHOLD = 26;
@@ -84,6 +85,7 @@ DisplayModel DisplayPresenter::build(const PlayerState& s) {
   m.codec = state.codec;
   m.streamLogoUrl = state.streamLogoUrl;
   m.hasStreamImage = state.hasStreamImage;
+  m.albumArtworkMode = AppConfig::instance().displayArtworkMode == "album";
   m.logoPath = state.cachedArtworkPath.length() ? state.cachedArtworkPath : localLcdLogoPath(state.stationLogo);
   if (!state.cachedArtworkPath.length()) {
     String cachedPath;
@@ -98,6 +100,42 @@ DisplayModel DisplayPresenter::build(const PlayerState& s) {
                (ArtworkCache::instance().findExistingLcdArtworkPath(state.stationLogo, cachedPath) ||
                 ArtworkCache::instance().findExistingCachePath(state.stationLogo, cachedPath))) {
       m.logoPath = cachedPath;
+    }
+  }
+
+  if (m.albumArtworkMode) {
+    String stationFallbackPath = localLcdLogoPath(state.stationLogo);
+    String cachedLogoPath;
+    if (isRemoteUrl(state.streamLogoUrl) &&
+        (ArtworkCache::instance().findExistingLcdArtworkPath(state.streamLogoUrl, cachedLogoPath) ||
+         ArtworkCache::instance().findExistingCachePath(state.streamLogoUrl, cachedLogoPath))) {
+      stationFallbackPath = cachedLogoPath;
+    } else if (isRemoteUrl(state.stationLogo) &&
+               (ArtworkCache::instance().findExistingLcdArtworkPath(state.stationLogo, cachedLogoPath) ||
+                ArtworkCache::instance().findExistingCachePath(state.stationLogo, cachedLogoPath))) {
+      stationFallbackPath = cachedLogoPath;
+    }
+    if (!state.hasStreamImage && state.cachedArtworkPath.length() &&
+        state.cachedArtworkPath != state.albumArtworkPath && LittleFS.exists(state.cachedArtworkPath)) {
+      stationFallbackPath = state.cachedArtworkPath;
+    }
+
+    m.logoPath = stationFallbackPath;
+    m.isAlbumArtwork = false;
+    String streamImagePath;
+    if (state.hasStreamImage && state.embeddedArtworkKey.length() &&
+        ArtworkCache::instance().findExistingCachePath(state.embeddedArtworkKey, streamImagePath) &&
+        ArtworkCache::instance().lcdThumbnailReady(streamImagePath, true)) {
+      m.logoPath = streamImagePath;
+      m.isAlbumArtwork = true;
+    } else if (state.hasStreamImage && state.cachedArtworkPath.length() &&
+               ArtworkCache::instance().lcdThumbnailReady(state.cachedArtworkPath, true)) {
+      m.logoPath = state.cachedArtworkPath;
+      m.isAlbumArtwork = true;
+    } else if (state.albumArtworkPath.length() && LittleFS.exists(state.albumArtworkPath) &&
+               ArtworkCache::instance().lcdThumbnailReady(state.albumArtworkPath, true)) {
+      m.logoPath = state.albumArtworkPath;
+      m.isAlbumArtwork = true;
     }
   }
 
