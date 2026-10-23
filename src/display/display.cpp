@@ -84,6 +84,7 @@ static constexpr int PLAYER_H = SCREEN_H;
 static constexpr int ART_X = sx(22);
 static constexpr int ART_Y = sy(52);
 static constexpr int ART_SIZE = ss(176);
+static constexpr int ART_CORNER_RADIUS = ss(5);
 static constexpr int INFO_X = sx(214);
 static constexpr int INFO_W = SCREEN_W - INFO_X - sx(22);
 static constexpr int TITLE_CENTER_Y = sy(98);
@@ -931,16 +932,51 @@ static void drawArtFrame(uint16_t fill, uint16_t line) {
                     ART_Y - thickness,
                     ART_SIZE + thickness * 2,
                     ART_SIZE + thickness * 2,
-                    ss(8),
+                    ART_CORNER_RADIUS + thickness,
                     fill);
   for (int pad = thickness; pad > 0; --pad) {
     lcd.drawRoundRect(ART_X - pad,
                       ART_Y - pad,
                       ART_SIZE + pad * 2,
                       ART_SIZE + pad * 2,
-                      max(1, ss(5) + pad),
+                      max(1, ART_CORNER_RADIUS + pad),
                       line);
   }
+}
+
+static int artRowInset(int y) {
+  const int edge = min(y, ART_SIZE - 1 - y);
+  if (edge >= ART_CORNER_RADIUS || ART_CORNER_RADIUS <= 0) return 0;
+  const float dy = ART_CORNER_RADIUS - edge - 0.5f;
+  return max(0, static_cast<int>(ceilf(ART_CORNER_RADIUS -
+             sqrtf(ART_CORNER_RADIUS * ART_CORNER_RADIUS - dy * dy) - 0.5f)));
+}
+
+// The raw RGB565 fast path must obey the same rounded aperture as decoded
+// images. Only the corner rows need clipping; the center stays a block write.
+static void writeArtRows(const uint16_t* pixels, int y, int rowCount) {
+  if (y >= ART_CORNER_RADIUS && y + rowCount <= ART_SIZE - ART_CORNER_RADIUS) {
+    lcd.setAddrWindow(ART_X, ART_Y + y, ART_SIZE, rowCount);
+    lcd.writePixels(pixels, ART_SIZE * rowCount, false);
+    return;
+  }
+  for (int row = 0; row < rowCount; ++row) {
+    const int inset = artRowInset(y + row);
+    const int width = ART_SIZE - 2 * inset;
+    lcd.setAddrWindow(ART_X + inset, ART_Y + y + row, width, 1);
+    lcd.writePixels(pixels + row * ART_SIZE + inset, width, false);
+  }
+}
+
+static void maskArtCorners() {
+  lcd.startWrite();
+  for (int y = 0; y < ART_SIZE; ++y) {
+    const int inset = artRowInset(y);
+    if (!inset) continue;
+    lcd.drawFastHLine(ART_X, ART_Y + y, inset, cBg);
+    lcd.drawFastHLine(ART_X + ART_SIZE - inset, ART_Y + y, inset, cBg);
+  }
+  lcd.endWrite();
 }
 
 static bool drawLcdThumbnail(const String& path) {
@@ -964,7 +1000,6 @@ static bool drawLcdThumbnail(const String& path) {
   static uint16_t rows[ART_SIZE * THUMB_ROWS_PER_CHUNK];
   bool ok = true;
   lcd.startWrite();
-  lcd.setAddrWindow(ART_X, ART_Y, ART_SIZE, ART_SIZE);
   for (int y = 0; y < ART_SIZE; y += THUMB_ROWS_PER_CHUNK) {
     int rowCount = min(THUMB_ROWS_PER_CHUNK, ART_SIZE - y);
     size_t bytes = static_cast<size_t>(ART_SIZE) * rowCount * sizeof(uint16_t);
@@ -972,7 +1007,7 @@ static bool drawLcdThumbnail(const String& path) {
       ok = false;
       break;
     }
-    lcd.writePixels(rows, ART_SIZE * rowCount, false);
+    writeArtRows(rows, y, rowCount);
   }
   lcd.endWrite();
   file.close();
@@ -1060,10 +1095,6 @@ static void drawArt(const DisplayModel& m) {
   float scale = m.isAlbumArtwork
                   ? max(static_cast<float>(ART_SIZE) / size.width, static_cast<float>(ART_SIZE) / size.height)
                   : min(static_cast<float>(ART_SIZE) / size.width, static_cast<float>(ART_SIZE) / size.height);
-  int32_t scaledW = static_cast<int32_t>(ceilf(size.width * scale));
-  int32_t scaledH = static_cast<int32_t>(ceilf(size.height * scale));
-  int32_t drawX = ART_X + (ART_SIZE - scaledW) / 2;
-  int32_t drawY = ART_Y + (ART_SIZE - scaledH) / 2;
 
   bool drawn = false;
   lgfx::LGFX_Sprite art(&lcd);
@@ -1073,33 +1104,38 @@ static void drawArt(const DisplayModel& m) {
   if (buffer) {
     art.fillSprite(cBg);
     if (path.endsWith(".jpg") || path.endsWith(".jpeg")) {
-      drawn = art.drawJpgFile(LittleFS, m.logoPath.c_str(), drawX - ART_X, drawY - ART_Y, ART_SIZE, ART_SIZE, 0, 0, scale, scale, top_left);
+      drawn = art.drawJpgFile(LittleFS, m.logoPath.c_str(), 0, 0, ART_SIZE, ART_SIZE, 0, 0, scale, scale, middle_center);
     } else if (path.endsWith(".png")) {
-      drawn = art.drawPngFile(LittleFS, m.logoPath.c_str(), drawX - ART_X, drawY - ART_Y, ART_SIZE, ART_SIZE, 0, 0, scale, scale, top_left);
+      drawn = art.drawPngFile(LittleFS, m.logoPath.c_str(), 0, 0, ART_SIZE, ART_SIZE, 0, 0, scale, scale, middle_center);
       art.releasePngMemory();
     } else if (path.endsWith(".bmp")) {
-      drawn = art.drawBmpFile(LittleFS, m.logoPath.c_str(), drawX - ART_X, drawY - ART_Y, ART_SIZE, ART_SIZE, 0, 0, scale, scale, top_left);
+      drawn = art.drawBmpFile(LittleFS, m.logoPath.c_str(), 0, 0, ART_SIZE, ART_SIZE, 0, 0, scale, scale, middle_center);
     }
-    if (drawn) art.pushSprite(ART_X, ART_Y);
+    if (drawn) {
+      lcd.startWrite();
+      writeArtRows(static_cast<const uint16_t*>(art.getBuffer()), 0, ART_SIZE);
+      lcd.endWrite();
+    }
     art.deleteSprite();
   }
 
   if (path.endsWith(".jpg") || path.endsWith(".jpeg")) {
     if (!drawn) {
-      drawn = lcd.drawJpgFile(LittleFS, m.logoPath.c_str(), drawX, drawY, ART_SIZE, ART_SIZE, 0, 0, scale, scale, top_left);
+      drawn = lcd.drawJpgFile(LittleFS, m.logoPath.c_str(), ART_X, ART_Y, ART_SIZE, ART_SIZE, 0, 0, scale, scale, middle_center);
     }
   } else if (path.endsWith(".png")) {
     if (!drawn) {
-      drawn = lcd.drawPngFile(LittleFS, m.logoPath.c_str(), drawX, drawY, ART_SIZE, ART_SIZE, 0, 0, scale, scale, top_left);
+      drawn = lcd.drawPngFile(LittleFS, m.logoPath.c_str(), ART_X, ART_Y, ART_SIZE, ART_SIZE, 0, 0, scale, scale, middle_center);
       lcd.releasePngMemory();
     }
   } else if (path.endsWith(".bmp")) {
     if (!drawn) {
-      drawn = lcd.drawBmpFile(LittleFS, m.logoPath.c_str(), drawX, drawY, ART_SIZE, ART_SIZE, 0, 0, scale, scale, top_left);
+      drawn = lcd.drawBmpFile(LittleFS, m.logoPath.c_str(), ART_X, ART_Y, ART_SIZE, ART_SIZE, 0, 0, scale, scale, middle_center);
     }
   }
 
   if (drawn) {
+    maskArtCorners();
     Serial.printf("[display] logo drawn: %s %ux%u scale=%.2f\n", m.logoPath.c_str(), size.width, size.height, scale);
   } else {
     Serial.printf("[display] logo draw failed: %s %ux%u scale=%.2f\n", m.logoPath.c_str(), size.width, size.height, scale);

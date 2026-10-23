@@ -1,13 +1,11 @@
 #include "artwork_cache.h"
+#include "artwork_http.h"
 
 #include <Arduino.h>
 static auto& artworkTraceSerial = Serial;
 #include <ArduinoJson.h>
-#include <HTTPClient.h>
 #include <LittleFS.h>
 #include <LovyanGFX.hpp>
-#include <NetworkClient.h>
-#include <NetworkClientSecure.h>
 #include <esp_heap_caps.h>
 #include <mbedtls/base64.h>
 #include <algorithm>
@@ -39,12 +37,11 @@ static constexpr unsigned long PREWARM_IDLE_SPACING_MS = 10000;
 static constexpr unsigned long ARTWORK_STARTUP_GRACE_MS = 20000;
 static constexpr unsigned long PREWARM_FAILURE_RETRY_MS = 30000;
 static constexpr unsigned long PENDING_PLAYBACK_TIMEOUT_MS = 5000;
-static constexpr unsigned long TLS_FAILURE_COOLDOWN_MS = 300000;
-static constexpr unsigned long CURRENT_ARTWORK_TLS_RETRY_MS = 30000;
 static constexpr unsigned long CURRENT_ARTWORK_TLS_GRACE_MS = 5000;
-static constexpr unsigned long READ_IDLE_TIMEOUT_MS = 3500;
-static constexpr unsigned long ALBUM_ART_LOOKUP_BUDGET_MS = 22000;
-static constexpr unsigned long ALBUM_ART_IMAGE_BUDGET_MS = 3500;
+static constexpr unsigned long ALBUM_ART_LOOKUP_BUDGET_MS = 35000;
+static constexpr unsigned long ALBUM_ART_IMAGE_BUDGET_MS = 12000;
+static constexpr unsigned long ALBUM_ART_MISSING_RETRY_MS = 120000;
+static constexpr const char* ALBUM_ART_CACHE_PREFIX = "album:v4:";
 static constexpr size_t PREWARM_QUEUE_LIMIT = 160;
 static constexpr uint32_t MIN_BUDGETED_HTTP_MS = 500;
 static constexpr BaseType_t ARTWORK_TASK_CORE = 1;
@@ -247,7 +244,7 @@ void ArtworkCache::loop() {
   if (takeDownloadResult(completedUrl, completedPath, completedOk)) {
     if (!completedOk) {
       if (completedUrl.startsWith("album:")) {
-        String activeKey = "album:v2:" + state.artist + "|" + state.title;
+        String activeKey = String(ALBUM_ART_CACHE_PREFIX) + state.artist + "|" + state.title;
         if (state.playing && completedUrl == activeKey) {
           lastAlbumLookupKey = completedUrl;
           lastAlbumLookupMs = millis();
@@ -255,6 +252,18 @@ void ArtworkCache::loop() {
           PlayerState::instance().setAlbumArtworkPath("");
           previousAlbumArtworkPath = "";
           if (oldPath.length()) removeCachedArtworkFamily(oldPath);
+          Display::instance().render(DisplayPresenter::build(PlayerState::instance()));
+        }
+      } else if (completedUrl.startsWith("thumbfill:")) {
+        const String failedPath = completedUrl.substring(10);
+        if (failedPath == state.albumArtworkPath && failedPath.startsWith("/cache/")) {
+          // Repair covers left by older firmware that were web-readable but
+          // never decodable on the LCD; otherwise the cache blocks a new lookup.
+          PlayerState::instance().setAlbumArtworkPath("");
+          removeCachedArtworkFamily(failedPath);
+          lastAlbumLookupKey = "";
+          lastAlbumLookupMs = 0;
+          previousAlbumArtworkPath = "";
           Display::instance().render(DisplayPresenter::build(PlayerState::instance()));
         }
       } else {
@@ -276,7 +285,7 @@ void ArtworkCache::loop() {
         if (!completedUrl.startsWith("thumb")) notePrewarmFailure(completedUrl);
       }
     } else if (completedUrl.startsWith("album:")) {
-      String activeKey = "album:v2:" + state.artist + "|" + state.title;
+      String activeKey = String(ALBUM_ART_CACHE_PREFIX) + state.artist + "|" + state.title;
       if (state.playing && completedUrl == activeKey) {
         String oldPath = previousAlbumArtworkPath;
         if (completedPath.length()) {
@@ -319,7 +328,7 @@ void ArtworkCache::loop() {
   }
 
   AppConfig& config = AppConfig::instance();
-  const String requestedAlbumKey = "album:v2:" + state.artist + "|" + state.title;
+  const String requestedAlbumKey = String(ALBUM_ART_CACHE_PREFIX) + state.artist + "|" + state.title;
   String sourceUrl = currentArtworkUrl();
   if (!sourceUrl.length() &&
       state.stationId == deferredArtworkStationId &&
@@ -431,8 +440,10 @@ void ArtworkCache::loop() {
       }
       requestLcdThumbnail(existingAlbumPath, false, true);
       refreshArtworkIfThumbnailReady(existingAlbumPath, PlayerState::instance().snapshot(), true);
-    } else if (!(lastAlbumLookupKey == requestedAlbumKey &&
-                 millis() - lastAlbumLookupMs < MISSING_ARTWORK_RETRY_MS)) {
+    } else if (audioConnectionReady && audioConnectionReadyMs > 0 &&
+               millis() - audioConnectionReadyMs >= 1500 &&
+               !(lastAlbumLookupKey == requestedAlbumKey &&
+                 millis() - lastAlbumLookupMs < ALBUM_ART_MISSING_RETRY_MS)) {
       lastAlbumLookupKey = requestedAlbumKey;
       lastAlbumLookupMs = millis();
       if (startAlbumArtworkTask(state.artist, state.title, requestedAlbumKey)) return;
@@ -456,8 +467,10 @@ void ArtworkCache::loop() {
     unsigned long now = millis();
     if (sourceUrl == lastUrl &&
         state.cachedArtworkPath.length()) {
-      requestLcdThumbnail(state.cachedArtworkPath);
-      refreshArtworkIfThumbnailReady(state.cachedArtworkPath, state);
+      if (!albumThumbnailReady && !embeddedThumbnailReady) {
+        requestLcdThumbnail(state.cachedArtworkPath);
+        refreshArtworkIfThumbnailReady(state.cachedArtworkPath, state);
+      }
       serviceIdlePrewarmAndPendingPlayback();
       return;
     }
@@ -1175,31 +1188,28 @@ static String encodeArtworkQuery(const String& value) {
   return output;
 }
 
-static bool fetchArtworkJson(const String& url, JsonDocument& doc) {
-  HTTPClient http;
-  NetworkClient plainClient;
-  NetworkClientSecure secureClient;
-  NetworkClient* client = &plainClient;
-  if (url.startsWith("https://")) {
-    secureClient.setInsecure();
-    client = &secureClient;
+static bool fetchArtworkJson(const String& url, JsonDocument& doc,
+                             uint32_t deadlineMs = 0,
+                             const std::function<bool()>& cancelled = {}) {
+  ArtworkHttp::Options options;
+  options.deadlineMs = deadlineMs;
+  options.cancelled = cancelled;
+  ArtworkHttp::Response response;
+  if (!ArtworkHttp::get(url, 192 * 1024, response, options)) {
+    albumArtTrace("JSON %s: %s", ArtworkHttp::host(url).c_str(), response.error.c_str());
+    return false;
   }
-  http.setConnectTimeout(3500);
-  http.setTimeout(4000);
-  http.setUserAgent("SimpleRadio/0.8.24 (https://github.com/gidano/SimpleRadio)");
-  http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
-  http.setRedirectLimit(4);
-  if (!http.begin(*client, url)) return false;
-  http.addHeader("Accept", "application/json");
-  int code = http.GET();
-  bool ok = code == HTTP_CODE_OK && deserializeJson(doc, http.getStream()) == DeserializationError::Ok;
-  http.end();
-  return ok;
+  // Treat input as read-only: the document must own its strings after this
+  // temporary response buffer is released.
+  const DeserializationError error = deserializeJson(
+      doc, static_cast<const uint8_t*>(response.data), response.size);
+  if (error != DeserializationError::Ok) {
+    albumArtTrace("JSON parse failed: %s (%u bytes)", error.c_str(),
+                  static_cast<unsigned>(response.size));
+  }
+  return error == DeserializationError::Ok;
 }
-
-static bool exactTrackMatch(String foundArtist, String foundTitle,
-                            const String& wantedArtist, const String& wantedTitle) {
-  auto normalize = [](const String& input) {
+static String normalizeArtworkText(const String& input) {
     String mapped;
     mapped.reserve(input.length());
     for (size_t i = 0; i < input.length();) {
@@ -1272,10 +1282,11 @@ static bool exactTrackMatch(String foundArtist, String foundTitle,
     }
     out.trim();
     return out;
-  };
+}
 
+static bool artworkArtistsMatch(const String& foundArtist, const String& wantedArtist) {
   auto artistCredits = [&](String value) {
-    value = normalize(value);
+    value = normalizeArtworkText(value);
     const char* separators[] = {
       " feat ", " ft ", " featuring ", " with ", " and ", "&", ","
     };
@@ -1295,6 +1306,11 @@ static bool exactTrackMatch(String foundArtist, String foundTitle,
   };
 
   auto sameArtistName = [](String left, String right) {
+    // A common broadcast alias uses the letter in place of P!nk's stylized !.
+    // Keep this explicit: general fuzzy artist matching confused cover artists
+    // with the original performer in earlier searches.
+    if (left == "p nk") left = "pink";
+    if (right == "p nk") right = "pink";
     std::vector<String> leftWords;
     std::vector<String> rightWords;
     auto splitWords = [](String value, std::vector<String>& words) {
@@ -1348,6 +1364,13 @@ static bool exactTrackMatch(String foundArtist, String foundTitle,
     return true;
   };
 
+  return artistsMatch(foundArtist, wantedArtist);
+}
+
+static bool exactTrackMatch(String foundArtist, String foundTitle,
+                            const String& wantedArtist, const String& wantedTitle,
+                            bool allowStudioMix = false) {
+
   auto stripFeature = [](String value) {
     const char* markers[] = { " feat ", " ft ", " featuring ", " with " };
     int cutAt = -1;
@@ -1361,7 +1384,24 @@ static bool exactTrackMatch(String foundArtist, String foundTitle,
   };
 
   auto baseTitle = [&](String value) {
-    value = stripFeature(normalize(value));
+    // Stores often name the original studio mix in parentheses (California
+    // (Tchad Blake Mix)). Only relax this subtitle, never the credited artist,
+    // and never accept live/demo/remix/tribute versions for a plain title.
+    if (allowStudioMix && value.endsWith(")")) {
+      const int at = value.lastIndexOf(" (");
+      if (at > 0) {
+        const String suffix = normalizeArtworkText(value.substring(at + 2, value.length() - 1));
+        bool differentVersion = false;
+        for (const char* marker : {"remix", "live", "acoustic", "demo", "karaoke", "tribute",
+                                   "instrumental", "extended", "cover version"}) {
+          if (suffix.indexOf(marker) >= 0) differentVersion = true;
+        }
+        if (!differentVersion && (suffix.endsWith(" mix") || suffix == "stereo" || suffix == "mono")) {
+          value.remove(at);
+        }
+      }
+    }
+    value = stripFeature(normalizeArtworkText(value));
     const char* versionSuffixes[] = {
       " country version", " radio version", " album version", " single version",
       " radio edit", " single edit", " album edit", " original mix",
@@ -1381,7 +1421,7 @@ static bool exactTrackMatch(String foundArtist, String foundTitle,
 
   String expectedTitle = baseTitle(wantedTitle);
   String actualTitle = baseTitle(foundTitle);
-  return artistsMatch(foundArtist, wantedArtist) &&
+  return artworkArtistsMatch(foundArtist, wantedArtist) &&
          expectedTitle.length() && expectedTitle == actualTitle;
 }
 
@@ -1391,6 +1431,86 @@ static void addUniqueArtworkCandidate(std::vector<String>& urls, const String& u
     if (existing == url) return;
   }
   urls.push_back(url);
+}
+
+static bool isMusicBrainzMbid(const String& value) {
+  if (value.length() != 36) return false;
+  for (size_t i = 0; i < value.length(); ++i) {
+    const bool separator = i == 8 || i == 13 || i == 18 || i == 23;
+    const char character = value[i];
+    if ((separator && character != '-') ||
+        (!separator && !isxdigit(static_cast<unsigned char>(character)))) {
+      return false;
+    }
+  }
+  return true;
+}
+
+static bool isCompilationArtist(String artist) {
+  artist.trim();
+  artist.toLowerCase();
+  return artist == "various artists" || artist == "various" || artist == "v/a" ||
+         artist == "va" || artist == "v.a." || artist == "various performers" ||
+         artist == "[various artists]";
+}
+
+enum class AlbumArtworkKind { Album, Single, ArtistCollection, Unverified, Compilation };
+
+static bool compilationAlbumTitle(String title) {
+  title.toLowerCase();
+  for (const char* marker : {"soundtrack", "motion picture", "music from ", "various artists",
+                            "compilation", "greatest hits", "best of ", "chart hits",
+                            "now that's what i call", "bravo hits", "hit mania"}) {
+    if (title.indexOf(marker) >= 0) return true;
+  }
+  // E.g. "The O.C. Mix 5": do not confuse a numbered TV/DJ collection
+  // with a studio mix subtitle on an otherwise matching song.
+  const int mixAt = title.indexOf("mix ");
+  return mixAt >= 0 && mixAt + 4 < static_cast<int>(title.length()) &&
+         isdigit(static_cast<unsigned char>(title[mixAt + 4]));
+}
+
+static bool albumArtistOwnsTrack(const String& albumArtist, const String& trackArtist) {
+  // An album by one participant in a duet is still an artist-owned release.
+  return albumArtist.length() && !isCompilationArtist(albumArtist) &&
+         artworkArtistsMatch(trackArtist, albumArtist);
+}
+
+static bool musicBrainzSecondaryType(JsonObject group, const char* wanted) {
+  JsonArray types = group["secondary-types"].as<JsonArray>();
+  for (JsonVariant type : types) {
+    if (type.as<String>() == wanted) return true;
+  }
+  return false;
+}
+
+static String musicBrainzArtistCredit(JsonArray credits) {
+  String result;
+  for (JsonVariant credit : credits) {
+    if (credit.is<JsonObject>()) {
+      String name = credit["name"] | "";
+      if (!name.length()) name = credit["artist"]["name"] | "";
+      result += name;
+      result += credit["joinphrase"] | "";
+    } else if (credit.is<const char*>()) result += credit.as<String>();
+  }
+  return result;
+}
+
+static AlbumArtworkKind albumArtworkKind(const String& albumArtist, const String& trackArtist,
+                                         const String& albumTitle, const String& primaryType = "",
+                                         bool collection = false) {
+  if (isCompilationArtist(albumArtist) ||
+      (albumArtist.length() && !albumArtistOwnsTrack(albumArtist, trackArtist))) {
+    return AlbumArtworkKind::Compilation;
+  }
+  if (!albumArtist.length()) return AlbumArtworkKind::Unverified;
+  if (collection || compilationAlbumTitle(albumTitle)) return AlbumArtworkKind::ArtistCollection;
+  String lower = albumTitle;
+  lower.toLowerCase();
+  if (primaryType == "Single" || primaryType == "EP" || primaryType == "single" || primaryType == "ep" ||
+      lower.endsWith(" - single") || lower.endsWith(" - ep")) return AlbumArtworkKind::Single;
+  return AlbumArtworkKind::Album;
 }
 
 static String albumTitleForSearch(String title) {
@@ -1424,93 +1544,248 @@ static String albumTitleForSearch(String title) {
   return title;
 }
 
+struct StoreArtworkAlbum {
+  String id;
+  String title;
+  String cover;
+  String trackArtist;
+  int quality;
+};
+
+static bool isStoreAlbumId(const String& id) {
+  if (!id.length() || id.length() > 20 || id == "0") return false;
+  for (size_t i = 0; i < id.length(); ++i) {
+    if (id[i] < '0' || id[i] > '9') return false;
+  }
+  return true;
+}
+
+static void rankStoreArtworkAlbums(std::vector<StoreArtworkAlbum>& albums) {
+  auto rank = [](const StoreArtworkAlbum& album) {
+    String name = album.title;
+    name.toLowerCase();
+    int priority = 3;
+    if (compilationAlbumTitle(name)) priority = 0;
+    else if (name.endsWith(" - single") || name.endsWith(" - ep")) priority = 1;
+    else if (name.indexOf("expanded") >= 0 || name.indexOf("deluxe") >= 0 ||
+             name.indexOf("anniversary") >= 0 || name.indexOf("bonus") >= 0) priority = 2;
+    return priority * 10 + album.quality;
+  };
+  std::stable_sort(albums.begin(), albums.end(), [&](const StoreArtworkAlbum& a, const StoreArtworkAlbum& b) {
+    return rank(a) > rank(b);
+  });
+}
+
 std::vector<String> ArtworkCache::resolveAlbumArtworkUrls(const String& artist, const String& title,
-                                                           AlbumArtworkProvider provider) {
+                                                           AlbumArtworkProvider provider, uint32_t deadlineMs,
+                                                           AlbumArtworkFallbacks& fallbacks) {
   std::vector<String> urls;
   const String artistQuery = encodeArtworkQuery(artist);
   const String titleQuery = encodeArtworkQuery(albumTitleForSearch(title));
   JsonDocument doc;
+  auto cancelled = [&]() {
+    PlayerStateSnapshot current = PlayerState::instance().snapshot();
+    return !audioConnectionReady || !current.playing || current.artist != artist || current.title != title;
+  };
+  auto matchQuality = [&](const String& foundArtist, const String& foundTitle) {
+    if (exactTrackMatch(foundArtist, foundTitle, artist, title)) return 2;
+    return exactTrackMatch(foundArtist, foundTitle, artist, title, true) ? 1 : 0;
+  };
+  auto addCandidate = [&](const String& url, AlbumArtworkKind kind, const String& albumTitle) {
+    std::vector<String>* target = &urls;
+    const char* label = "verified artist album";
+    switch (kind) {
+      case AlbumArtworkKind::Single: target = &fallbacks.singles; label = "artist single/EP fallback"; break;
+      case AlbumArtworkKind::ArtistCollection:
+        target = &fallbacks.artistCollections; label = "artist collection fallback"; break;
+      case AlbumArtworkKind::Unverified: target = &fallbacks.unverified; label = "unverified album fallback"; break;
+      case AlbumArtworkKind::Compilation: target = &fallbacks.compilations; label = "compilation fallback"; break;
+      case AlbumArtworkKind::Album: break;
+    }
+    if (!url.length()) return;
+    for (const String& existing : *target) if (existing == url) return;
+    const size_t before = target->size();
+    const bool directFallback = kind != AlbumArtworkKind::Album && url.indexOf("coverartarchive.org/") < 0;
+    auto archiveCandidate = std::find_if(target->begin(), target->end(), [](const String& candidate) {
+      return candidate.indexOf("coverartarchive.org/") >= 0;
+    });
+    if (before >= 4) {
+      // A long list of MB compilation releases must not crowd out a small,
+      // directly downloadable store image for the same fallback category.
+      if (!directFallback || archiveCandidate == target->end()) return;
+      target->erase(archiveCandidate);
+      archiveCandidate = std::find_if(target->begin(), target->end(), [](const String& candidate) {
+        return candidate.indexOf("coverartarchive.org/") >= 0;
+      });
+    }
+    if (directFallback) target->insert(archiveCandidate, url);
+    else target->push_back(url);
+    albumArtTrace("%s: %s", label, albumTitle.c_str());
+  };
 
   static unsigned long lastMusicBrainzRequestMs = 0;
-  if (provider == AlbumArtworkProvider::MusicBrainz) {
-    if (lastMusicBrainzRequestMs && millis() - lastMusicBrainzRequestMs < 1100) {
-      vTaskDelay(pdMS_TO_TICKS(1100 - (millis() - lastMusicBrainzRequestMs)));
+  auto waitForMusicBrainz = [&]() {
+    while (lastMusicBrainzRequestMs && millis() - lastMusicBrainzRequestMs < 1100) {
+      if (cancelled() || deadlineReached(deadlineMs)) return false;
+      vTaskDelay(pdMS_TO_TICKS(20));
     }
+    if (cancelled() || deadlineReached(deadlineMs)) return false;
     lastMusicBrainzRequestMs = millis();
-    // Search by title first, then validate the complete artist credit locally.
-    // This avoids losing records when station metadata reverses first/last name
-    // order or supplies a duet as comma-separated credits.
-    String mbUrl = "https://musicbrainz.org/ws/2/recording/?query=recording%3A%22" +
-        titleQuery + "%22&fmt=json&limit=10";
+    return true;
+  };
+  auto mbKind = [&](JsonObject release, const String& recordingArtist) {
+    JsonObject group = release["release-group"].as<JsonObject>();
+    String albumArtist = musicBrainzArtistCredit(release["artist-credit"].as<JsonArray>());
+    // MusicBrainz search omits the release credit when it is identical to the
+    // recording credit; an explicit Various Artists credit must override it.
+    if (!albumArtist.length()) albumArtist = recordingArtist;
+    const bool collection = musicBrainzSecondaryType(group, "Compilation") ||
+                            musicBrainzSecondaryType(group, "Soundtrack") ||
+                            musicBrainzSecondaryType(group, "DJ-mix") ||
+                            musicBrainzSecondaryType(group, "Live") ||
+                            musicBrainzSecondaryType(group, "Remix") ||
+                            musicBrainzSecondaryType(group, "Demo");
+    const String type = group["primary-type"] | "";
+    AlbumArtworkKind kind = albumArtworkKind(albumArtist, recordingArtist,
+                                             release["title"] | "", type, collection);
+    const String status = release["status"] | "";
+    if (kind == AlbumArtworkKind::Album &&
+        (type != "Album" || (status.length() && status != "Official"))) {
+      kind = AlbumArtworkKind::Unverified;
+    }
+    return kind;
+  };
+  if (provider == AlbumArtworkProvider::MusicBrainz) {
+    // Constrain the artist at the server too. A title-only search for common
+    // titles (California, Believe, ...) can omit the desired recording entirely.
+    // Unquoted artist terms retain reversed-name/duet matching; the complete
+    // credit is still checked strictly below before accepting any cover.
+    String primaryArtist = artist;
+    for (const char* separator : {",", " & ", " feat.", " featuring "}) {
+      const int at = primaryArtist.indexOf(separator);
+      if (at > 0) primaryArtist.remove(at);
+    }
+    primaryArtist = normalizeArtworkText(primaryArtist);
+    primaryArtist.replace('&', ' ');
+    primaryArtist.replace(',', ' ');
+    if (primaryArtist == "p nk") primaryArtist = "pink";
+    String ownTitle = albumTitleForSearch(title);
+    ownTitle.replace('"', ' ');
+    if (!waitForMusicBrainz()) return urls;
+    const String recordingQuery = "recording:\"" + ownTitle + "\" AND artist:(" + primaryArtist + ")";
+    const String mbUrl = "http://musicbrainz.org/ws/2/recording/?fmt=json&limit=16&query=" +
+                         encodeArtworkQuery(recordingQuery);
     albumArtTrace("MusicBrainz query: %s - %s", artist.c_str(), title.c_str());
     unsigned long requestStartedMs = millis();
-    bool mbOk = fetchArtworkJson(mbUrl, doc);
+    bool mbOk = fetchArtworkJson(mbUrl, doc, deadlineMs, cancelled);
     albumArtTrace("MusicBrainz response: %s (%lums)", mbOk ? "ok" : "failed",
                   static_cast<unsigned long>(millis() - requestStartedMs));
     if (mbOk) {
-      std::vector<String> albumGroupUrls;
-      std::vector<String> otherGroupUrls;
-      std::vector<String> releaseUrls;
+      struct RankedAlbum {
+        String groupId;
+        String releaseId;
+        String title;
+        String date;
+        int quality;
+        bool cd;
+      };
+      std::vector<RankedAlbum> albums;
       JsonArray recordings = doc["recordings"].as<JsonArray>();
       albumArtTrace("MusicBrainz returned %u recording(s)", static_cast<unsigned>(recordings.size()));
       for (JsonObject recording : recordings) {
         int score = recording["score"] | 0;
         if (score < 80 || recording["video"] == true) continue;
-        JsonArray credits = recording["artist-credit"].as<JsonArray>();
-        String foundArtist;
-        for (JsonVariant credit : credits) {
-          if (credit.is<JsonObject>()) {
-            JsonObject creditObject = credit.as<JsonObject>();
-            String name = creditObject["name"] | "";
-            if (!name.length()) name = creditObject["artist"]["name"] | "";
-            foundArtist += name;
-            foundArtist += creditObject["joinphrase"] | "";
-          } else if (credit.is<const char*>()) {
-            foundArtist += credit.as<String>();
-          }
-        }
+        String foundArtist = musicBrainzArtistCredit(recording["artist-credit"].as<JsonArray>());
         String foundTitle = recording["title"] | "";
-        if (!exactTrackMatch(foundArtist, foundTitle, artist, title)) {
+        const int quality = matchQuality(foundArtist, foundTitle);
+        if (!quality) {
           albumArtTrace("MusicBrainz reject: %s - %s (score %d)", foundArtist.c_str(),
                         foundTitle.c_str(), score);
           continue;
         }
-        albumArtTrace("MusicBrainz exact match: %s - %s", foundArtist.c_str(), foundTitle.c_str());
+        albumArtTrace("MusicBrainz %s match: %s - %s", quality == 2 ? "exact" : "studio-title",
+                      foundArtist.c_str(), foundTitle.c_str());
 
         JsonArray releases = recording["releases"].as<JsonArray>();
         for (JsonObject release : releases) {
-          const char* releaseId = release["id"] | "";
-          if (strlen(releaseId) != 36) continue;
-          const char* groupId = release["release-group"]["id"] | "";
-          if (strlen(groupId) == 36) {
-            String groupUrl = String("https://coverartarchive.org/release-group/") + groupId + "/front-250";
-            String primaryType = release["release-group"]["primary-type"] | "";
-            bool compilation = false;
-            JsonArray secondaryTypes = release["release-group"]["secondary-types"].as<JsonArray>();
-            for (JsonVariant secondaryType : secondaryTypes) {
-              if (secondaryType.as<String>() == "Compilation") compilation = true;
-            }
-            addUniqueArtworkCandidate(primaryType == "Album" && !compilation ? albumGroupUrls : otherGroupUrls,
-                                      groupUrl);
+          const String releaseId = release["id"] | "";
+          const String groupId = release["release-group"]["id"] | "";
+          if (!isMusicBrainzMbid(releaseId)) continue;
+          const String albumTitle = release["title"] | "";
+          const AlbumArtworkKind kind = mbKind(release, foundArtist);
+          if (quality < 2 && kind != AlbumArtworkKind::Album) continue;
+          if (kind != AlbumArtworkKind::Album) {
+            addCandidate("https://coverartarchive.org/release/" + releaseId + "/front-250", kind, albumTitle);
+            continue;
           }
-          addUniqueArtworkCandidate(releaseUrls,
-                                    String("https://coverartarchive.org/release/") + releaseId + "/front-250");
+          String date = release["date"] | "";
+          if (date.length() < 4) date = "9999";
+          bool cd = false;
+          JsonArray media = release["media"].as<JsonArray>();
+          for (JsonObject medium : media) {
+            if (medium["format"] == "CD") cd = true;
+          }
+          bool duplicate = false;
+          for (RankedAlbum& existing : albums) {
+            if (isMusicBrainzMbid(groupId) && existing.groupId == groupId) {
+              if (quality > existing.quality ||
+                  (quality == existing.quality && (date < existing.date ||
+                   (date == existing.date && cd && !existing.cd)))) {
+                existing = {groupId, releaseId, albumTitle, date, quality, cd};
+              }
+              duplicate = true;
+              break;
+            }
+          }
+          if (!duplicate && albums.size() < 16) albums.push_back({groupId, releaseId, albumTitle, date, quality, cd});
         }
       }
-
-      // Prefer the album cover over a standalone single or compilation.
-      auto appendLimited = [&](const std::vector<String>& candidates, size_t limit) {
-        for (const String& candidate : candidates) {
-          if (urls.size() >= limit) break;
-          addUniqueArtworkCandidate(urls, candidate);
-        }
-      };
-      appendLimited(albumGroupUrls, 1);
-      appendLimited(otherGroupUrls, 1);
-      appendLimited(releaseUrls, 1);
+      std::stable_sort(albums.begin(), albums.end(), [](const RankedAlbum& a, const RankedAlbum& b) {
+        if (a.quality != b.quality) return a.quality > b.quality;
+        if (a.date != b.date) return a.date < b.date;
+        return a.cd && !b.cd;
+      });
+      for (const RankedAlbum& album : albums) {
+        if (urls.size() >= 2) break;
+        addCandidate("https://coverartarchive.org/" +
+                     String(isMusicBrainzMbid(album.groupId) ? "release-group/" : "release/") +
+                     (isMusicBrainzMbid(album.groupId) ? album.groupId : album.releaseId) + "/front-250",
+                     AlbumArtworkKind::Album, album.title);
+      }
+      if (!albums.empty()) addCandidate("https://coverartarchive.org/release/" + albums[0].releaseId +
+                                        "/front-250", AlbumArtworkKind::Album, albums[0].title);
       albumArtTrace("MusicBrainz Cover Art Archive candidates: %u", static_cast<unsigned>(urls.size()));
     }
     doc.clear();
+    if (!urls.empty()) return urls;
+    // If there is no artist album, retain the named Single/EP, but give later
+    // providers a chance to identify the original album before downloading it.
+    if (fallbacks.singles.empty() && waitForMusicBrainz()) {
+      const String groupQuery = "releasegroup:\"" + ownTitle + "\" AND artist:(" + primaryArtist + ")";
+      if (fetchArtworkJson("http://musicbrainz.org/ws/2/release-group/?fmt=json&limit=8&query=" +
+                           encodeArtworkQuery(groupQuery), doc, deadlineMs, cancelled)) {
+        JsonArray groups = doc["release-groups"].as<JsonArray>();
+        for (JsonObject group : groups) {
+          const String foundArtist = musicBrainzArtistCredit(group["artist-credit"].as<JsonArray>());
+          const String groupId = group["id"] | "";
+          const int quality = matchQuality(foundArtist, group["title"] | "");
+          if ((group["score"] | 0) < 80 || !isMusicBrainzMbid(groupId) ||
+              !quality) continue;
+          const bool collection = musicBrainzSecondaryType(group, "Compilation") ||
+                                  musicBrainzSecondaryType(group, "Soundtrack") ||
+                                  musicBrainzSecondaryType(group, "Live") ||
+                                  musicBrainzSecondaryType(group, "Remix");
+          AlbumArtworkKind kind = albumArtworkKind(foundArtist, artist, group["title"] | "",
+                                                   group["primary-type"] | "", collection);
+          const String type = group["primary-type"] | "";
+          if (!type.length()) kind = AlbumArtworkKind::Unverified;
+          if (quality < 2 && kind != AlbumArtworkKind::Album) continue;
+          addCandidate("https://coverartarchive.org/release-group/" + groupId + "/front-250",
+                       kind, group["title"] | "");
+        }
+      }
+      doc.clear();
+    }
   }
 
   String apiKey = AppConfig::instance().lastFmApiKey;
@@ -1523,27 +1798,53 @@ std::vector<String> ArtworkCache::resolveAlbumArtworkUrls(const String& artist, 
     lastFmUrl += encodeArtworkQuery(apiKey);
     lastFmUrl += "&artist=" + artistQuery + "&track=" + titleQuery;
     unsigned long requestStartedMs = millis();
-    bool lastFmOk = fetchArtworkJson(lastFmUrl, doc);
+    bool lastFmOk = fetchArtworkJson(lastFmUrl, doc, deadlineMs, cancelled);
     albumArtTrace("Last.fm response: %s (%lums)", lastFmOk ? "ok" : "failed",
                   static_cast<unsigned long>(millis() - requestStartedMs));
     if (lastFmOk) {
       String foundArtist = doc["track"]["artist"]["name"] | "";
       String foundTitle = doc["track"]["name"] | "";
-      if (exactTrackMatch(foundArtist, foundTitle, artist, title)) {
-        albumArtTrace("Last.fm exact match: %s - %s", foundArtist.c_str(), foundTitle.c_str());
-        JsonArray images = doc["track"]["album"]["image"].as<JsonArray>();
-        String extraLargeCover;
-        String largeCover;
-        for (JsonObject image : images) {
-          String size = image["size"] | "";
-          const char* cover = image["#text"] | "";
-          if (size == "extralarge" && strlen(cover)) extraLargeCover = cover;
-          if (size == "large" && strlen(cover)) largeCover = cover;
+      const int quality = matchQuality(foundArtist, foundTitle);
+      if (quality) {
+        albumArtTrace("Last.fm %s match: %s - %s", quality == 2 ? "exact" : "studio-title",
+                      foundArtist.c_str(), foundTitle.c_str());
+        const String albumArtist = doc["track"]["album"]["artist"] | "";
+        const String albumTitle = doc["track"]["album"]["title"] | "";
+        const String albumMbid = doc["track"]["album"]["mbid"] | "";
+        String cdnCover;
+        {
+          JsonArray images = doc["track"]["album"]["image"].as<JsonArray>();
+          String extraLargeCover;
+          String largeCover;
+          for (JsonObject image : images) {
+            String size = image["size"] | "";
+            const char* cover = image["#text"] | "";
+            if (size == "extralarge" && strlen(cover)) extraLargeCover = cover;
+            if (size == "large" && strlen(cover)) largeCover = cover;
+          }
+          // Keep the smaller CDN image as a fallback if the MBID release has
+          // no CAA cover. 174px is close to the 176px LCD frame and much smaller
+          // than Last.fm's frequently 100-200KB 300px PNG.
+          cdnCover = largeCover.length() ? largeCover : extraLargeCover;
         }
-        // Last.fm's large and extralarge URLs usually identify the same file;
-        // trying both only repeats the same slow network failure.
-        if (extraLargeCover.length()) addUniqueArtworkCandidate(urls, extraLargeCover);
-        else if (largeCover.length()) addUniqueArtworkCandidate(urls, largeCover);
+        // track.getInfo can credit a compilation to the track performer. Do
+        // not call it an artist album unless the release MBID confirms that.
+        AlbumArtworkKind kind = isCompilationArtist(albumArtist) || compilationAlbumTitle(albumTitle)
+                                  ? AlbumArtworkKind::Compilation : AlbumArtworkKind::Unverified;
+        doc.clear();
+        if (kind != AlbumArtworkKind::Compilation && isMusicBrainzMbid(albumMbid) && waitForMusicBrainz()) {
+          if (fetchArtworkJson("http://musicbrainz.org/ws/2/release/" + albumMbid +
+                               "?fmt=json&inc=artist-credits+release-groups", doc, deadlineMs, cancelled)) {
+            const String releaseArtist = musicBrainzArtistCredit(doc["artist-credit"].as<JsonArray>());
+            if (releaseArtist.length()) kind = mbKind(doc.as<JsonObject>(), foundArtist);
+          }
+          doc.clear();
+        }
+        if (quality < 2 && kind != AlbumArtworkKind::Album) return urls;
+        if (isMusicBrainzMbid(albumMbid)) {
+          addCandidate("https://coverartarchive.org/release/" + albumMbid + "/front-250", kind, albumTitle);
+        }
+        addCandidate(cdnCover, kind, albumTitle);
       } else albumArtTrace("Last.fm returned a different track: %s - %s", foundArtist.c_str(), foundTitle.c_str());
     }
     doc.clear();
@@ -1552,50 +1853,135 @@ std::vector<String> ArtworkCache::resolveAlbumArtworkUrls(const String& artist, 
   }
 
   if (provider == AlbumArtworkProvider::Deezer) {
-    String deezerUrl = "https://api.deezer.com/search/track?q=" + artistQuery + "%20" + titleQuery + "&limit=5";
+    String deezerUrl = "https://api.deezer.com/search/track?q=" + artistQuery + "%20" + titleQuery + "&limit=8";
     unsigned long requestStartedMs = millis();
-    bool deezerOk = fetchArtworkJson(deezerUrl, doc);
+    bool deezerOk = fetchArtworkJson(deezerUrl, doc, deadlineMs, cancelled);
     albumArtTrace("Deezer response: %s (%lums)", deezerOk ? "ok" : "failed",
                   static_cast<unsigned long>(millis() - requestStartedMs));
     if (deezerOk) {
+      std::vector<StoreArtworkAlbum> albums;
       JsonArray tracks = doc["data"].as<JsonArray>();
       albumArtTrace("Deezer returned %u track(s)", static_cast<unsigned>(tracks.size()));
       for (JsonObject track : tracks) {
         String foundArtist = track["artist"]["name"] | "";
         String foundTitle = track["title"] | "";
-        if (exactTrackMatch(foundArtist, foundTitle, artist, title)) {
-          albumArtTrace("Deezer exact match: %s - %s", foundArtist.c_str(), foundTitle.c_str());
-          const char* cover = track["album"]["cover_medium"] | "";
-          if (strlen(cover)) addUniqueArtworkCandidate(urls, String(cover));
-          if (urls.size() >= 1) break;
+        const int quality = matchQuality(foundArtist, foundTitle);
+        if (quality) {
+          albumArtTrace("Deezer %s match: %s - %s", quality == 2 ? "exact" : "studio-title",
+                        foundArtist.c_str(), foundTitle.c_str());
+          const String id = track["album"]["id"].as<String>();
+          bool duplicate = false;
+          for (StoreArtworkAlbum& existing : albums) {
+            if (existing.id == id) {
+              existing.quality = max(existing.quality, quality);
+              duplicate = true;
+            }
+          }
+          if (!duplicate && isStoreAlbumId(id) && albums.size() < 8) {
+            albums.push_back({id, track["album"]["title"] | "", track["album"]["cover_medium"] | "",
+                              foundArtist, quality});
+          }
         } else albumArtTrace("Deezer reject: %s - %s", foundArtist.c_str(), foundTitle.c_str());
+      }
+      doc.clear();
+      rankStoreArtworkAlbums(albums);
+      // Search results normally omit album.artist. Verify ownership once on
+      // the album endpoint, not by assuming the song artist owns the album.
+      const size_t verifyCount = min<size_t>(albums.size(), 2);
+      for (size_t i = 0; i < verifyCount && !cancelled() && !deadlineReached(deadlineMs); ++i) {
+        const StoreArtworkAlbum& album = albums[i];
+        AlbumArtworkKind kind = AlbumArtworkKind::Unverified;
+        String cover = album.cover;
+        if (fetchArtworkJson("https://api.deezer.com/album/" + album.id, doc, deadlineMs, cancelled) &&
+            doc["id"].as<String>() == album.id) {
+          const String albumArtist = doc["artist"]["name"] | "";
+          const String albumTitle = doc["title"] | album.title;
+          kind = albumArtworkKind(albumArtist, album.trackArtist, albumTitle, doc["record_type"] | "");
+          const String verifiedCover = doc["cover_medium"] | "";
+          if (verifiedCover.length()) cover = verifiedCover;
+          albumArtTrace("Deezer album owner: %s - %s", albumArtist.c_str(), albumTitle.c_str());
+        }
+        doc.clear();
+        if (album.quality < 2 && kind != AlbumArtworkKind::Album) continue;
+        addCandidate(cover, kind, album.title);
+        if (!urls.empty()) break;
       }
     }
     doc.clear();
   }
 
   if (provider == AlbumArtworkProvider::ITunes) {
-    String itunesUrl = "https://itunes.apple.com/search?term=" + artistQuery + "%20" + titleQuery + "&entity=song&limit=8";
+    String itunesUrl = "https://itunes.apple.com/search?term=" + artistQuery + "%20" + titleQuery + "&entity=song&limit=16";
     unsigned long requestStartedMs = millis();
-    bool itunesOk = fetchArtworkJson(itunesUrl, doc);
+    bool itunesOk = fetchArtworkJson(itunesUrl, doc, deadlineMs, cancelled);
     albumArtTrace("iTunes response: %s (%lums)", itunesOk ? "ok" : "failed",
                   static_cast<unsigned long>(millis() - requestStartedMs));
     if (itunesOk) {
+      std::vector<StoreArtworkAlbum> albums;
       JsonArray results = doc["results"].as<JsonArray>();
       albumArtTrace("iTunes returned %u result(s)", static_cast<unsigned>(results.size()));
       for (JsonObject result : results) {
         String foundArtist = result["artistName"] | "";
         String foundTitle = result["trackName"] | "";
-        if (exactTrackMatch(foundArtist, foundTitle, artist, title)) {
-          albumArtTrace("iTunes exact match: %s - %s", foundArtist.c_str(), foundTitle.c_str());
+        const int quality = matchQuality(foundArtist, foundTitle);
+        if (quality) {
+          albumArtTrace("iTunes %s match: %s - %s", quality == 2 ? "exact" : "studio-title",
+                        foundArtist.c_str(), foundTitle.c_str());
           String cover = result["artworkUrl100"] | "";
           if (cover.length()) {
             cover.replace("100x100bb", "250x250bb");
-            addUniqueArtworkCandidate(urls, cover);
+            const String albumTitle = result["collectionName"] | "";
+            const String albumArtist = result["collectionArtistName"] | "";
+            const String id = result["collectionId"].as<String>();
+            if (isCompilationArtist(albumArtist)) {
+              if (quality == 2) addCandidate(cover, AlbumArtworkKind::Compilation, albumTitle);
+              continue;
+            }
+            bool duplicate = false;
+            for (StoreArtworkAlbum& existing : albums) {
+              if (existing.id == id) {
+                existing.quality = max(existing.quality, quality);
+                duplicate = true;
+              }
+            }
+            if (!duplicate && isStoreAlbumId(id) && albums.size() < 8) {
+              albums.push_back({id, albumTitle, cover, foundArtist, quality});
+            }
           }
-          if (urls.size() >= 1) break;
         } else albumArtTrace("iTunes reject: %s - %s", foundArtist.c_str(), foundTitle.c_str());
       }
+      doc.clear();
+      rankStoreArtworkAlbums(albums);
+      // A single batched lookup provides the real album artists. A missing
+      // collectionArtistName on a song result is not ownership evidence.
+      if (albums.size() > 3) albums.resize(3);
+      String albumIds;
+      for (const StoreArtworkAlbum& album : albums) {
+        if (albumIds.length()) albumIds += ',';
+        albumIds += album.id;
+      }
+      const bool lookupOk = albumIds.length() &&
+          fetchArtworkJson("https://itunes.apple.com/lookup?id=" + albumIds + "&entity=album",
+                           doc, deadlineMs, cancelled);
+      for (const StoreArtworkAlbum& album : albums) {
+        AlbumArtworkKind kind = AlbumArtworkKind::Unverified;
+        if (lookupOk) {
+          JsonArray lookupResults = doc["results"].as<JsonArray>();
+          for (JsonObject result : lookupResults) {
+            if (result["wrapperType"] != "collection" || result["collectionId"].as<String>() != album.id) continue;
+            const String albumArtist = result["artistName"] | "";
+            const String albumTitle = result["collectionName"] | album.title;
+            const int tracks = result["trackCount"] | 0;
+            kind = albumArtworkKind(albumArtist, album.trackArtist, albumTitle,
+                                     tracks > 0 && tracks <= 4 ? "Single" : "Album");
+            albumArtTrace("iTunes album owner: %s - %s", albumArtist.c_str(), albumTitle.c_str());
+            break;
+          }
+        }
+        if (album.quality < 2 && kind != AlbumArtworkKind::Album) continue;
+        addCandidate(album.cover, kind, album.title);
+      }
+      doc.clear();
     }
   }
   return urls;
@@ -1604,6 +1990,8 @@ std::vector<String> ArtworkCache::resolveAlbumArtworkUrls(const String& artist, 
 bool ArtworkCache::resolveAndDownloadAlbumArtwork(const String& artist, const String& title,
                                                    const String& key, String& outPath) {
   const unsigned long searchStartedMs = millis();
+  const uint32_t searchDeadlineMs = searchStartedMs + ALBUM_ART_LOOKUP_BUDGET_MS;
+  AlbumArtworkFallbacks fallbacks;
   albumArtTrace("search start: %s - %s", artist.c_str(), title.c_str());
   const AlbumArtworkProvider providers[] = {
     AlbumArtworkProvider::MusicBrainz,
@@ -1611,20 +1999,40 @@ bool ArtworkCache::resolveAndDownloadAlbumArtwork(const String& artist, const St
     AlbumArtworkProvider::ITunes,
     AlbumArtworkProvider::Deezer
   };
-  const char* providerNames[] = { "MusicBrainz/CAA", "Last.fm", "iTunes", "Deezer" };
-  for (size_t providerIndex = 0; providerIndex < sizeof(providers) / sizeof(providers[0]); ++providerIndex) {
+  const size_t providerCount = sizeof(providers) / sizeof(providers[0]);
+  const char* providerNames[] = { "MusicBrainz/CAA", "Last.fm", "iTunes", "Deezer",
+                                "artist single/EP fallback", "artist collection fallback",
+                                "unverified album fallback", "compilation fallback" };
+  const size_t stageCount = sizeof(providerNames) / sizeof(providerNames[0]);
+  for (size_t providerIndex = 0; providerIndex < stageCount; ++providerIndex) {
     if (millis() - searchStartedMs >= ALBUM_ART_LOOKUP_BUDGET_MS) {
       albumArtTrace("search budget reached after %lums", static_cast<unsigned long>(millis() - searchStartedMs));
       return false;
     }
-    AlbumArtworkProvider provider = providers[providerIndex];
+    // Reserve time to display an already known fallback rather than spending
+    // the entire lookup budget on more metadata with nothing left to download.
+    const bool hasFallback = !fallbacks.singles.empty() || !fallbacks.artistCollections.empty() ||
+                             !fallbacks.unverified.empty() || !fallbacks.compilations.empty();
+    if (providerIndex < providerCount && hasFallback &&
+        millis() - searchStartedMs >= ALBUM_ART_LOOKUP_BUDGET_MS - ALBUM_ART_IMAGE_BUDGET_MS) {
+      albumArtTrace("reserving remaining search budget for known artwork fallback");
+      providerIndex = providerCount;
+    }
     PlayerStateSnapshot current = PlayerState::instance().snapshot();
     if (!current.playing || current.artist != artist || current.title != title) {
       albumArtTrace("search cancelled: track changed before %s", providerNames[providerIndex]);
       return false;
     }
     unsigned long providerStartedMs = millis();
-    std::vector<String> candidates = resolveAlbumArtworkUrls(artist, title, provider);
+    std::vector<String> candidates;
+    if (providerIndex < providerCount) {
+      candidates = resolveAlbumArtworkUrls(artist, title, providers[providerIndex], searchDeadlineMs, fallbacks);
+    } else {
+      const std::vector<String>* fallbackStages[] = {&fallbacks.singles, &fallbacks.artistCollections,
+                                                    &fallbacks.unverified, &fallbacks.compilations};
+      candidates = *fallbackStages[providerIndex - providerCount];
+      if (candidates.size() > 2) candidates.resize(2);
+    }
     albumArtTrace("%s: %u image candidate(s), %lums", providerNames[providerIndex],
                   static_cast<unsigned>(candidates.size()),
                   static_cast<unsigned long>(millis() - providerStartedMs));
@@ -1707,6 +2115,10 @@ static String lcdThumbnailSizedSuffix() {
 }
 
 static String lcdThumbnailFillSuffix() {
+  return "_" + String(LCD_THUMB_SIZE) + "_fill2" + LCD_THUMB_EXT;
+}
+
+static String lcdThumbnailLegacyFillSuffix() {
   return "_" + String(LCD_THUMB_SIZE) + "_fill" + LCD_THUMB_EXT;
 }
 
@@ -1714,14 +2126,15 @@ static bool isPairedCacheThumbnailPath(const String& path) {
   if (!path.startsWith("/cache/")) return false;
   String lower = path;
   lower.toLowerCase();
-  return lower.endsWith(lcdThumbnailSizedSuffix()) || lower.endsWith(lcdThumbnailFillSuffix());
+  return lower.endsWith(lcdThumbnailSizedSuffix()) || lower.endsWith(lcdThumbnailFillSuffix()) ||
+         lower.endsWith(lcdThumbnailLegacyFillSuffix());
 }
 
 static String cacheFamilyStemForPath(const String& path) {
   if (isPairedCacheThumbnailPath(path)) {
-    String suffix = path.endsWith(lcdThumbnailFillSuffix())
-                        ? lcdThumbnailFillSuffix()
-                        : lcdThumbnailSizedSuffix();
+    String suffix = path.endsWith(lcdThumbnailFillSuffix()) ? lcdThumbnailFillSuffix() :
+                    path.endsWith(lcdThumbnailLegacyFillSuffix()) ? lcdThumbnailLegacyFillSuffix() :
+                    lcdThumbnailSizedSuffix();
     return path.substring(0, path.length() - suffix.length());
   }
   return fileStem(path);
@@ -2099,6 +2512,15 @@ size_t ArtworkCache::cacheTargetBytes() const {
 void ArtworkCache::enforceCacheBudget(size_t incomingBytes, const String& keepPath) {
   if (!LittleFS.exists("/cache")) return;
 
+  // Cache usage cannot exceed total filesystem usage. On a mostly empty
+  // filesystem this avoids walking/opening every cached thumbnail for each
+  // received image, while retaining full eviction checks near the limit.
+  const size_t totalBytes = LittleFS.totalBytes();
+  const size_t usedBytes = LittleFS.usedBytes();
+  size_t freeBytes = totalBytes > usedBytes ? totalBytes - usedBytes : 0;
+  if (usedBytes + incomingBytes <= MAX_CACHE_BYTES &&
+      freeBytes >= incomingBytes + MIN_FS_FREE_BYTES) return;
+
   std::vector<CacheEntry> entries;
   size_t cacheTotal = 0;
 
@@ -2118,10 +2540,6 @@ void ArtworkCache::enforceCacheBudget(size_t incomingBytes, const String& keepPa
     file = root.openNextFile();
   }
   root.close();
-
-  size_t freeBytes = LittleFS.totalBytes() > LittleFS.usedBytes()
-                       ? LittleFS.totalBytes() - LittleFS.usedBytes()
-                       : 0;
 
   for (size_t i = 0; i < entries.size();) {
     const CacheEntry& entry = entries[i];
@@ -2174,10 +2592,13 @@ void ArtworkCache::enforceCacheBudget(size_t incomingBytes, const String& keepPa
     return a.modified < b.modified;
   });
 
+  const PlayerStateSnapshot current = PlayerState::instance().snapshot();
   for (const CacheFamily& family : families) {
     bool protectedFamily = false;
     for (const CacheEntry& entry : family.entries) {
-      if (cacheKeepProtects(entry.path, keepPath)) {
+      if (cacheKeepProtects(entry.path, keepPath) ||
+          cacheKeepProtects(entry.path, current.cachedArtworkPath) ||
+          cacheKeepProtects(entry.path, current.albumArtworkPath)) {
         protectedFamily = true;
         break;
       }
@@ -2465,9 +2886,9 @@ String ArtworkCache::lcdThumbnailPath(const String& imagePath, bool fillFrame) c
   String lower = imagePath;
   lower.toLowerCase();
   if (lower.endsWith(LCD_THUMB_EXT)) return imagePath;
-  String sizedExt = "_" + String(LCD_THUMB_SIZE) + (fillFrame ? "_fill" : "") + LCD_THUMB_EXT;
+  String sizedExt = "_" + String(LCD_THUMB_SIZE) + (fillFrame ? "_fill2" : "") + LCD_THUMB_EXT;
   if (imagePath.startsWith("/cache/")) return fileStem(imagePath) + sizedExt;
-  return cachePath(String("lcd:") + String(LCD_THUMB_SIZE) + (fillFrame ? ":fill:" : ":") + imagePath, LCD_THUMB_EXT);
+  return cachePath(String("lcd:") + String(LCD_THUMB_SIZE) + (fillFrame ? ":fill2:" : ":") + imagePath, LCD_THUMB_EXT);
 }
 
 void ArtworkCache::invalidateLcdThumbnail(const String& imagePath) {
@@ -2594,20 +3015,19 @@ bool ArtworkCache::ensureLcdThumbnail(const String& imagePath, bool fillFrame) {
                         static_cast<float>(LCD_THUMB_SIZE) / size.height)
                   : min(static_cast<float>(LCD_THUMB_SIZE) / size.width,
                         static_cast<float>(LCD_THUMB_SIZE) / size.height);
-  int32_t scaledW = max<int32_t>(1, min<int32_t>(LCD_THUMB_SIZE, static_cast<int32_t>(ceilf(size.width * scale))));
-  int32_t scaledH = max<int32_t>(1, min<int32_t>(LCD_THUMB_SIZE, static_cast<int32_t>(ceilf(size.height * scale))));
-  int32_t drawX = (LCD_THUMB_SIZE - scaledW) / 2;
-  int32_t drawY = (LCD_THUMB_SIZE - scaledH) / 2;
+  // Center within a fixed viewport. Passing a negative destination origin
+  // together with maxWidth/maxHeight also shrinks LovyanGFX's viewport and can
+  // leave a strip empty. Its center datum crops using source offsets instead.
 
   unsigned long started = millis();
   bool drawn = false;
   if (lower.endsWith(".jpg") || lower.endsWith(".jpeg")) {
-    drawn = thumb.drawJpgFile(LittleFS, imagePath.c_str(), drawX, drawY, LCD_THUMB_SIZE, LCD_THUMB_SIZE, 0, 0, scale, scale, top_left);
+    drawn = thumb.drawJpgFile(LittleFS, imagePath.c_str(), 0, 0, LCD_THUMB_SIZE, LCD_THUMB_SIZE, 0, 0, scale, scale, middle_center);
   } else if (lower.endsWith(".png")) {
-    drawn = thumb.drawPngFile(LittleFS, imagePath.c_str(), drawX, drawY, LCD_THUMB_SIZE, LCD_THUMB_SIZE, 0, 0, scale, scale, top_left);
+    drawn = thumb.drawPngFile(LittleFS, imagePath.c_str(), 0, 0, LCD_THUMB_SIZE, LCD_THUMB_SIZE, 0, 0, scale, scale, middle_center);
     thumb.releasePngMemory();
   } else if (lower.endsWith(".bmp")) {
-    drawn = thumb.drawBmpFile(LittleFS, imagePath.c_str(), drawX, drawY, LCD_THUMB_SIZE, LCD_THUMB_SIZE, 0, 0, scale, scale, top_left);
+    drawn = thumb.drawBmpFile(LittleFS, imagePath.c_str(), 0, 0, LCD_THUMB_SIZE, LCD_THUMB_SIZE, 0, 0, scale, scale, middle_center);
   }
 
   if (!drawn) {
@@ -2899,8 +3319,6 @@ void ArtworkCache::cancelPendingPlayback() {
 
   pendingPlaybackStationId = -1;
   pendingPlaybackStartedMs = 0;
-  lastTlsFailureUrl = "";
-  lastTlsFailureMs = 0;
 
   if (pendingMutex) xSemaphoreGive(pendingMutex);
 }
@@ -3539,72 +3957,22 @@ bool ArtworkCache::normalizeEmbeddedImage(const String& tempPath, const String& 
   return false;
 }
 
-bool ArtworkCache::appendHttpRange(const String& url, uint32_t offset, uint32_t length, File& outFile) {
+bool ArtworkCache::appendHttpRange(const String& url, uint32_t offset, uint32_t length, File& outFile,
+                                  const String& expectedKey) {
   if (!length || length > MAX_ARTWORK_BYTES) return false;
-
-  HTTPClient http;
-  NetworkClient plainClient;
-  NetworkClientSecure secureClient;
-  NetworkClient* client = &plainClient;
-
-  if (url.startsWith("https://")) {
-    secureClient.setInsecure();
-    client = &secureClient;
-  }
-
-  http.setTimeout(5000);
-  http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
-  http.setRedirectLimit(5);
-
-  if (!http.begin(*client, url)) {
-    Serial.println("[artwork] embedded http begin failed");
+  ArtworkHttp::Options options;
+  options.range = "bytes=" + String(offset) + "-" + String(offset + length - 1);
+  options.cancelled = [&]() {
+    PlayerStateSnapshot current = PlayerState::instance().snapshot();
+    return !current.playing || !audioConnectionReady || current.embeddedArtworkKey != expectedKey;
+  };
+  ArtworkHttp::Response response;
+  if (!ArtworkHttp::get(url, length, response, options) || response.size != length) {
+    albumArtTrace("embedded range failed: %s (%u/%u bytes)", response.error.c_str(),
+                  static_cast<unsigned>(response.size), static_cast<unsigned>(length));
     return false;
   }
-
-  String range = "bytes=";
-  range += String(offset);
-  range += "-";
-  range += String(offset + length - 1);
-  http.addHeader("Range", range);
-
-  int code = http.GET();
-  if (code != HTTP_CODE_PARTIAL_CONTENT) {
-    Serial.printf("[artwork] embedded range unsupported, status %d\n", code);
-    http.end();
-    return false;
-  }
-
-  int declaredLength = http.getSize();
-  if (declaredLength > 0 && static_cast<uint32_t>(declaredLength) != length) {
-    Serial.printf("[artwork] embedded range length mismatch %d != %u\n", declaredLength, static_cast<unsigned>(length));
-    http.end();
-    return false;
-  }
-
-  NetworkClient* stream = http.getStreamPtr();
-  uint8_t buffer[1024];
-  uint32_t remaining = length;
-  unsigned long lastReadMs = millis();
-
-  while ((http.connected() || stream->available()) && remaining > 0) {
-    size_t available = stream->available();
-    if (!available) {
-      if (millis() - lastReadMs > READ_IDLE_TIMEOUT_MS) break;
-      delay(1);
-      continue;
-    }
-
-    size_t toRead = min(available, sizeof(buffer));
-    toRead = min(toRead, static_cast<size_t>(remaining));
-    int readLen = stream->readBytes(buffer, toRead);
-    if (readLen <= 0) break;
-    if (outFile.write(buffer, readLen) != static_cast<size_t>(readLen)) break;
-    remaining -= readLen;
-    lastReadMs = millis();
-  }
-
-  http.end();
-  return remaining == 0;
+  return writeBufferYielding(outFile, response.data, response.size);
 }
 
 bool ArtworkCache::downloadEmbedded(const String& url, const std::vector<uint32_t>& segments, const String& key, String& outPath) {
@@ -3630,7 +3998,7 @@ bool ArtworkCache::downloadEmbedded(const String& url, const std::vector<uint32_
   if (!temp) return false;
 
   for (size_t i = 0; i + 1 < segments.size(); i += 2) {
-    if (!appendHttpRange(url, segments[i], segments[i + 1], temp)) {
+    if (!appendHttpRange(url, segments[i], segments[i + 1], temp, key)) {
       temp.close();
       LittleFS.remove(tempPath);
       return false;
@@ -3711,17 +4079,64 @@ bool ArtworkCache::importLocalImage(const String& url, const String& tempPath, S
   return true;
 }
 
+static std::vector<String> resolveCoverArchiveServers(const String& url,
+                                                     const ArtworkHttp::Options& options) {
+  std::vector<String> urls;
+  ArtworkHttp::Options redirectOptions = options;
+  redirectOptions.followRedirects = false;
+  ArtworkHttp::Response redirect;
+  if (!ArtworkHttp::get(ArtworkHttp::publicImageUrl(url), MAX_ARTWORK_BYTES, redirect, redirectOptions)) {
+    albumArtTrace("CAA redirect failed: %s", redirect.error.c_str());
+    return urls;
+  }
+  const String location = redirect.location;
+  const String server = ArtworkHttp::host(location);
+  const int marker = location.indexOf("/download/");
+  const int itemStart = marker + 10;
+  const int itemEnd = location.indexOf('/', itemStart);
+  if ((server != "archive.org" && !server.endsWith(".archive.org")) || marker < 0 || itemEnd <= itemStart) {
+    albumArtTrace("CAA has no archive redirect: HTTP %d", redirect.status);
+    return urls;
+  }
+  const String item = location.substring(itemStart, itemEnd);
+  const String filename = location.substring(itemEnd + 1);
+  if (!item.startsWith("mbid-") || !filename.length()) return urls;
+
+  ArtworkHttp::Response metadata;
+  if (ArtworkHttp::get("http://archive.org/metadata/" + item, 192 * 1024, metadata, options)) {
+    JsonDocument doc;
+    if (deserializeJson(doc, metadata.data, metadata.size) == DeserializationError::Ok) {
+      const String directory = doc["dir"] | "";
+      if (directory.startsWith("/")) {
+        for (const char* field : {"d1", "d2"}) {
+          String fileServer = doc[field] | "";
+          if (fileServer.endsWith(".archive.org") && fileServer.indexOf('/') < 0) {
+            addUniqueArtworkCandidate(urls, "http://" + fileServer + directory + "/" + filename);
+          }
+        }
+      }
+    }
+  } else {
+    albumArtTrace("Archive metadata failed: %s", metadata.error.c_str());
+  }
+  // Metadata occasionally fails even though the redirected file is available.
+  // Retain the public download URL behind the two direct archive mirrors.
+  if (urls.empty()) addUniqueArtworkCandidate(urls, ArtworkHttp::publicImageUrl(location));
+  albumArtTrace("CAA resolved %u archive file server(s)", static_cast<unsigned>(urls.size()));
+  return urls;
+}
+
 bool ArtworkCache::download(const String& url, String& outPath, uint32_t budgetMs, bool allowSecureFallback, const String& cacheKey) {
   const String storageKey = cacheKey.length() ? cacheKey : url;
-  const bool fillFrame = cacheKey.startsWith("album:v2:") ||
+  const bool fillFrame = cacheKey.startsWith(ALBUM_ART_CACHE_PREFIX) ||
                          (cacheKey.startsWith("embedded:") &&
                           AppConfig::instance().displayArtworkMode == "album");
   uint32_t deadlineMs = budgetMs > 0 ? millis() + budgetMs : 0;
 
   auto albumSearchStillCurrent = [&]() {
-    if (!cacheKey.startsWith("album:v2:")) return true;
+    if (!cacheKey.startsWith(ALBUM_ART_CACHE_PREFIX)) return true;
     PlayerStateSnapshot current = PlayerState::instance().snapshot();
-    return current.playing && storageKey == String("album:v2:") + current.artist + "|" + current.title;
+    return current.playing && storageKey == String(ALBUM_ART_CACHE_PREFIX) + current.artist + "|" + current.title;
   };
 
   auto attemptDownload = [&](const String& fetchUrl) -> bool {
@@ -3738,185 +4153,51 @@ bool ArtworkCache::download(const String& url, String& outPath, uint32_t budgetM
     noteDownloadStatus(String("start ") + fetchUrl);
 
     PlayerStateSnapshot downloadState = PlayerState::instance().snapshot();
-    String activeArtwork = currentArtworkUrl();
-    if (!activeArtwork.length() &&
-        downloadState.stationId == deferredArtworkStationId &&
-        deferredArtworkUrl.length()) {
-      activeArtwork = deferredArtworkUrl;
-    }
-    const bool isCurrentPlaybackArtwork =
-        downloadState.playing && fetchUrl == activeArtwork;
-    const unsigned long tlsCooldownMs = isCurrentPlaybackArtwork
-        ? CURRENT_ARTWORK_TLS_RETRY_MS
-        : TLS_FAILURE_COOLDOWN_MS;
-    if (fetchUrl.startsWith("https://") &&
-        lastTlsFailureUrl == fetchUrl &&
-        millis() - lastTlsFailureMs < tlsCooldownMs) {
-      noteDownloadStatus(String("TLS cooldown ") + fetchUrl);
+    ArtworkHttp::Options options;
+    options.deadlineMs = deadlineMs;
+    options.allowHttps = allowSecureFallback;
+    options.cancelled = [&]() {
+      return idlePrewarmCancellationRequested() || !albumSearchStillCurrent() ||
+             (downloadState.playing && !audioConnectionReady);
+    };
+    ArtworkHttp::Response response;
+    const unsigned long networkStartedMs = millis();
+    if (!ArtworkHttp::get(fetchUrl, MAX_ARTWORK_BYTES, response, options)) {
+      noteDownloadStatus(response.error + " host=" + ArtworkHttp::host(fetchUrl));
       return false;
     }
+    const size_t written = response.size;
+    albumArtTrace("image received: %u bytes, %lums, host=%s",
+                  static_cast<unsigned>(written),
+                  static_cast<unsigned long>(millis() - networkStartedMs),
+                  ArtworkHttp::host(fetchUrl).c_str());
 
-    HTTPClient http;
-    NetworkClient plainClient;
-    NetworkClientSecure secureClient;
-    NetworkClient* client = &plainClient;
-
-    if (fetchUrl.startsWith("https://")) {
-      secureClient.setInsecure();
-      client = &secureClient;
-    }
-
-    uint32_t connectTimeout = boundedTimeoutMs(1800, deadlineMs);
-    uint32_t ioTimeout = boundedTimeoutMs(2500, deadlineMs);
-    if (deadlineMs && (!connectTimeout || !ioTimeout)) {
-      noteDownloadStatus(String("budget too small ") + fetchUrl);
-      return false;
-    }
-
-    http.setConnectTimeout(connectTimeout);
-    http.setTimeout(ioTimeout);
-    http.setUserAgent("SimpleRadio/1.0 ESP32");
-    http.setFollowRedirects(allowSecureFallback
-                                ? HTTPC_STRICT_FOLLOW_REDIRECTS
-                                : HTTPC_DISABLE_FOLLOW_REDIRECTS);
-    http.setRedirectLimit(4);
-    const char* headerKeys[] = { "Content-Type" };
-    http.collectHeaders(headerKeys, 1);
-
-    if (!http.begin(*client, fetchUrl)) {
-      Serial.println("[artwork] http begin failed");
-      noteDownloadStatus(String("http begin failed ") + fetchUrl);
-      return false;
-    }
-
-    if (idlePrewarmCancellationRequested()) {
-      http.end();
-      noteDownloadStatus(String("idle prewarm cancelled ") + fetchUrl);
-      return false;
-    }
-
-    int code = http.GET();
-    if (idlePrewarmCancellationRequested()) {
-      http.end();
-      noteDownloadStatus(String("idle prewarm cancelled ") + fetchUrl);
-      return false;
-    }
-    if (deadlineReached(deadlineMs)) {
-      noteDownloadStatus(String("budget expired after http get ") + fetchUrl);
-      http.end();
-      return false;
-    }
-    if (code != HTTP_CODE_OK) {
-      Serial.printf("[artwork] http status %d\n", code);
-      noteDownloadStatus(String("http status ") + String(code) + " " + fetchUrl);
-      if (code < 0 && fetchUrl.startsWith("https://")) {
-        lastTlsFailureUrl = fetchUrl;
-        lastTlsFailureMs = millis();
-      }
-      http.end();
-      return false;
-    }
-
-    int length = http.getSize();
-    String contentType = http.header("Content-Type");
-    Serial.printf("[artwork] content-type=%s length=%d\n", contentType.c_str(), length);
-    noteDownloadStatus(String("http ok type=") + contentType + " length=" + String(length));
-
-    if (length == 0 || (length > 0 && static_cast<size_t>(length) > MAX_ARTWORK_BYTES)) {
-      noteDownloadStatus(String("invalid length ") + String(length));
-      http.end();
-      return false;
-    }
-    enforceCacheBudget(length > 0 ? static_cast<size_t>(length) : MAX_ARTWORK_BYTES);
-
+    // The socket is closed before any cache enumeration, flash erase or image
+    // decoding. Previously cache maintenance used up the network deadline while
+    // the response body was still waiting, leading to written=0 failures.
+    if (!albumSearchStillCurrent() || idlePrewarmCancellationRequested()) return false;
+    const unsigned long storageStartedMs = millis();
+    enforceCacheBudget(written, PlayerState::instance().snapshot().cachedArtworkPath);
     String tempPath = cachePath(storageKey, ".tmp");
-    if (LittleFS.exists(tempPath)) {
-      LittleFS.remove(tempPath);
-    }
-
+    if (LittleFS.exists(tempPath)) LittleFS.remove(tempPath);
     File file = LittleFS.open(tempPath, "w");
     if (!file) {
-      Serial.println("[artwork] temp open failed");
-      noteDownloadStatus(String("temp open failed ") + tempPath);
-      http.end();
+      noteDownloadStatus("temp open failed " + tempPath);
       return false;
     }
-
-    NetworkClient* stream = http.getStreamPtr();
-    uint8_t buffer[1024];
-    size_t written = 0;
-    unsigned long lastReadMs = millis();
-
-    bool cancelled = false;
-    bool albumCancelled = false;
-    unsigned long nextAlbumCheckMs = millis();
-    while ((http.connected() || stream->available()) &&
-           (length < 0 || written < static_cast<size_t>(length))) {
-      if (idlePrewarmCancellationRequested()) {
-        cancelled = true;
-        break;
-      }
-      if (cacheKey.startsWith("album:v2:") && millis() >= nextAlbumCheckMs) {
-        nextAlbumCheckMs = millis() + 250;
-        if (!albumSearchStillCurrent()) {
-          albumCancelled = true;
-          break;
-        }
-      }
-      if (deadlineReached(deadlineMs)) break;
-
-      size_t available = stream->available();
-      if (!available) {
-        uint32_t idleLimit = READ_IDLE_TIMEOUT_MS;
-        if (deadlineMs) {
-          uint32_t remaining = deadlineRemaining(deadlineMs);
-          if (remaining < idleLimit) idleLimit = remaining;
-        }
-        if (millis() - lastReadMs > idleLimit) break;
-        delay(1);
-        continue;
-      }
-
-      size_t toRead = min(available, sizeof(buffer));
-      if (length > 0) {
-        toRead = min(toRead, static_cast<size_t>(length) - written);
-      }
-
-      int readLen = stream->read(buffer, toRead);
-      if (readLen <= 0) {
-        if (millis() - lastReadMs > READ_IDLE_TIMEOUT_MS) break;
-        delay(1);
-        continue;
-      }
-
-      file.write(buffer, readLen);
-      written += readLen;
-      lastReadMs = millis();
-
-      if (written > MAX_ARTWORK_BYTES) {
-        break;
-      }
-    }
-
+    const bool stored = writeBufferYielding(file, response.data, written);
     file.flush();
     file.close();
-    http.end();
-    Serial.printf("[artwork] written=%u\n", static_cast<unsigned>(written));
-
-    if (cancelled || albumCancelled || idlePrewarmCancellationRequested()) {
+    // Release the compressed image before allocating the LCD decoder buffers.
+    free(response.data);
+    response.data = nullptr;
+    if (!stored || !albumSearchStillCurrent() || idlePrewarmCancellationRequested()) {
       LittleFS.remove(tempPath);
-      noteDownloadStatus(String(albumCancelled ? "stale album lookup cancelled " : "idle prewarm cancelled ") + fetchUrl);
+      noteDownloadStatus(stored ? "stale artwork cancelled" : "filesystem write failed");
       return false;
     }
-
-    if (written == 0 ||
-        written > MAX_ARTWORK_BYTES ||
-        (length > 0 && written != static_cast<size_t>(length))) {
-      LittleFS.remove(tempPath);
-      noteDownloadStatus(String("written mismatch written=") + String(static_cast<unsigned>(written)) +
-                         " length=" + String(length));
-      return false;
-    }
+    albumArtTrace("image stored: %u bytes, %lums", static_cast<unsigned>(written),
+                  static_cast<unsigned long>(millis() - storageStartedMs));
 
     String extension = detectDownloadedExtension(tempPath);
     if (!extension.length()) {
@@ -3947,15 +4228,15 @@ bool ArtworkCache::download(const String& url, String& outPath, uint32_t budgetM
     }
 
     outPath = path;
-    if (fetchUrl.startsWith("https://") && lastTlsFailureUrl == fetchUrl) {
-      lastTlsFailureUrl = "";
-      lastTlsFailureMs = 0;
-    }
     const bool thumbnailReady = ensureLcdThumbnail(path, fillFrame);
     if (thumbnailReady) {
       compactRemoteArtwork(storageKey, path, outPath, fillFrame);
     } else if (fillFrame) {
       albumArtTrace("image downloaded but LCD cover thumbnail failed: %s", path.c_str());
+      removeCachedArtworkFamily(path);
+      outPath = "";
+      noteDownloadStatus("unsupported LCD cover image");
+      return false;
     }
     enforceCacheBudget(0, outPath);
     noteDownloadStatus(String("cached ") + outPath);
@@ -3963,18 +4244,32 @@ bool ArtworkCache::download(const String& url, String& outPath, uint32_t budgetM
   };
 
   String smallerImageUrl = imgurThumbnailFallbackUrl(url);
-  if (!allowSecureFallback &&
-      (url.startsWith("https://") || smallerImageUrl.startsWith("https://"))) {
-    noteDownloadStatus(String("secure artwork deferred while audio plays ") + url);
-    return false;
-  }
   if (smallerImageUrl.length() && smallerImageUrl != url) {
     albumArtTrace("trying smaller Imgur image first");
-    if (attemptDownload(smallerImageUrl)) return true;
+    if (attemptDownload(ArtworkHttp::publicImageUrl(smallerImageUrl))) return true;
     if (deadlineReached(deadlineMs)) return false;
   }
 
-  // Use the advertised HTTPS URL directly. Downgrading every provider URL to
-  // HTTP first wasted most of the per-image budget on redirects/timeouts.
+  if (ArtworkHttp::host(url) == "coverartarchive.org") {
+    ArtworkHttp::Options options;
+    options.deadlineMs = deadlineMs;
+    options.allowHttps = allowSecureFallback;
+    options.cancelled = [&]() { return idlePrewarmCancellationRequested() || !albumSearchStillCurrent(); };
+    const std::vector<String> servers = resolveCoverArchiveServers(url, options);
+    for (const String& server : servers) {
+      if (attemptDownload(server)) return true;
+      if (deadlineReached(deadlineMs)) return false;
+    }
+    if (servers.empty()) noteDownloadStatus("CAA cover not available");
+    return false;
+  }
+
+  const String publicUrl = ArtworkHttp::publicImageUrl(url);
+  if (publicUrl != url) {
+    albumArtTrace("public image transport: HTTP host=%s", ArtworkHttp::host(publicUrl).c_str());
+    if (attemptDownload(publicUrl)) return true;
+    if (deadlineReached(deadlineMs) || !allowSecureFallback) return false;
+    albumArtTrace("HTTP image unavailable, trying advertised HTTPS URL");
+  }
   return attemptDownload(url);
 }

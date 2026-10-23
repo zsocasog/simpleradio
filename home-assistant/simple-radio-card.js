@@ -9,6 +9,7 @@ class SimpleRadioCard extends HTMLElement {
       show_stations: true,
       ...config
     };
+    this._rendered = false;
 
     if (this._stationOpen === undefined) this._stationOpen = false;
     if (this._stationFilter === undefined) this._stationFilter = "";
@@ -16,7 +17,7 @@ class SimpleRadioCard extends HTMLElement {
 
   set hass(hass) {
     this._hass = hass;
-    if (this._rendered && this._stationOpen) {
+    if (this._rendered) {
       this.updateOpenCard();
       return;
     }
@@ -62,18 +63,54 @@ class SimpleRadioCard extends HTMLElement {
   }
 
   resolveImage(raw) {
-    if (!raw) return "";
+    raw = String(raw || "").trim();
+    if (!raw || /\.sr565(?:[?#]|$)/i.test(raw)) return "";
     if (/^https?:\/\//i.test(raw)) return raw;
     const base = String(this.config.radio_url || "").replace(/\/$/, "");
-    return base ? `${base}${String(raw).startsWith("/") ? raw : `/${raw}`}` : raw;
+    return base ? `${base}${raw.startsWith("/") ? raw : `/${raw}`}` : "";
   }
 
   stationImage(station) {
     return this.resolveImage(station?.logo || "");
   }
 
-  currentImage(attrs) {
-    return this.resolveImage(attrs.cachedArtworkPath || attrs.stationLogo || attrs.streamLogoUrl || "");
+  artworkCandidates(attrs) {
+    const station = this.stationList().find((item) => String(item.id) === String(attrs.stationId));
+    const sources = [
+      attrs.hasStreamImage ? attrs.cachedArtworkPath : "",
+      attrs.albumArtworkPath,
+      attrs.cachedArtworkPath,
+      attrs.streamLogoUrl,
+      attrs.stationLogo,
+      station?.logo
+    ];
+    return [...new Set(sources.map((source) => this.resolveImage(source)).filter(Boolean))];
+  }
+
+  updateArtwork() {
+    const art = this.querySelector(".sr-art");
+    if (!art) return;
+    const attrs = this.entity(this.config.station_entity)?.attributes || {};
+    const candidates = this.artworkCandidates(attrs);
+    const key = JSON.stringify(candidates);
+    if (art.dataset.artworkKey === key) return;
+    art.dataset.artworkKey = key;
+    art.replaceChildren();
+    art.textContent = "SR";
+
+    // Keep the fallback visible until a browser-readable image has loaded.
+    const tryNext = (index) => {
+      if (art.dataset.artworkKey !== key || index >= candidates.length) return;
+      const image = this.ownerDocument.createElement("img");
+      image.alt = "";
+      image.onload = () => {
+        if (art.dataset.artworkKey !== key) return;
+        art.replaceChildren(image);
+      };
+      image.onerror = () => tryNext(index + 1);
+      image.src = candidates[index];
+    };
+    tryNext(0);
   }
 
   stationList() {
@@ -195,7 +232,6 @@ class SimpleRadioCard extends HTMLElement {
     const safeVolume = Number.isFinite(volumeValue) ? Math.round(volumeValue) : 0;
 
     return {
-      image: this.currentImage(attrs),
       isPlaying,
       title,
       detailText,
@@ -210,11 +246,7 @@ class SimpleRadioCard extends HTMLElement {
     const state = this.captureInteractiveState();
     const model = this.currentViewModel();
 
-    const art = this.querySelector(".sr-art");
-    if (art) {
-      art.style.backgroundImage = model.image ? `url("${this.cssUrl(model.image)}")` : "none";
-      art.textContent = model.image ? "" : "SR";
-    }
+    this.updateArtwork();
 
     this.updateText(".sr-status-text", model.statusText);
     this.updateText(".sr-volume-chip", `${model.safeVolume}%`);
@@ -230,15 +262,26 @@ class SimpleRadioCard extends HTMLElement {
 
     const playIcon = this.querySelector(".play ha-icon");
     if (playIcon) playIcon.setAttribute("icon", model.isPlaying ? "mdi:stop" : "mdi:play");
+    const dot = this.querySelector(".sr-dot");
+    if (dot) {
+      dot.style.background = model.isPlaying ? "var(--success-color, #2fbd68)" : "var(--disabled-text-color)";
+      dot.style.boxShadow = model.isPlaying
+        ? "0 0 0 4px color-mix(in srgb, var(--success-color, #2fbd68) 18%, transparent)"
+        : "none";
+    }
 
     const stationsSignature = this.stationsSignature();
-    if (stationsSignature !== this._stationsSignature) {
+    const stationsChanged = stationsSignature !== this._stationsSignature;
+    if (stationsChanged) {
       this._stationsSignature = stationsSignature;
       const stationCount = this.stationList().length;
       this.updateText(".sr-picker-count", stationCount ? `${stationCount} mentett` : "Nincs lista");
     }
 
-    this.updateStationList({ preserveScroll: true });
+    if (stationsChanged || this._listedStationId !== model.currentStationId) {
+      this.updateStationList({ preserveScroll: true });
+      this._listedStationId = model.currentStationId;
+    }
     this.restoreInteractiveState(state);
   }
 
@@ -291,7 +334,6 @@ class SimpleRadioCard extends HTMLElement {
     const playback = this.entity(this.config.playback_entity);
     const volume = this.entity(this.config.volume_entity);
     const attrs = station?.attributes || {};
-    const image = this.currentImage(attrs);
     const isPlaying = playback?.state === "on" || attrs.playing === true;
     const title = attrs.title || this.entity(this.config.title_entity)?.state || "";
     const artist = attrs.artist || this.entity(this.config.artist_entity)?.state || "";
@@ -307,6 +349,7 @@ class SimpleRadioCard extends HTMLElement {
     const detailText = [artist, codec, bitrate].filter(Boolean).join(" · ");
     const statusText = isPlaying ? "Élő adás" : "Megállítva";
     this._stationsSignature = this.stationsSignature();
+    this._listedStationId = currentStationId;
 
     this.innerHTML = `
       <ha-card>
@@ -332,7 +375,6 @@ class SimpleRadioCard extends HTMLElement {
             height: 96px;
             border-radius: 14px;
             background: color-mix(in srgb, var(--secondary-background-color) 82%, black);
-            background-image: ${image ? `url("${this.cssUrl(image)}")` : "none"};
             background-size: contain;
             background-position: center;
             background-repeat: no-repeat;
@@ -344,6 +386,13 @@ class SimpleRadioCard extends HTMLElement {
           }
           .sr-main {
             min-width: 0;
+          }
+          .sr-art img {
+            width: 100%;
+            height: 100%;
+            min-height: 0;
+            object-fit: contain;
+            border-radius: inherit;
           }
           .sr-topline {
             display: flex;
@@ -613,7 +662,7 @@ class SimpleRadioCard extends HTMLElement {
         </style>
         <div class="sr-shell">
           <div class="sr-now">
-            <div class="sr-art">${image ? "" : "SR"}</div>
+            <div class="sr-art">SR</div>
             <div class="sr-main">
               <div class="sr-topline">
                 <span class="sr-status"><span class="sr-dot"></span><span class="sr-status-text">${statusText}</span></span>
@@ -681,6 +730,7 @@ class SimpleRadioCard extends HTMLElement {
     });
 
     this.attachStationRowHandlers();
+    this.updateArtwork();
     this.restoreInteractiveState(interactiveState);
     this._rendered = true;
   }

@@ -54,10 +54,18 @@ private:
     ITunes
   };
 
+  struct AlbumArtworkFallbacks {
+    std::vector<String> singles;
+    std::vector<String> artistCollections;
+    std::vector<String> unverified;
+    std::vector<String> compilations;
+  };
+
   bool download(const String& url, String& outPath, uint32_t budgetMs = 0, bool allowSecureFallback = true, const String& cacheKey = "");
   bool resolveAndDownloadAlbumArtwork(const String& artist, const String& title, const String& key, String& outPath);
   bool downloadEmbedded(const String& url, const std::vector<uint32_t>& segments, const String& key, String& outPath);
-  bool appendHttpRange(const String& url, uint32_t offset, uint32_t length, File& outFile);
+  bool appendHttpRange(const String& url, uint32_t offset, uint32_t length, File& outFile,
+                       const String& expectedKey);
   bool normalizeEmbeddedImage(const String& tempPath, const String& key, String& outPath);
   bool extractIcoImage(const String& sourcePath, const String& key, String& outPath);
   bool writeBmpFromIcoDib(const String& sourcePath, size_t offset, size_t length, const String& key, String& outPath);
@@ -69,7 +77,8 @@ private:
   String currentArtworkUrl() const;
   bool startDownloadTask(const String& url, bool idlePrewarm = false, bool allowSecureFallback = true);
   bool startAlbumArtworkTask(const String& artist, const String& title, const String& key);
-  std::vector<String> resolveAlbumArtworkUrls(const String& artist, const String& title, AlbumArtworkProvider provider);
+  std::vector<String> resolveAlbumArtworkUrls(const String& artist, const String& title, AlbumArtworkProvider provider,
+                                            uint32_t deadlineMs, AlbumArtworkFallbacks& fallbacks);
   void removeCachedArtworkFamily(const String& imagePath);
   bool startEmbeddedDownloadTask(const String& key, const String& url, const std::vector<uint32_t>& segments);
   bool startThumbnailTask(const String& imagePath, bool idlePrewarm = false, bool fillFrame = false);
@@ -134,8 +143,6 @@ private:
   String readyThumbnailPath;
   String lastThumbnailAttemptSource;
   unsigned long lastThumbnailAttemptMs = 0;
-  String lastTlsFailureUrl;
-  unsigned long lastTlsFailureMs = 0;
   std::vector<String> prewarmQueue;
   struct PrewarmFailure {
     String source;

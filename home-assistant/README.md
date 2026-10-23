@@ -53,7 +53,7 @@ Add a dashboard resource. Use a versioned URL so the browser cannot keep serving
 an older cached card script:
 
 ```yaml
-url: /local/simple-radio-card.js?v=10
+url: /local/simple-radio-card.js?v=11
 type: module
 ```
 
@@ -78,10 +78,18 @@ The station picker is collapsed by default. It loads stations from
 `sensor.simpleradio_stations`, includes a search field, and tapping a station
 publishes `play <station id>` to `command_topic`.
 
+Artwork uses the current stream image or album cover when available, then falls
+back to the cached station logo, stream logo, and saved station logo if loading
+fails. LCD-only `.sr565` files are skipped because browsers cannot display them.
+Set `radio_url` to the radio's reachable HTTP address: relative `/cache/` and
+`/logos/` paths belong to the radio, not the Home Assistant server. When opening
+Home Assistant over HTTPS, the browser must also be able to load the image URL
+(use an HTTPS reverse proxy for the radio if HTTP images are blocked).
+
 If you see an error such as `extra keys not allowed @ data['target']`, Home
 Assistant is still running an older cached card version. The `v2` card type and
 the versioned resource URL are there specifically to avoid that. Increase the
-query-string version after replacing the card file, for example `?v=10`.
+query-string version after replacing the card file, for example `?v=11`.
 
 ## Manual MQTT test
 
@@ -153,7 +161,7 @@ automatikusan közzéteszi a discovery-adatokat. A kártya telepítéséhez más
 add hozzá erőforrásként, például:
 
 ```yaml
-url: /local/simple-radio-card.js?v=10
+url: /local/simple-radio-card.js?v=11
 type: module
 ```
 
