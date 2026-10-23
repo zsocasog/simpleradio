@@ -317,6 +317,7 @@
                 <option value="station">Állomás</option>
                 <option value="datetime" data-i18n="display.footer.datetime">Dátum és idő</option>
                 <option value="vu">Animáció</option>
+                <option value="spectrum" data-i18n="display.footer.spectrum">Spektrum (24 sáv, FFT)</option>
                   </select>
                 </label>
                 <label id="displayVuStyleField" class="setting-row"><span>Animáció típusa</span>
@@ -326,7 +327,7 @@
                 <option value="classic">Középről induló VU</option>
                   </select>
                 </label>
-                <label id="displayVuSensitivityField" class="setting-row"><span data-i18n="display.vuSensitivity">VU érzékenység</span><span class="setting-range"><input id="displayVuSensitivity" type="range" min="50" max="200" step="5" oninput="setRawPercentLabel('displayVuSensitivity'); queueConfigSave()"><strong id="displayVuSensitivityValue">100%</strong></span></label>
+                <label id="displayVuSensitivityField" class="setting-row"><span data-i18n="display.vuSensitivity">VU / spektrum érzékenység</span><span class="setting-range"><input id="displayVuSensitivity" type="range" min="50" max="200" step="5" oninput="setRawPercentLabel('displayVuSensitivity'); queueConfigSave()"><strong id="displayVuSensitivityValue">100%</strong></span></label>
               </section>
 
               <section class="settings-section">
@@ -641,7 +642,7 @@
       <span id="footerVersion">v-</span>
     </footer>
   </div>
-  <script src="i18n.js?v=0.8.24"></script>
-  <script src="app.js?v=0.8.24"></script>
+  <script src="i18n.js?v=0.8.24&amp;ui=fft2"></script>
+  <script src="app.js?v=0.8.24&amp;ui=fft2"></script>
 </body>
 </html>

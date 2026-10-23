@@ -1702,7 +1702,7 @@ function syncDisplayFooterMode() {
   const vuField = $("displayVuStyleField");
   const vuSensitivityField = $("displayVuSensitivityField");
   if (vuField) vuField.classList.toggle("hidden", footerMode !== "vu");
-  if (vuSensitivityField) vuSensitivityField.classList.toggle("hidden", footerMode !== "vu");
+  if (vuSensitivityField) vuSensitivityField.classList.toggle("hidden", footerMode !== "vu" && footerMode !== "spectrum");
 }
 
 function normalizeHexColor(value, fallback = "#a9f7bf") {

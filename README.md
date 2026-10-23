@@ -11,6 +11,7 @@
 ## Highlights
 
 - LCD player with station artwork, metadata, volume screen, station picker, VU/footer modes and idle clocks.
+- Optional 24-band, 512-point FFT spectrum footer with third-octave logarithmic spacing (and a lowest-bass bucket), time-based smoothing and the symmetric VU's full-width bar grid. Select **Spectrum (24 bands, FFT)** under **Display → Bottom display band**. It analyzes decoded stereo PCM in a worker below audio priority, only while visible. Bands show mean spectral power; startup test tones validate the FFT, and `[spectrum]` diagnostics every five seconds report input flow and processing delays. Existing VU modes remain available.
 - Web UI for playback, station editing and search, EQ/balance, display settings, encoders, IR remote, WiFi, MQTT and OTA.
 - MP3, AAC/AAC+, FLAC, OGG/Vorbis, Opus and other stream formats supported by `ESP32-audioI2S`.
 - Artwork from local files, station URLs, ICY metadata or Radio Browser; LCD-ready cache keeps repeated playback responsive.

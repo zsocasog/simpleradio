@@ -226,6 +226,10 @@ static void cycleDisplayFooterView() {
              config.displayVuStyleId == DisplayVuStyle::Symmetric) {
     config.displayVuStyle = "classic";
     config.displayVuStyleId = DisplayVuStyle::Classic;
+  } else if (config.displayFooterModeId == DisplayFooterMode::Vu &&
+             config.displayVuStyleId == DisplayVuStyle::Classic) {
+    config.displayFooterMode = "spectrum";
+    config.displayFooterModeId = DisplayFooterMode::Spectrum;
   } else {
     config.displayFooterMode = "off";
     config.displayFooterModeId = DisplayFooterMode::Off;

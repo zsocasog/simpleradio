@@ -1,4 +1,5 @@
 #include "audio_player.h"
+#include "audio_spectrum.h"
 #include "audio_meter.h"
 #include "../artwork/artwork_cache.h"
 #include "../state/player_state.h"
@@ -235,6 +236,8 @@ void AudioPlayer::applyProcessingSettings(const AppConfig& config, const PlayerS
     lastVuProcessing = vuNeeded;
     AudioMeter::instance().setEnabled(vuNeeded);
   }
+  AudioSpectrum::instance().setEnabled(config.displayFooterModeId == DisplayFooterMode::Spectrum &&
+                                       state.playing && audio.isRunning(), audio.getSampleRate());
 
   bool iirNeeded = state.eqLow != 0 || state.eqMid != 0 || state.eqHigh != 0;
   if (iirNeeded != lastIirProcessing) {
@@ -491,6 +494,7 @@ void AudioPlayer::service() {
   if (wifiConnected != lastWifiConnected) {
     lastWifiConnected = wifiConnected;
     if (!wifiConnected && s.playing) {
+      AudioSpectrum::instance().setEnabled(false, 0);
       audio.stopSong();
       lastRetryMs = millis();
       PlayerState::instance().setStreamConnectionState(StreamConnectionState::WaitingForNetwork, connectFailureCount);
@@ -500,6 +504,7 @@ void AudioPlayer::service() {
   }
 
   if (s.playing != lastPlaying) {
+    AudioSpectrum::instance().setEnabled(false, 0);
     lastPlaying = s.playing;
     audioLoopStallCount = 0;
     if (s.playing && s.streamUrl.length()) {
@@ -526,6 +531,7 @@ void AudioPlayer::service() {
   }
 
   if (s.playing && s.streamUrl.length() && s.streamUrl != lastStreamUrl) {
+    AudioSpectrum::instance().setEnabled(false, 0);
     streamControlOperation = true;
     audio.stopSong();
     delay(50);

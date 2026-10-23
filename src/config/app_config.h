@@ -14,7 +14,8 @@ enum class DisplayFooterMode : uint8_t {
   Volume = 1,
   Off = 2,
   Station = 3,
-  DateTime = 4
+  DateTime = 4,
+  Spectrum = 5
 };
 
 enum class DisplayVuStyle : uint8_t {

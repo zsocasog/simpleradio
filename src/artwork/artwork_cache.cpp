@@ -1,5 +1,6 @@
 #include "artwork_cache.h"
 #include "artwork_http.h"
+#include "artwork_release_rank.h"
 
 #include <Arduino.h>
 static auto& artworkTraceSerial = Serial;
@@ -41,7 +42,7 @@ static constexpr unsigned long CURRENT_ARTWORK_TLS_GRACE_MS = 5000;
 static constexpr unsigned long ALBUM_ART_LOOKUP_BUDGET_MS = 35000;
 static constexpr unsigned long ALBUM_ART_IMAGE_BUDGET_MS = 12000;
 static constexpr unsigned long ALBUM_ART_MISSING_RETRY_MS = 120000;
-static constexpr const char* ALBUM_ART_CACHE_PREFIX = "album:v4:";
+static constexpr const char* ALBUM_ART_CACHE_PREFIX = "album:v5:";
 static constexpr size_t PREWARM_QUEUE_LIMIT = 160;
 static constexpr uint32_t MIN_BUDGETED_HTTP_MS = 500;
 static constexpr BaseType_t ARTWORK_TASK_CORE = 1;
@@ -1456,18 +1457,8 @@ static bool isCompilationArtist(String artist) {
 
 enum class AlbumArtworkKind { Album, Single, ArtistCollection, Unverified, Compilation };
 
-static bool compilationAlbumTitle(String title) {
-  title.toLowerCase();
-  for (const char* marker : {"soundtrack", "motion picture", "music from ", "various artists",
-                            "compilation", "greatest hits", "best of ", "chart hits",
-                            "now that's what i call", "bravo hits", "hit mania"}) {
-    if (title.indexOf(marker) >= 0) return true;
-  }
-  // E.g. "The O.C. Mix 5": do not confuse a numbered TV/DJ collection
-  // with a studio mix subtitle on an otherwise matching song.
-  const int mixAt = title.indexOf("mix ");
-  return mixAt >= 0 && mixAt + 4 < static_cast<int>(title.length()) &&
-         isdigit(static_cast<unsigned char>(title[mixAt + 4]));
+static bool compilationAlbumTitle(const String& title) {
+  return ArtworkReleaseRank::collectionTitle(std::string_view(title.c_str(), title.length()));
 }
 
 static bool albumArtistOwnsTrack(const String& albumArtist, const String& trackArtist) {
@@ -1505,7 +1496,8 @@ static AlbumArtworkKind albumArtworkKind(const String& albumArtist, const String
     return AlbumArtworkKind::Compilation;
   }
   if (!albumArtist.length()) return AlbumArtworkKind::Unverified;
-  if (collection || compilationAlbumTitle(albumTitle)) return AlbumArtworkKind::ArtistCollection;
+  if (collection || compilationAlbumTitle(albumTitle) ||
+      ArtworkReleaseRank::collectionMetadata("", "", primaryType.c_str())) return AlbumArtworkKind::ArtistCollection;
   String lower = albumTitle;
   lower.toLowerCase();
   if (primaryType == "Single" || primaryType == "EP" || primaryType == "single" || primaryType == "ep" ||
@@ -1550,6 +1542,8 @@ struct StoreArtworkAlbum {
   String cover;
   String trackArtist;
   int quality;
+  String releaseDate;
+  AlbumArtworkKind kind = AlbumArtworkKind::Unverified;
 };
 
 static bool isStoreAlbumId(const String& id) {
@@ -1561,18 +1555,14 @@ static bool isStoreAlbumId(const String& id) {
 }
 
 static void rankStoreArtworkAlbums(std::vector<StoreArtworkAlbum>& albums) {
-  auto rank = [](const StoreArtworkAlbum& album) {
-    String name = album.title;
-    name.toLowerCase();
-    int priority = 3;
-    if (compilationAlbumTitle(name)) priority = 0;
-    else if (name.endsWith(" - single") || name.endsWith(" - ep")) priority = 1;
-    else if (name.indexOf("expanded") >= 0 || name.indexOf("deluxe") >= 0 ||
-             name.indexOf("anniversary") >= 0 || name.indexOf("bonus") >= 0) priority = 2;
-    return priority * 10 + album.quality;
+  auto release = [](const StoreArtworkAlbum& album) -> ArtworkReleaseRank::Release {
+    return {std::string_view(album.title.c_str(), album.title.length()),
+            std::string_view(album.releaseDate.c_str(), album.releaseDate.length()), album.quality,
+            album.kind == AlbumArtworkKind::Compilation || album.kind == AlbumArtworkKind::ArtistCollection,
+            album.kind == AlbumArtworkKind::Single};
   };
   std::stable_sort(albums.begin(), albums.end(), [&](const StoreArtworkAlbum& a, const StoreArtworkAlbum& b) {
-    return rank(a) > rank(b);
+    return ArtworkReleaseRank::prefer(release(a), release(b));
   });
 }
 
@@ -1879,7 +1869,7 @@ std::vector<String> ArtworkCache::resolveAlbumArtworkUrls(const String& artist, 
           }
           if (!duplicate && isStoreAlbumId(id) && albums.size() < 8) {
             albums.push_back({id, track["album"]["title"] | "", track["album"]["cover_medium"] | "",
-                              foundArtist, quality});
+                              foundArtist, quality, track["release_date"] | ""});
           }
         } else albumArtTrace("Deezer reject: %s - %s", foundArtist.c_str(), foundTitle.c_str());
       }
@@ -1945,7 +1935,7 @@ std::vector<String> ArtworkCache::resolveAlbumArtworkUrls(const String& artist, 
               }
             }
             if (!duplicate && isStoreAlbumId(id) && albums.size() < 8) {
-              albums.push_back({id, albumTitle, cover, foundArtist, quality});
+              albums.push_back({id, albumTitle, cover, foundArtist, quality, result["releaseDate"] | ""});
             }
           }
         } else albumArtTrace("iTunes reject: %s - %s", foundArtist.c_str(), foundTitle.c_str());
@@ -1963,8 +1953,7 @@ std::vector<String> ArtworkCache::resolveAlbumArtworkUrls(const String& artist, 
       const bool lookupOk = albumIds.length() &&
           fetchArtworkJson("https://itunes.apple.com/lookup?id=" + albumIds + "&entity=album",
                            doc, deadlineMs, cancelled);
-      for (const StoreArtworkAlbum& album : albums) {
-        AlbumArtworkKind kind = AlbumArtworkKind::Unverified;
+      for (StoreArtworkAlbum& album : albums) {
         if (lookupOk) {
           JsonArray lookupResults = doc["results"].as<JsonArray>();
           for (JsonObject result : lookupResults) {
@@ -1972,16 +1961,28 @@ std::vector<String> ArtworkCache::resolveAlbumArtworkUrls(const String& artist, 
             const String albumArtist = result["artistName"] | "";
             const String albumTitle = result["collectionName"] | album.title;
             const int tracks = result["trackCount"] | 0;
-            kind = albumArtworkKind(albumArtist, album.trackArtist, albumTitle,
-                                     tracks > 0 && tracks <= 4 ? "Single" : "Album");
-            albumArtTrace("iTunes album owner: %s - %s", albumArtist.c_str(), albumTitle.c_str());
+            const String copyright = result["copyright"] | "";
+            const String genre = result["primaryGenreName"] | "";
+            const bool collection = ArtworkReleaseRank::collectionMetadata(copyright.c_str(), genre.c_str());
+            album.kind = albumArtworkKind(albumArtist, album.trackArtist, albumTitle,
+                                           tracks > 0 && tracks <= 4 ? "Single" : "Album", collection);
+            album.title = albumTitle;
+            const String releaseDate = result["releaseDate"] | "";
+            if (releaseDate.length()) album.releaseDate = releaseDate;
+            albumArtTrace("iTunes album owner: %s - %s (%s%s)", albumArtist.c_str(), albumTitle.c_str(),
+                          album.releaseDate.c_str(), collection ? "; collection metadata" : "");
             break;
           }
         }
-        if (album.quality < 2 && kind != AlbumArtworkKind::Album) continue;
-        addCandidate(album.cover, kind, album.title);
       }
       doc.clear();
+      // The lookup may reveal a soundtrack/compilation or a parent box set
+      // whose title differs from the song search. Rank AGAIN using that data.
+      rankStoreArtworkAlbums(albums);
+      for (const StoreArtworkAlbum& album : albums) {
+        if (album.quality < 2 && album.kind != AlbumArtworkKind::Album) continue;
+        addCandidate(album.cover, album.kind, album.title);
+      }
     }
   }
   return urls;

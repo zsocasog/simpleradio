@@ -16,6 +16,7 @@ static DisplayFooterMode parseFooterMode(const String& value) {
   if (value == "off") return DisplayFooterMode::Off;
   if (value == "station") return DisplayFooterMode::Station;
   if (value == "datetime") return DisplayFooterMode::DateTime;
+  if (value == "spectrum") return DisplayFooterMode::Spectrum;
   return DisplayFooterMode::Vu;
 }
 
@@ -258,7 +259,7 @@ bool AppConfig::applyJson(const JsonDocument& doc) {
     displayFooterMode = doc["displayFooterMode"].as<String>();
     if (displayFooterMode != "volume" && displayFooterMode != "off" &&
         displayFooterMode != "station" && displayFooterMode != "datetime" &&
-        displayFooterMode != "vu") {
+        displayFooterMode != "vu" && displayFooterMode != "spectrum") {
       displayFooterMode = "volume";
     }
     displayFooterModeId = parseFooterMode(displayFooterMode);

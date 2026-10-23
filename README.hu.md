@@ -11,6 +11,7 @@
 ## Főbb képességek
 
 - LCD-lejátszó állomáslogóval, metaadatokkal, hangerőnézettel, állomásválasztóval, VU/alsó sáv módokkal és készenléti órákkal.
+- Külön választható, 24 sávos, 512 pontos FFT-spektrum harmadoktávos logaritmikus beosztással (legalul basszusgyűjtősávval), időalapú simítással és a szimmetrikus VU teljes szélességű oszlopsorával. Beállítás: **Kijelző → Alsó kijelzősáv → Spektrum (24 sáv, FFT)**. A dekódolt sztereó hang elemzése külön, az audiónál alacsonyabb prioritású feladatban, csak látható spektrumnál fut. A sávok átlagos spektrális teljesítményt mutatnak; az FFT induláskor teszthangokkal ellenőrzi magát, az ötmásodpercenkénti `[spectrum]` sorok pedig az adatellátást és feldolgozási késéseket is jelzik. A korábbi VU-módok megmaradnak.
 - Webes kezelőfelület lejátszáshoz, állomáskereséshez és -szerkesztéshez, EQ/balance-hoz, kijelzőhöz, enkóderekhez, IR-távirányítóhoz, WiFihez, MQTT-hez és OTA-hoz.
 - MP3, AAC/AAC+, FLAC, OGG/Vorbis, Opus és más, az `ESP32-audioI2S` által támogatott streamformátumok.
 - Helyi fájlból, állomás-URL-ből, ICY metaadatból vagy Radio Browserből érkező logók; az LCD-re optimalizált cache gyorsítja az ismételt lejátszást.

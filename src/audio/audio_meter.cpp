@@ -1,4 +1,5 @@
 #include "audio_meter.h"
+#include "audio_spectrum.h"
 
 #include <freertos/FreeRTOS.h>
 #include <freertos/portmacro.h>
@@ -85,4 +86,5 @@ AudioMeterSnapshot AudioMeter::snapshot() const {
 
 void audio_process_raw_samples(int32_t* outBuff, int16_t validSamples) {
   AudioMeter::instance().updateFromSamples(outBuff, validSamples);
+  AudioSpectrum::instance().capture(outBuff, validSamples);
 }

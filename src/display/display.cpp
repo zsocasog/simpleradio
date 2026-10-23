@@ -2,6 +2,7 @@
 #include <LittleFS.h>
 #include <LovyanGFX.hpp>
 #include "../audio/audio_meter.h"
+#include "../audio/audio_spectrum.h"
 #include "../artwork/artwork_cache.h"
 #include "../config/app_config.h"
 #include "../config/hardware_config.h"
@@ -104,6 +105,7 @@ static constexpr int FOOTER_REGION_W = SCREEN_W;
 static constexpr int FOOTER_REGION_H = SCREEN_H - FOOTER_REGION_Y;
 static constexpr unsigned long METER_RENDER_MS = 42;
 static constexpr int VU_BAR_COUNT = 24;
+static_assert(SpectrumMath::BAND_COUNT <= VU_BAR_COUNT, "Spectrum exceeds the shared meter buffers");
 static constexpr int VU_HALF_COUNT = VU_BAR_COUNT / 2;
 static constexpr int VU_BAR_W = ss(9);
 static constexpr int VU_BAR_GAP = ss(7);
@@ -160,6 +162,9 @@ static uint16_t cLine;
 static const LcdFont* currentUiFont = &kLcdFontSmall;
 static uint8_t vuBars[VU_BAR_COUNT] = {0};
 static uint8_t renderedVuBars[VU_BAR_COUNT] = {0};
+static std::array<float, SpectrumMath::BAND_COUNT> spectrumEnvelope{};
+static unsigned long lastSpectrumEnvelopeMs = 0;
+static bool spectrumDisplayVisible = false;
 static bool vuRendered = false;
 static uint8_t vuRenderedStyleKey = 255;
 static int vuRenderedClearY = 0;
@@ -1238,6 +1243,10 @@ static DisplayFooterMode footerMode() {
   return AppConfig::instance().displayFooterModeId;
 }
 
+static bool audioFooterMode() {
+  return footerMode() == DisplayFooterMode::Vu || footerMode() == DisplayFooterMode::Spectrum;
+}
+
 static bool vuSymmetricStyle() {
   return AppConfig::instance().displayVuStyleId == DisplayVuStyle::Symmetric;
 }
@@ -1281,6 +1290,16 @@ static void clearVuBars() {
   for (int i = 0; i < VU_BAR_COUNT; ++i) {
     vuBars[i] = 0;
   }
+  spectrumEnvelope.fill(0);
+  lastSpectrumEnvelopeMs = 0;
+}
+
+static void setSpectrumDisplayVisibility(bool visible) {
+  if (spectrumDisplayVisible != visible) {
+    spectrumDisplayVisible = visible;
+    clearVuBars();
+  }
+  AudioSpectrum::instance().setDisplayVisible(visible);
 }
 
 static void resetVuAutoScale() {
@@ -1499,6 +1518,30 @@ static bool updateVuBars(bool playing) {
   return changed || hasFreshSignal || vuBarsHaveSignal();
 }
 
+static bool updateSpectrumBars(bool playing) {
+  const AudioSpectrumSnapshot spectrum = AudioSpectrum::instance().snapshot();
+  const unsigned long now = millis();
+  const bool fresh = playing && SpectrumMath::usableFrame(spectrum.active, now, spectrum.updatedMs);
+  uint32_t elapsedMs = lastSpectrumEnvelopeMs ? now - lastSpectrumEnvelopeMs : METER_RENDER_MS;
+  // A delayed LCD frame is not a visibility change. Preserve the envelope
+  // through a drawing stall instead of clearing every bar at once.
+  elapsedMs = min<uint32_t>(elapsedMs, 100);
+  lastSpectrumEnvelopeMs = now;
+  const uint16_t sensitivity = constrain(AppConfig::instance().displayVuSensitivity, 50, 200);
+  const float gainDb = 20.0f * log10f(sensitivity / 100.0f);
+  bool changed = false;
+  for (size_t i = 0; i < SpectrumMath::BAND_COUNT; ++i) {
+    const float level = fresh ? SpectrumMath::levelWithGain(spectrum.bands[i], gainDb) : 0;
+    spectrumEnvelope[i] = SpectrumMath::smoothLevel(spectrumEnvelope[i], level, elapsedMs);
+    const uint8_t next = static_cast<uint8_t>(lroundf(spectrumEnvelope[i] * VU_SYMMETRIC_MAX_H / 255.0f));
+    const uint8_t current = vuBars[i];
+    vuBars[i] = next;
+    changed = changed || next != current;
+  }
+  for (size_t i = SpectrumMath::BAND_COUNT; i < VU_BAR_COUNT; ++i) vuBars[i] = 0;
+  return changed || fresh;
+}
+
 struct VuLayout {
   bool symmetric = false;
   bool classic = false;
@@ -1510,21 +1553,27 @@ struct VuLayout {
   int maxH = 0;
   int clearY = 0;
   int clearH = 0;
+  int barCount = VU_BAR_COUNT;
+  int barWidth = VU_BAR_W;
+  int barGap = VU_BAR_GAP;
 };
 
 static VuLayout currentVuLayout() {
-  DisplayVuStyle style = AppConfig::instance().displayVuStyleId;
+  const bool spectrum = footerMode() == DisplayFooterMode::Spectrum;
+  DisplayVuStyle style = spectrum ? DisplayVuStyle::Symmetric : AppConfig::instance().displayVuStyleId;
   bool symmetric = style == DisplayVuStyle::Symmetric;
   bool classic = style == DisplayVuStyle::Classic;
-  const int gapCount = VU_BAR_COUNT - 1;
-  const int meterW = VU_BAR_COUNT * VU_BAR_W + max(0, gapCount) * VU_BAR_GAP;
   VuLayout layout;
   layout.symmetric = symmetric;
   layout.classic = classic;
-  layout.styleKey = static_cast<uint8_t>(style);
-  layout.meterW = meterW;
-  layout.meterX = (SCREEN_W - meterW) / 2;
-  layout.centerX = layout.meterX + meterW / 2;
+  layout.styleKey = spectrum ? 128 : static_cast<uint8_t>(style);
+  if (spectrum) {
+    // Same complete 24-column grid, thin bars and gaps as the symmetric VU.
+    layout.barCount = SpectrumMath::BAND_COUNT;
+  }
+  layout.meterW = layout.barCount * layout.barWidth + (layout.barCount - 1) * layout.barGap;
+  layout.meterX = (SCREEN_W - layout.meterW) / 2;
+  layout.centerX = layout.meterX + layout.meterW / 2;
   layout.axisY = (symmetric || classic) ? VU_SYMMETRIC_CENTER_Y : VU_BASELINE_Y;
   layout.maxH = (symmetric || classic) ? VU_SYMMETRIC_MAX_H : VU_MAX_H;
   layout.clearY = layout.axisY - layout.maxH - 4;
@@ -1534,7 +1583,7 @@ static VuLayout currentVuLayout() {
 
 static int vuBarXInLayout(const VuLayout& layout, int index) {
   if (!layout.classic) {
-    return layout.meterX + index * (VU_BAR_W + VU_BAR_GAP);
+    return layout.meterX + index * (layout.barWidth + layout.barGap);
   }
   const int half = VU_BAR_COUNT / 2;
   const int centerGapLeft = VU_BAR_GAP / 2;
@@ -1559,7 +1608,7 @@ static void drawVuBarInLayout(const VuLayout& layout, int index, int height) {
   int x = vuBarXInLayout(layout, index);
   int y = layout.axisY - height;
   int barH = (layout.symmetric || layout.classic) ? height * 2 + 1 : height;
-  lcd.fillRoundRect(x, y, VU_BAR_W, barH, 3, vuBarColor());
+  lcd.fillRoundRect(x, y, layout.barWidth, barH, 3, vuBarColor());
 }
 
 static void restoreVuRect(int x, int y, int w, int h) {
@@ -1576,10 +1625,10 @@ static void restoreShrinkingVuBar(const VuLayout& layout, int index, int oldHeig
   int exposed = oldHeight - newHeight;
 
   if (layout.symmetric || layout.classic) {
-    restoreVuRect(x - 1, layout.axisY - oldHeight - 1, VU_BAR_W + 2, exposed + 3);
-    restoreVuRect(x - 1, layout.axisY + newHeight - 1, VU_BAR_W + 2, exposed + 3);
+    restoreVuRect(x - 1, layout.axisY - oldHeight - 1, layout.barWidth + 2, exposed + 3);
+    restoreVuRect(x - 1, layout.axisY + newHeight - 1, layout.barWidth + 2, exposed + 3);
   } else {
-    restoreVuRect(x - 1, layout.axisY - oldHeight - 1, VU_BAR_W + 2, exposed + 3);
+    restoreVuRect(x - 1, layout.axisY - oldHeight - 1, layout.barWidth + 2, exposed + 3);
   }
 }
 
@@ -1603,6 +1652,7 @@ static void clearRenderedVuArea(const VuLayout& layout) {
 
 static void drawVuMeter(const DisplayModel& m, bool forceFull = false) {
   VuLayout layout = currentVuLayout();
+  if (vuRendered && vuRenderedStyleKey != layout.styleKey) clearVuBars();
   if (!m.playing && !vuBarsHaveSignal()) {
     if (vuRendered || forceFull) {
       clearRenderedVuArea(layout);
@@ -1622,7 +1672,7 @@ static void drawVuMeter(const DisplayModel& m, bool forceFull = false) {
     if (!layout.classic) {
       drawVuBaselineInLayout(layout, layout.meterX, layout.meterW);
     }
-    for (int i = 0; i < VU_BAR_COUNT; ++i) {
+    for (int i = 0; i < layout.barCount; ++i) {
       drawVuBarInLayout(layout, i, vuBars[i]);
       renderedVuBars[i] = vuBars[i];
     }
@@ -1635,12 +1685,12 @@ static void drawVuMeter(const DisplayModel& m, bool forceFull = false) {
   }
 
   lcd.startWrite();
-  for (int i = 0; i < VU_BAR_COUNT; ++i) {
+  for (int i = 0; i < layout.barCount; ++i) {
     if (renderedVuBars[i] == vuBars[i]) continue;
     restoreShrinkingVuBar(layout, i, renderedVuBars[i], vuBars[i]);
     int x = vuBarXInLayout(layout, i);
     if (!layout.classic) {
-      drawVuBaselineInLayout(layout, x, VU_BAR_W);
+      drawVuBaselineInLayout(layout, x, layout.barWidth);
     }
     drawVuBarInLayout(layout, i, vuBars[i]);
     renderedVuBars[i] = vuBars[i];
@@ -1770,7 +1820,7 @@ static void drawFooterRegion(const DisplayModel& m) {
     drawPlayerSurfaceRegion(FOOTER_REGION_X, FOOTER_REGION_Y, FOOTER_REGION_W, FOOTER_REGION_H);
     resetRenderedVuMeter();
     drawProgressBar(m, BAR_Y);
-  } else if (mode == DisplayFooterMode::Vu) {
+  } else if (mode == DisplayFooterMode::Vu || mode == DisplayFooterMode::Spectrum) {
     resetDateTimeFooter();
     if (volumeRestoreInProgress) {
       drawPlayerSurfaceRegion(FOOTER_REGION_X, FOOTER_REGION_Y, FOOTER_REGION_W, FOOTER_REGION_H);
@@ -3077,6 +3127,10 @@ void Display::renderNow(const DisplayModel& m) {
   uint8_t currentFooterMode = footerRenderKey();
   bool footerModeChanged = currentFooterMode != lastFooterMode;
   if (m.equals(lastModel) && !footerModeChanged && !idleGuardBlanked) return;
+  if (footerModeChanged) {
+    clearVuBars();
+    resetVuAutoScale();
+  }
 
   DisplayModel previous = lastModel;
   bool hadRenderedModel = hasRenderedModel;
@@ -3304,6 +3358,7 @@ void Display::renderStationPickerMarqueeFrame() {
 
 void Display::tickNow() {
   if (bootActive) {
+    setSpectrumDisplayVisibility(false);
     unsigned long now = millis();
     if (!lastBootFrameMs || now - lastBootFrameMs >= METER_RENDER_MS) {
       if (bootProgress < bootProgressTarget) {
@@ -3335,6 +3390,7 @@ void Display::tickNow() {
   }
 
   if (idleGuardBlanked) {
+    setSpectrumDisplayVisibility(false);
     unsigned long now = millis();
     if (now < idleGuardRestoreMs) return;
     idleGuardBlanked = false;
@@ -3383,13 +3439,11 @@ void Display::renderDateTimeFooterFrame(bool force) {
 }
 
 void Display::renderAudioMeterFrame(bool force) {
-  if (!hasRenderedModel ||
-      idleBlanked ||
-      idleClockActive ||
-      lastModel.apMode ||
-       stationPickerActive ||
-       volumePopupUntil ||
-       footerMode() != DisplayFooterMode::Vu) {
+  const bool visible = hasRenderedModel &&
+      !idleBlanked && !idleClockActive && !lastModel.apMode &&
+      !stationPickerActive && !volumePopupUntil && audioFooterMode();
+  setSpectrumDisplayVisibility(visible && lastModel.playing && footerMode() == DisplayFooterMode::Spectrum);
+  if (!visible) {
     return;
   }
 
@@ -3405,7 +3459,8 @@ void Display::renderAudioMeterFrame(bool force) {
     return;
   }
 
-  bool active = updateVuBars(lastModel.playing);
+  bool active = footerMode() == DisplayFooterMode::Spectrum
+                  ? updateSpectrumBars(lastModel.playing) : updateVuBars(lastModel.playing);
   if (!force && !active) return;
   drawVuMeter(lastModel);
 }
