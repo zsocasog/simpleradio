@@ -62,6 +62,18 @@ To preconfigure Last.fm, add `-D SIMPLE_RADIO_LASTFM_API_KEY=\"YourLastFmApiKey\
 
 The pinned audio library remains unchanged in version. During builds, `tools/patch_audio_hls.py` applies a narrowly scoped HLS playlist URL-resolution fix (including `../` parent paths) to the local dependency. It adds no network requests and refuses an unfamiliar library source rather than silently applying an incompatible patch.
 
+MQTT_HOST, MQTT_PORT, MQTT_USER, MQTT_PASS and MQTT_ROOT_TOPIC build definitions in secrets.ini can preconfigure the broker connection. An existing saved nonempty broker host takes priority together with its saved settings, including intentional empty credentials. Supplying defaults does not enable MQTT. Add definitions to the existing local build_src_flags list; the example file shows the format.
+
+Deleting a Last.fm key on the System page is a one-shot button action, enabled only when a web-saved key exists. It does not erase the compiled fallback key; the status distinguishes that source.
+
+Station-logo downsizing applies to public HTTP(S) logo sources for newly added stations in general. Known official small variants take priority; other public sources use wsrv.nl with aspect-preserving JPEG output up to 176×176 pixels. Only the public image URL is passed to the service. Local uploads, IP literals, internal hostnames and credential-bearing URLs stay on the original path. Cache identity remains the original URL and failed resizing falls back to the original image. The existing generic 150×150 browser preparation when saving stations remains in place. Album and embedded artwork keep their established search and display paths.
+
+Dragging VU/spectrum sensitivity sends RAM-only previews. Releasing the slider saves its latest value once, coalescing rapid adjustments; concurrent configuration responses cannot reset a slider being edited. Atomic JSON saves batch writes into 512-byte blocks and retain the previous file on incomplete writes. This update requires both firmware and data uploads.
+
+Station JPEGs are checked before storage. Progressive, extended and unsupported color encodings use a compatible resized alternative for any station. Proven unsupported JPEGs in the old cache are retired for repair only when no ready LCD pixels exist; user uploads and sources that merely encounter temporary decoding-memory pressure are retained.
+
+While stopped, the selected station's logo takes priority, followed by missing saved-station logos serially. Background starts have a three-second scheduling interval, prepared images are skipped and failed sources have a retry delay. Playback suppresses station-list scans. Serial messages include idle station prewarm queued, prewarm download start and LCD station logo ready. This LCD-compatibility/preloading fix needs only a firmware upload when keeping the latest WebUI/data.
+
 ## Screenshots
 
 ### LCD in use

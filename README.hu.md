@@ -62,6 +62,18 @@ A Last.fm előzetes beállításához a helyi `[env:esp32-s3-devkitc1-n16r8]` sz
 
 Az audiókönyvtár rögzített verziója megmarad. A `tools/patch_audio_hls.py` fordításkor kizárólag a HLS-listák URL-feloldásának célzott javítását alkalmazza a helyi függőségen (a `../` szülőkönyvtárak kezelésével együtt). Ez nem jár plusz hálózati lekérésekkel; ismeretlen könyvtárforrásnál a build megáll, nem alkalmaz ellenőrizetlen javítást.
 
+A secrets.ini-ben az MQTT_HOST, MQTT_PORT, MQTT_USER, MQTT_PASS és MQTT_ROOT_TOPIC builddefiníciókkal előre megadható az MQTT-kapcsolat. A már weben elmentett, nem üres hosthoz tartozó beállítások elsőbbséget élveznek, az üres felhasználónév/jelszó is megmarad. Előre megadott adatok önmagukban nem kapcsolják be az MQTT-t. A helyi fájlban az adatokat a meglévő build_src_flags listához kell hozzáadni; a mintafájl mutatja a formátumot.
+
+A Rendszer oldalon a Last.fm-kulcs törlése egyszeri gombművelet. Csak akkor aktív, ha van weben mentett kulcs; az előre megadott firmware-kulcsot nem törli, annak használatát külön állapotjelzés mutatja.
+
+Az állomáslogók kicsinyítése minden újonnan felvett adó nyilvános HTTP(S) logóforrására kiterjed. Az ismert hivatalos kis változatok után általánosan a wsrv.nl képkicsinyítő szolgáltatását használjuk, legfeljebb 176×176 pixeles, képarányt megőrző JPEG-kimenettel. Csak a nyilvános kép URL-jét adjuk át; helyi feltöltések, IP-címek, belső hálózati címek és hitelesítési adatot tartalmazó URL-ek az eredeti úton maradnak. A cache kulcsa továbbra is az eredeti URL, és sikertelen kicsinyítéskor az eredeti kép következik. A webes mentés korábbi, minden adóra alkalmazott 150×150 pixeles böngészős előkészítése is megmarad. Az album- és streamborítók keresési és megjelenítési útja változatlan.
+
+A VU/spektrum érzékenységének húzása csak RAM-os előnézetet küld. A legutolsó értéket elengedéskor mentjük, a gyors egymás utáni állításokat összevonva; a közben érkező teljes konfigurációválasz nem állítja vissza a csúszkát. Az atomi JSON-mentés 512 bájtos blokkokban ír, és hiányos írásnál megtartja az előző fájlt. Ehhez a csomaghoz firmware és data feltöltése is szükséges.
+
+Az állomáslogóknál a letöltött JPEG formátumát még mentés előtt ellenőrizzük. A progresszív, kiterjesztett vagy nem támogatott színformátumú JPEG helyett minden adónál kompatibilis kicsinyített változatot próbálunk. A régi cache-ben talált, bizonyítottan nem támogatott JPEG csak akkor kerül újra-előkészítésre, ha nincs hozzá kész LCD-kép; felhasználói feltöltést és átmeneti memóriahibánál az eredetit nem töröljük.
+
+Álló lejátszónál a kiválasztott adó logója elsőbbséget kap, majd a mentett adók hiányzó logói sorban készülnek elő. Egyszerre egy feladat fut, a munka között három másodperc ütemezési szünettel; a kész képeket kihagyjuk, a hibás források újrapróbálkozása késleltetett. Lejátszás közben nincs teljes állomásbejárás. Soros visszajelzés: idle station prewarm queued, prewarm download start és LCD station logo ready. Ehhez az LCD-kompatibilitási és előtöltési javításhoz a legutóbbi WebUI/data megtartása mellett csak firmware-feltöltés szükséges.
+
 ## Képernyőképek
 
 ### LCD működés közben

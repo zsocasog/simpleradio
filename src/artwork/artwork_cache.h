@@ -168,6 +168,9 @@ private:
   unsigned long pendingPlaybackStartedMs = 0;
   unsigned long artworkStartedMs = 0;
   bool lastArtworkPlaying = false;
+  uint32_t lastCachedArtworkProbeMs = 0;
+  uint32_t lastCachedArtworkProbeHash = 0;
+  int lastIdlePrewarmStationId = -1;
   volatile bool audioConnectionReady = false;
   volatile unsigned long audioConnectionReadyMs = 0;
 };

@@ -1721,6 +1721,16 @@ void webServerBegin() {
     }
   );
 
+  server.on("/api/display/sensitivity", HTTP_POST, [](AsyncWebServerRequest* request) {
+    if (!request->hasParam("value", true)) {
+      request->send(400, "text/plain", "Missing sensitivity");
+      return;
+    }
+    AppConfig::instance().displayVuSensitivity = constrain(
+        request->getParam("value", true)->value().toInt(), 50, 200);
+    request->send(200, "application/json", "{\"ok\":true}");
+  });
+
   server.on("/api/config/save", HTTP_POST, [](AsyncWebServerRequest* request) {
     requestDisplayActivity();
     JsonDocument doc;

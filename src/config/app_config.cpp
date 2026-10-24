@@ -79,6 +79,28 @@ void AppConfig::applyTimeZone() const {
 void AppConfig::load() {
   JsonDocument doc;
   readJsonWithBackup(CONFIG_FILE, doc);
+  // A saved broker configuration wins as a whole, including intentionally empty
+  // credentials for an anonymous broker. Otherwise seed the initial form from
+  // local build flags; supplying credentials does not enable MQTT by itself.
+  String savedMqttHost = doc["mqttHost"] | "";
+  savedMqttHost.trim();
+  if (!savedMqttHost.length()) {
+#ifdef MQTT_HOST
+    doc["mqttHost"] = MQTT_HOST;
+#endif
+#ifdef MQTT_PORT
+    doc["mqttPort"] = MQTT_PORT;
+#endif
+#ifdef MQTT_USER
+    doc["mqttUser"] = MQTT_USER;
+#endif
+#ifdef MQTT_PASS
+    doc["mqttPassword"] = MQTT_PASS;
+#endif
+#ifdef MQTT_ROOT_TOPIC
+    doc["mqttRootTopic"] = MQTT_ROOT_TOPIC;
+#endif
+  }
   // applyJson also enforces the compiled hardware profile. Run it for an empty
   // document too, so first boot cannot expose impossible default states.
   applyJson(doc);
@@ -181,6 +203,7 @@ String AppConfig::toJson() const {
   doc["displayFooterMode"] = displayFooterMode;
   doc["displayArtworkMode"] = displayArtworkMode;
   doc["hasLastFmApiKey"] = effectiveLastFmApiKey().length() > 0;
+  doc["hasSavedLastFmApiKey"] = lastFmApiKey.length() > 0;
   doc["displayVuStyle"] = displayVuStyle;
   doc["displayVuSensitivity"] = displayVuSensitivity;
   doc["themeAccent"] = themeAccent;

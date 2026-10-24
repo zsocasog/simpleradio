@@ -12,6 +12,13 @@ let configSaveTimer;
 let configSaveStatusTimer;
 let configSaving = false;
 let configSavePending = false;
+let deferredConfigAction = {};
+let meterSensitivityTimer;
+let meterSensitivityFlight = null;
+let meterSensitivityPending = null;
+let meterSensitivityEditing = false;
+let meterSensitivityDirty = false;
+let meterSensitivityRevision = 0;
 let searchTimer;
 let searchAbortController;
 let onlineSearchObserver;
@@ -192,6 +199,7 @@ function configSaveButtons() {
 function setConfigSaveState(state) {
   clearTimeout(configSaveStatusTimer);
   configSaveButtons().forEach(button => setButtonFeedback(button, state === "pending" ? "busy" : state));
+  updateLastFmDeleteButton();
 
   if (state === "success" || state === "error") {
     configSaveStatusTimer = setTimeout(() => {
@@ -1888,7 +1896,6 @@ function collectConfig() {
   };
   const lastFmApiKey = $("lastFmApiKey").value.trim();
   if (lastFmApiKey) data.lastFmApiKey = lastFmApiKey;
-  data.clearLastFmApiKey = $("clearLastFmApiKey").checked ? "1" : "0";
   irActions.forEach(item => {
     data[irKey(item.action)] = String(currentConfig[irKey(item.action)] || "0");
   });
@@ -1898,7 +1905,12 @@ function collectConfig() {
   return data;
 }
 
-async function postConfig() {
+async function postConfig(action = {}) {
+  Object.assign(deferredConfigAction, action);
+  if (meterSensitivityEditing) {
+    setConfigSaveState("pending");
+    return false;
+  }
   if (configSaving) {
     configSavePending = true;
     setConfigSaveState("pending");
@@ -1910,7 +1922,10 @@ async function postConfig() {
   let savedOk = false;
 
   try {
-    const submittedConfig = collectConfig();
+    const submittedConfig = { ...collectConfig(), ...deferredConfigAction };
+    deferredConfigAction = {};
+    const submittedSensitivityRevision = meterSensitivityRevision;
+    if (submittedConfig.clearLastFmApiKey === "1") delete submittedConfig.lastFmApiKey;
     const response = await fetch("/api/config/save", {
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
@@ -1918,6 +1933,10 @@ async function postConfig() {
     });
     if (!response.ok) throw new Error(`Config save failed: ${response.status}`);
     const savedConfig = await response.json();
+    if (!meterSensitivityEditing && submittedSensitivityRevision === meterSensitivityRevision &&
+        Number(savedConfig.displayVuSensitivity) === Number(submittedConfig.displayVuSensitivity)) {
+      meterSensitivityDirty = false;
+    }
     applyConfigToUI(savedConfig);
     const keyStatus = $("lastFmApiKeyStatus");
     if (submittedConfig.lastFmApiKey) {
@@ -1925,8 +1944,11 @@ async function postConfig() {
       keyStatus?.classList.add("is-saved");
       keyStatus?.classList.remove("is-error");
     } else if (submittedConfig.clearLastFmApiKey === "1") {
-      setText("lastFmApiKeyStatus", "A mentett Last.fm API-kulcs törölve.");
-      keyStatus?.classList.remove("is-saved", "is-error");
+      setText("lastFmApiKeyStatus", savedConfig.hasLastFmApiKey
+        ? "A weben mentett kulcs törölve. Az előre megadott firmware-kulcs aktív."
+        : "A mentett Last.fm API-kulcs törölve.");
+      keyStatus?.classList.toggle("is-saved", !!savedConfig.hasLastFmApiKey);
+      keyStatus?.classList.remove("is-error");
     }
     savedOk = true;
     return true;
@@ -1950,12 +1972,68 @@ async function postConfig() {
 function queueConfigSave() {
   clearTimeout(configSaveTimer);
   setConfigSaveState("pending");
+  if (meterSensitivityEditing) return;
   configSaveTimer = setTimeout(postConfig, 140);
+}
+
+function previewMeterSensitivity() {
+  meterSensitivityEditing = true;
+  meterSensitivityDirty = true;
+  ++meterSensitivityRevision;
+  clearTimeout(configSaveTimer);
+  setRawPercentLabel("displayVuSensitivity");
+  meterSensitivityPending = $("displayVuSensitivity").value;
+  clearTimeout(meterSensitivityTimer);
+  meterSensitivityTimer = setTimeout(flushMeterSensitivity, 80);
+}
+
+function flushMeterSensitivity() {
+  if (meterSensitivityFlight) return meterSensitivityFlight;
+  meterSensitivityFlight = (async () => {
+    while (meterSensitivityPending !== null) {
+      const value = meterSensitivityPending;
+      meterSensitivityPending = null;
+      try {
+        const response = await fetch("/api/display/sensitivity", {
+          method: "POST",
+          headers: { "Content-Type": "application/x-www-form-urlencoded" },
+          body: new URLSearchParams({ value })
+        });
+        if (!response.ok) throw new Error("Sensitivity preview failed");
+      } catch (err) {
+        console.warn("Sensitivity preview failed", err);
+      }
+    }
+  })().finally(() => { meterSensitivityFlight = null; });
+  return meterSensitivityFlight;
+}
+
+async function commitMeterSensitivity() {
+  if (!meterSensitivityEditing) return;
+  const revision = meterSensitivityRevision;
+  clearTimeout(meterSensitivityTimer);
+  await flushMeterSensitivity();
+  if (revision !== meterSensitivityRevision) return;
+  meterSensitivityEditing = false;
+  queueConfigSave();
 }
 
 function saveConfigNow() {
   clearTimeout(configSaveTimer);
   postConfig();
+}
+
+function updateLastFmDeleteButton() {
+  const button = $("deleteLastFmApiKey");
+  if (!button) return;
+  button.disabled = configSaving || !currentConfig.hasSavedLastFmApiKey;
+  button.setAttribute("aria-busy", configSaving ? "true" : "false");
+}
+
+function deleteSavedLastFmKey() {
+  if (configSaving || !currentConfig.hasSavedLastFmApiKey) return;
+  clearTimeout(configSaveTimer);
+  return postConfig({ clearLastFmApiKey: "1" });
 }
 
 function setLastFmKeyPending() {
@@ -2070,13 +2148,18 @@ function applyConfigToUI(config) {
   setValue("displayFooterMode", config.displayFooterMode || "volume");
   setValue("displayArtworkMode", config.displayArtworkMode || "logo");
   setValue("lastFmApiKey", "");
-  $("lastFmApiKey").placeholder = config.hasLastFmApiKey ? "Van mentett kulcs — üresen hagyva megmarad" : "API-kulcs beillesztése";
-  $("clearLastFmApiKey").checked = false;
-  setText("lastFmApiKeyStatus", config.hasLastFmApiKey ? "API-kulcs elmentve. A mező biztonsági okból nem jeleníti meg." : "A kulcs nincs megadva.");
+  $("lastFmApiKey").placeholder = config.hasSavedLastFmApiKey
+    ? "Van mentett kulcs — üresen hagyva megmarad"
+    : config.hasLastFmApiKey ? "Előre megadott kulcs aktív — új kulcs beillesztése" : "API-kulcs beillesztése";
+  setText("lastFmApiKeyStatus", config.hasSavedLastFmApiKey
+    ? "API-kulcs elmentve. A mező biztonsági okból nem jeleníti meg."
+    : config.hasLastFmApiKey ? "A firmware-ben előre megadott API-kulcs aktív."
+      : "A kulcs nincs megadva.");
+  updateLastFmDeleteButton();
   $("lastFmApiKeyStatus")?.classList.toggle("is-saved", !!config.hasLastFmApiKey);
   $("lastFmApiKeyStatus")?.classList.remove("is-error");
   setValue("displayVuStyle", config.displayVuStyle || "bars");
-  setValue("displayVuSensitivity", config.displayVuSensitivity || 100);
+  if (!meterSensitivityEditing && !meterSensitivityDirty) setValue("displayVuSensitivity", config.displayVuSensitivity || 100);
   setRawPercentLabel("displayVuSensitivity");
   const themeColor = normalizeHexColor(config.themeCustomColor || "#a9f7bf");
   setValue("themeCustomColor", themeColor);

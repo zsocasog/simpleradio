@@ -1,4 +1,5 @@
 #include "atomic_file.h"
+#include "buffered_writer.h"
 
 #include <LittleFS.h>
 
@@ -35,11 +36,14 @@ bool writeJsonAtomic(const char* path, const JsonDocument& doc, bool pretty) {
   File file = LittleFS.open(temp, "w");
   if (!file) return false;
 
-  size_t written = pretty ? serializeJsonPretty(doc, file) : serializeJson(doc, file);
+  BufferedWriter<File> writer(file);
+  size_t written = pretty ? serializeJsonPretty(doc, writer) : serializeJson(doc, writer);
+  bool complete = writer.flush();
   file.flush();
+  complete = complete && written > 0 && file.size() == written;
   file.close();
 
-  if (!written) {
+  if (!complete) {
     LittleFS.remove(temp);
     return false;
   }

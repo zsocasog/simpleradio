@@ -50,8 +50,8 @@ test("all shipped language bundles contain the spectrum label", () => {
 
 test("application version stays unchanged while modified scripts get new cache keys", () => {
   const html = fs.readFileSync(path.join(root, "data/index.html"), "utf8");
-  assert.match(html, /i18n\.js\?v=0\.8\.24&amp;ui=fft2/);
-  assert.match(html, /app\.js\?v=0\.8\.24&amp;ui=fft2/);
+  assert.match(html, /i18n\.js\?v=0\.8\.24&amp;ui=logos2/);
+  assert.match(html, /app\.js\?v=0\.8\.24&amp;ui=logos2/);
 });
 
 test("spectrum uses the complete 24-column VU grid without widening the bars", () => {

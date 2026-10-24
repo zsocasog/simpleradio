@@ -327,7 +327,7 @@
                 <option value="classic">Középről induló VU</option>
                   </select>
                 </label>
-                <label id="displayVuSensitivityField" class="setting-row"><span data-i18n="display.vuSensitivity">VU / spektrum érzékenység</span><span class="setting-range"><input id="displayVuSensitivity" type="range" min="50" max="200" step="5" oninput="setRawPercentLabel('displayVuSensitivity'); queueConfigSave()"><strong id="displayVuSensitivityValue">100%</strong></span></label>
+                <label id="displayVuSensitivityField" class="setting-row"><span data-i18n="display.vuSensitivity">VU / spektrum érzékenység</span><span class="setting-range"><input id="displayVuSensitivity" type="range" min="50" max="200" step="5" oninput="previewMeterSensitivity()" onchange="commitMeterSensitivity()" onblur="commitMeterSensitivity()"><strong id="displayVuSensitivityValue">100%</strong></span></label>
               </section>
 
               <section class="settings-section">
@@ -539,10 +539,13 @@
           </header>
           <div class="settings-fields">
             <label class="lastfm-key-field"><span>Last.fm API key</span><input id="lastFmApiKey" name="lastfm-api-key" type="password" autocomplete="new-password" autocapitalize="none" spellcheck="false" data-form-type="other" data-1p-ignore data-lpignore="true" data-bwignore placeholder="API-kulcs beillesztése" oninput="setLastFmKeyPending()"></label>
-            <label class="setting-row setting-toggle"><span class="setting-copy"><strong>Mentett kulcs törlése</strong></span><span class="toggle-switch"><input id="clearLastFmApiKey" type="checkbox" onchange="saveConfigNow()"><span></span></span></label>
           </div>
           <small id="lastFmApiKeyStatus" class="form-note">A kulcs nincs megadva.</small>
-          <button class="primary" type="button" data-config-save onclick="saveConfigNow()">API-kulcs mentése</button>
+          <div class="button-row">
+            <button class="primary" type="button" data-config-save onclick="saveConfigNow()">API-kulcs mentése</button>
+            <button id="deleteLastFmApiKey" class="danger" type="button" onclick="deleteSavedLastFmKey()" disabled>Mentett kulcs törlése</button>
+          </div>
+          <small class="form-note">A törlés gomb a weben elmentett kulcsot távolítja el. Az előre megadott firmware-kulcs ettől aktív marad.</small>
           <ol class="lastfm-key-help">
             <li>Jelentkezz be a Last.fm-fiókodba, majd nyisd meg a <a href="https://www.last.fm/api/account/create" target="_blank" rel="noopener noreferrer">Last.fm API-fiók létrehozása</a> oldalt.</li>
             <li>Adj nevet az alkalmazásnak (például SimpleRadio), töltsd ki a kért adatokat, majd hozd létre az API-fiókot.</li>
@@ -642,7 +645,7 @@
       <span id="footerVersion">v-</span>
     </footer>
   </div>
-  <script src="i18n.js?v=0.8.24&amp;ui=fft2"></script>
-  <script src="app.js?v=0.8.24&amp;ui=fft2"></script>
+  <script src="i18n.js?v=0.8.24&amp;ui=logos2"></script>
+  <script src="app.js?v=0.8.24&amp;ui=logos2"></script>
 </body>
 </html>

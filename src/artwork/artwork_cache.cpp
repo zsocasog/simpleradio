@@ -2,6 +2,8 @@
 #include "artwork_http.h"
 #include "artwork_release_rank.h"
 #include "album_art_store.h"
+#include "station_logo_policy.h"
+#include "lcd_image_policy.h"
 
 #include <Arduino.h>
 static auto& artworkTraceSerial = Serial;
@@ -35,7 +37,7 @@ static constexpr size_t MIN_FS_FREE_BYTES = 384 * 1024;
 static constexpr unsigned long RETRY_MS = 60000;
 static constexpr unsigned long MISSING_ARTWORK_RETRY_MS = 30000;
 static constexpr unsigned long THUMBNAIL_RETRY_MS = 60000;
-static constexpr unsigned long PREWARM_IDLE_SPACING_MS = 10000;
+static constexpr unsigned long PREWARM_IDLE_SPACING_MS = 3000;
 static constexpr unsigned long ARTWORK_STARTUP_GRACE_MS = 20000;
 static constexpr unsigned long PREWARM_FAILURE_RETRY_MS = 30000;
 static constexpr unsigned long PENDING_PLAYBACK_TIMEOUT_MS = 5000;
@@ -231,6 +233,8 @@ static uint32_t boundedTimeoutMs(uint32_t normalMs, uint32_t deadlineMs) {
   return remaining < normalMs ? remaining : normalMs;
 }
 
+static bool isRemoteArtworkSource(const String& source);
+
 void ArtworkCache::loop() {
   PlayerStateSnapshot state = PlayerState::instance().snapshot();
 
@@ -248,6 +252,7 @@ void ArtworkCache::loop() {
 
   if (state.playing != lastArtworkPlaying) {
     if (!state.playing) {
+      lastIdlePrewarmStationId = -1;
       lastAttemptMs = 0;
       audioConnectionReady = false;
       audioConnectionReadyMs = 0;
@@ -344,9 +349,53 @@ void ArtworkCache::loop() {
 
   processPendingBrowserImport();
 
+  // A failed cached-image conversion may retire its unsupported source.
+  // Clear stale selection references so they cannot pin the loop to a missing
+  // file forever. Probe at most twice a second, or immediately on a path change.
+  state = PlayerState::instance().snapshot();
+  if (state.cachedArtworkPath.length()) {
+    const uint32_t now = millis();
+    const uint32_t pathHash = fnv1a(state.cachedArtworkPath);
+    if (pathHash != lastCachedArtworkProbeHash || now - lastCachedArtworkProbeMs >= 500) {
+      lastCachedArtworkProbeHash = pathHash;
+      lastCachedArtworkProbeMs = now;
+      if (!artworkExists(state.cachedArtworkPath)) {
+        artworkTraceSerial.printf("[artwork] stale LCD reference cleared: %s\n", state.cachedArtworkPath.c_str());
+        PlayerState::instance().setCachedArtworkPath("");
+        state = PlayerState::instance().snapshot();
+        lastUrl = "";
+        lastAttemptMs = 0;
+        lastIdlePrewarmStationId = -1;
+      }
+    }
+  }
+
   if (!WiFi.isConnected()) {
     processPendingPlayback(PlayerState::instance().snapshot());
     return;
+  }
+
+  // Idle preparation also runs during startup's audio/network grace period.
+  // It is serial; the selected station can cancel unrelated idle network work.
+  if (!state.playing) {
+    if (state.stationId != lastIdlePrewarmStationId) {
+      lastIdlePrewarmStationId = state.stationId;
+      Station selected;
+      if (state.stationId >= 0 && StationManager::instance().getStation(state.stationId, selected)) {
+        String logo = selected.logo;
+        logo.trim();
+        if (logo.length() && !prewarmFailureBlocked(logo) && !artworkSourceReady(logo)) {
+          const String activeLogo = activeDownloadLabel();
+          if (isRemoteArtworkSource(activeLogo) && activeLogo != logo) cancelIdlePrewarm();
+          requestPrewarm(logo, true);
+        }
+      }
+    }
+    processPrewarmQueue(PlayerState::instance().snapshot());
+    if (isDownloadActive()) {
+      processPendingPlayback(PlayerState::instance().snapshot());
+      return;
+    }
   }
 
   AppConfig& config = AppConfig::instance();
@@ -1209,6 +1258,22 @@ static String encodeArtworkQuery(const String& value) {
     }
   }
   return output;
+}
+
+static String resizedStationLogoUrl(const String& url) {
+  if (!StationLogoPolicy::canUsePublicResizer(url.c_str())) return "";
+  // Request a baseline JPEG the existing LCD decoder already supports.
+  // No logo cropping: retain the source aspect ratio and avoid enlargement.
+  return "https://wsrv.nl/?url=" + encodeArtworkQuery(url) +
+         "&w=176&h=176&fit=inside&output=jpg&q=85&we&bg=070909&page=-1";
+}
+
+static String preferredStationLogoUrl(const String& url) {
+  const char* official = StationLogoPolicy::smallerOfficialUrl(url.c_str());
+  if (official[0]) return String(official);
+  const String nativeSmall = imgurThumbnailFallbackUrl(url);
+  if (nativeSmall.length()) return ArtworkHttp::publicImageUrl(nativeSmall);
+  return resizedStationLogoUrl(url);
 }
 
 static bool fetchArtworkJson(const String& url, JsonDocument& doc,
@@ -2449,7 +2514,8 @@ bool ArtworkCache::queueNextStationPrewarmCandidate() {
     stationPrewarmIndex = 0;
   }
 
-  for (size_t scanned = 0; scanned < stationCount; ++scanned) {
+  const size_t scanLimit = stationCount < 8 ? stationCount : 8;
+  for (size_t scanned = 0; scanned < scanLimit; ++scanned) {
     const size_t index = stationPrewarmIndex;
     stationPrewarmIndex = (stationPrewarmIndex + 1) % stationCount;
 
@@ -2458,9 +2524,9 @@ bool ArtworkCache::queueNextStationPrewarmCandidate() {
 
     String logo = station.logo;
     logo.trim();
-    if (!logo.length() || artworkSourceReady(logo)) continue;
+    if (!logo.length() || prewarmFailureBlocked(logo) || artworkSourceReady(logo)) continue;
 
-    Serial.printf("[artwork] idle station prewarm queued: #%u %s\n",
+    artworkTraceSerial.printf("[artwork] idle station prewarm queued: #%u %s\n",
                   static_cast<unsigned>(index + 1),
                   logo.c_str());
     return requestPrewarm(logo, false);
@@ -2475,13 +2541,12 @@ void ArtworkCache::processPrewarmQueue(const PlayerStateSnapshot& state) {
   unsigned long now = millis();
   if (lastPrewarmWorkMs > 0 && now - lastPrewarmWorkMs < PREWARM_IDLE_SPACING_MS) return;
 
-  String source;
-  // Do not automatically walk every station at idle. On this board the burst
-  // of network + image work can starve the Wi-Fi task during a clean startup.
-  // Explicitly queued items are still prepared while playback is stopped.
-  if (!takePrewarmItem(source)) return;
-
+  // Throttle empty/all-ready scans too; never walk the filesystem every loop.
   lastPrewarmWorkMs = now;
+  String source;
+  if (!takePrewarmItem(source)) {
+    if (!queueNextStationPrewarmCandidate() || !takePrewarmItem(source)) return;
+  }
 
   if (prewarmFailureBlocked(source)) {
     Serial.printf("[artwork] prewarm retry delayed: %s\n", source.c_str());
@@ -2497,7 +2562,7 @@ void ArtworkCache::processPrewarmQueue(const PlayerStateSnapshot& state) {
       return;
     }
 
-    Serial.printf("[artwork] prewarm download start: %s\n", source.c_str());
+    artworkTraceSerial.printf("[artwork] prewarm download start: %s\n", source.c_str());
     if (!startDownloadTask(source, true)) {
       queuePrewarmItem(source, true);
     }
@@ -2507,7 +2572,7 @@ void ArtworkCache::processPrewarmQueue(const PlayerStateSnapshot& state) {
   String localPath = preferredLocalArtworkPath(source);
   if (!supportedArtworkFile(localPath) || !LittleFS.exists(localPath)) return;
 
-  Serial.printf("[artwork] prewarm thumbnail start: %s\n", localPath.c_str());
+  artworkTraceSerial.printf("[artwork] prewarm thumbnail start: %s\n", localPath.c_str());
   requestLcdThumbnail(localPath, true);
 }
 
@@ -3033,6 +3098,33 @@ bool ArtworkCache::ensureLcdThumbnailPrepared(const String& imagePath, bool fill
     return true;
   }
   clearThumbnailReady(imagePath);
+  if (!fillFrame && (lower.endsWith(".jpg") || lower.endsWith(".jpeg"))) {
+    File source = LittleFS.open(imagePath, "r");
+    if (source) {
+      struct FileInput {
+        File& file;
+        size_t read(uint8_t* out, size_t length) { return file.read(out, length); }
+        bool skip(size_t length) {
+          const size_t position = file.position();
+          return position <= file.size() && length <= file.size() - position && file.seek(position + length);
+        }
+      } input{source};
+      const auto format = LcdImagePolicy::inspect(input);
+      source.close();
+      if (LcdImagePolicy::needsConversion(format)) {
+        // Only retire a proven incompatible, generated cache file after ready
+        // LCD pixels were already checked above. Never delete uploaded originals
+        // or a source merely because decoding ran out of memory.
+        const bool generatedCache = format == LcdImagePolicy::Jpeg::Unsupported &&
+            lower.startsWith("/cache/art_") && lower.indexOf('/', 7) < 0;
+        const bool retired = generatedCache && LittleFS.remove(imagePath);
+        unlock();
+        artworkTraceSerial.printf("[artwork] JPEG needs LCD conversion%s: %s\n",
+            retired ? ", cached source retired for repair" : "", imagePath.c_str());
+        return false;
+      }
+    }
+  }
   if (LittleFS.exists(thumbPath)) LittleFS.remove(thumbPath);
   if (fillFrame) albumArtTrace("timing lcd-validate: %lums",
                               static_cast<unsigned long>(millis() - validationStartedMs));
@@ -3188,6 +3280,7 @@ bool ArtworkCache::ensureLcdThumbnailPrepared(const String& imagePath, bool fill
   }
   markThumbnailReady(imagePath, thumbPath);
   unlock();
+  if (!fillFrame) artworkTraceSerial.printf("[artwork] LCD station logo ready: %s\n", thumbPath.c_str());
   Serial.printf("[artwork] lcd thumbnail cached: %s from %s %ux%u %.2fx %lums\n",
                 thumbPath.c_str(),
                 imagePath.c_str(),
@@ -3390,6 +3483,8 @@ bool ArtworkCache::deferStationPlayback(int stationId) {
   String readyPath;
   if (stationArtworkReady(stationId, &readyPath)) return false;
 
+  const String activeLogo = activeDownloadLabel();
+  if (isRemoteArtworkSource(activeLogo) && activeLogo != logo) cancelIdlePrewarm();
   requestPrewarm(logo, true);
 
   if (pendingMutex && xSemaphoreTake(pendingMutex, pdMS_TO_TICKS(20)) != pdTRUE) {
@@ -4357,6 +4452,13 @@ bool ArtworkCache::download(const String& url, String& outPath, uint32_t budgetM
                   static_cast<unsigned long>(millis() - networkStartedMs),
                   ArtworkHttp::host(fetchUrl).c_str());
 
+    if (!cacheKey.length() &&
+        LcdImagePolicy::needsConversion(LcdImagePolicy::inspect(response.data, written))) {
+      albumArtTrace("station JPEG is not LCD-compatible; trying an alternate source");
+      noteDownloadStatus("station JPEG needs baseline conversion");
+      return false;
+    }
+
     // The socket is closed before any cache enumeration, flash erase or image
     // decoding. Previously cache maintenance used up the network deadline while
     // the response body was still waiting, leading to written=0 failures.
@@ -4458,7 +4560,24 @@ bool ArtworkCache::download(const String& url, String& outPath, uint32_t budgetM
     return true;
   };
 
-  String smallerImageUrl = imgurThumbnailFallbackUrl(url);
+  // Album/embedded art never enters this branch. Keep the established download,
+  // decode and publication path, including the original URL as cache identity.
+  const String smallerStationLogo = cacheKey.length() ? String() : preferredStationLogoUrl(url);
+  if (smallerStationLogo.length()) {
+    albumArtTrace("trying smaller station logo: %s", smallerStationLogo.c_str());
+    if (attemptDownload(smallerStationLogo)) return true;
+    if (artworkCancelled() || (memoryUnavailable && *memoryUnavailable) || deadlineReached(deadlineMs)) return false;
+    albumArtTrace("preferred station logo unavailable; trying compatible alternatives");
+  }
+
+  const String resizedStationLogo = cacheKey.length() ? String() : resizedStationLogoUrl(url);
+  if (resizedStationLogo.length() && resizedStationLogo != smallerStationLogo) {
+    albumArtTrace("trying baseline station logo: %s", resizedStationLogo.c_str());
+    if (attemptDownload(resizedStationLogo)) return true;
+    if (artworkCancelled() || (memoryUnavailable && *memoryUnavailable) || deadlineReached(deadlineMs)) return false;
+  }
+
+  String smallerImageUrl = cacheKey.length() ? imgurThumbnailFallbackUrl(url) : String();
   if (smallerImageUrl.length() && smallerImageUrl != url) {
     albumArtTrace("trying smaller Imgur image first");
     if (attemptDownload(ArtworkHttp::publicImageUrl(smallerImageUrl))) return true;
