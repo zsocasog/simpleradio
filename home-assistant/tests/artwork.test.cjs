@@ -59,6 +59,15 @@ test("LCD-only cache falls back to the browser album cover", () => {
   assert.equal(art.children[0], requests[0]);
 });
 
+test("PSRAM album URL is served by the radio with its query id intact", () => {
+  const { card, requests } = fixture({
+    cachedArtworkPath: "/cache/station.sr565",
+    albumArtworkPath: "/api/artwork/album?id=12345678-00000001"
+  });
+  card.updateArtwork();
+  assert.equal(requests[0].src, "http://radio.local/api/artwork/album?id=12345678-00000001");
+});
+
 test("failed album and cache requests fall back to the station logo", () => {
   const { card, art, requests } = fixture({
     albumArtworkPath: "/cache/missing.jpg", cachedArtworkPath: "/cache/missing.png",

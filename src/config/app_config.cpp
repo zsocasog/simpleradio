@@ -58,6 +58,18 @@ AppConfig& AppConfig::instance() {
   return config;
 }
 
+String AppConfig::effectiveLastFmApiKey() const {
+  String key = lastFmApiKey;
+  key.trim();
+#ifdef SIMPLE_RADIO_LASTFM_API_KEY
+  if (!key.length()) {
+    key = SIMPLE_RADIO_LASTFM_API_KEY;
+    key.trim();
+  }
+#endif
+  return key;
+}
+
 void AppConfig::applyTimeZone() const {
   const char* tz = timeZone.length() ? timeZone.c_str() : "CET-1CEST,M3.5.0/2,M10.5.0/3";
   setenv("TZ", tz, 1);
@@ -168,7 +180,7 @@ String AppConfig::toJson() const {
   doc["displayClockStyle"] = displayClockStyle;
   doc["displayFooterMode"] = displayFooterMode;
   doc["displayArtworkMode"] = displayArtworkMode;
-  doc["hasLastFmApiKey"] = lastFmApiKey.length() > 0;
+  doc["hasLastFmApiKey"] = effectiveLastFmApiKey().length() > 0;
   doc["displayVuStyle"] = displayVuStyle;
   doc["displayVuSensitivity"] = displayVuSensitivity;
   doc["themeAccent"] = themeAccent;

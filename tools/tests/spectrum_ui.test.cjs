@@ -80,7 +80,8 @@ test("FFT is below audio priority but not idle, and self-tests the linked backen
   const analyzer = fs.readFileSync(path.join(root, "src/audio/audio_spectrum.cpp"), "utf8");
   assert.match(analyzer, /SPECTRUM_TASK_PRIORITY = 1/);
   assert.match(analyzer, /if \(!fftSelfTest\(\)\)/);
-  assert.match(analyzer, /meanBandPower\(powers\[band\], weights\[band\]\)/);
+  assert.match(analyzer, /SpectrumMath::bandPowers\(work_.data\(\), frame.sampleRate, windowEnergy_\)/);
+  assert.doesNotMatch(analyzer, /meanBandPower|weights\[band\]/);
   assert.match(analyzer, /void AudioSpectrum::reportDiagnostics\(\)/);
 });
 
@@ -89,7 +90,9 @@ test("drawing stalls do not clear the envelope, and sensitivity preserves spectr
   const update = display.match(/static bool updateSpectrumBars\(bool playing\) \{[\s\S]*?\n\}/)[0];
   assert.doesNotMatch(update, /spectrumEnvelope\.fill\(0\)/);
   assert.match(update, /SpectrumMath::usableFrame/);
-  assert.match(update, /SpectrumMath::levelWithGain/);
+  assert.match(update, /SpectrumDynamics::displayLevel\(spectrum.bandDb\[i\], spectrumLevelTracker.gainDb, sensitivity\)/);
+  assert.match(update, /if \(fresh\) spectrumLevelTracker.update/);
+  assert.doesNotMatch(update, /log10f\(sensitivity/);
   assert.doesNotMatch(update, /spectrum\.bands\[i\] \* sensitivity/);
   const visibility = display.match(/static void setSpectrumDisplayVisibility\(bool visible\) \{[\s\S]*?\n\}/)[0];
   assert.match(visibility, /spectrumDisplayVisible != visible/);
@@ -103,4 +106,105 @@ test("all shipped labels describe 24 analysis bands", () => {
     const bundle = fs.readFileSync(path.join(root, `data/i18n/${language}.js`), "utf8");
     assert.match(bundle, /"display\.footer\.spectrum": "[^"\n]*24/);
   }
+});
+
+test("stop releases spectrum while still clearing the conventional VU immediately", () => {
+  const display = fs.readFileSync(path.join(root, "src/display/display.cpp"), "utf8");
+  const render = display.match(/void Display::renderAudioMeterFrame\(bool force\) \{[\s\S]*?\n\}/)[0];
+  assert.match(render, /if \(!lastModel.playing && !spectrum\) \{[\s\S]*?if \(vuRendered \|\| vuBarsHaveSignal\(\) \|\| force\)/);
+  assert.match(render, /setSpectrumDisplayVisibility\(visible && spectrum\)/);
+  assert.doesNotMatch(render, /setSpectrumDisplayVisibility\([^;]*lastModel.playing/);
+  assert.match(render, /updateSpectrumBars\(lastModel.playing\)/);
+  assert.match(render, /const bool releaseFinished = spectrum && !lastModel.playing && !vuBarsHaveSignal\(\) && vuRendered/);
+  assert.match(render, /drawVuMeter\(lastModel, force\)/);
+  const draw = display.match(/static void drawVuMeter\(const DisplayModel& m, bool forceFull = false\) \{[\s\S]*?\n\}/)[0];
+  assert.match(draw, /spectrumRelease = footerMode\(\) == DisplayFooterMode::Spectrum && vuBarsHaveSignal\(\)/);
+  assert.match(draw, /if \(!m.playing && !spectrumRelease\) \{\s*clearVuBars\(\);\s*if \(vuRendered \|\| forceFull\) \{\s*clearRenderedVuArea\(layout\);/);
+  assert.doesNotMatch(draw, /!m.playing && !vuBarsHaveSignal/);
+  assert.match(display, /\(audioFooterMode\(\) && previous.playing != m.playing\)/);
+});
+
+test("spectrum has no shaped VU contour or minimum-height idle bars", () => {
+  const display = fs.readFileSync(path.join(root, "src/display/display.cpp"), "utf8");
+  const update = display.match(/static bool updateSpectrumBars\(bool playing\) \{[\s\S]*?\n\}/)[0];
+  assert.doesNotMatch(update, /shapedVuHeight|classicVuHeight|VU_MIN_H|kVuShape|triWave/);
+});
+
+test("production stop branch lets spectrum decay and erases its final zero frame", () => {
+  const display = fs.readFileSync(path.join(root, "src/display/display.cpp"), "utf8");
+  function branch(source, condition) {
+    const start = source.indexOf(condition);
+    assert.ok(start >= 0);
+    let nesting = 0;
+    for (let i = source.indexOf("{", start); i < source.length; ++i) {
+      if (source[i] === "{") ++nesting;
+      if (source[i] === "}" && --nesting === 0) return source.slice(start, i + 1);
+    }
+    throw new Error("unclosed production branch");
+  }
+  const draw = display.match(/static void drawVuMeter\(const DisplayModel& m, bool forceFull = false\) \{[\s\S]*?\n\}/)[0];
+  const render = display.match(/void Display::renderAudioMeterFrame\(bool force\) \{[\s\S]*?\n\}/)[0];
+  // These two production branches are also valid JavaScript. Execute them with
+  // a mock LCD, rather than duplicating the stop conditions in the test.
+  const drawStop = branch(draw, "if (!m.playing && !spectrumRelease)");
+  const renderStop = branch(render, "if (!lastModel.playing && !spectrum)");
+  for (const spectrum of [false, true]) {
+    const result = vm.runInNewContext(`
+      let vuRendered = true, signal = true, erasures = 0;
+      const lastModel = { playing: false }, force = false, spectrum = ${spectrum};
+      function vuBarsHaveSignal() { return signal; }
+      function clearVuBars() { signal = false; }
+      function clearRenderedVuArea() { vuRendered = false; ++erasures; }
+      function drawVuMeter(m, forceFull = false) {
+        const layout = {}, spectrumRelease = spectrum && vuBarsHaveSignal(); ${drawStop}
+      }
+      function renderFrame() { ${renderStop} }
+      renderFrame();
+      const beforeRelease = { erasures, signal };
+      // A paused spectrum may redraw its retained frame, not erase it.
+      drawVuMeter(lastModel);
+      const redrawErasures = erasures;
+      signal = false;
+      drawVuMeter(lastModel); drawVuMeter(lastModel);
+      ({ erasures, signal, vuRendered, beforeRelease, redrawErasures });
+    `);
+    assert.equal(result.beforeRelease.signal, spectrum);
+    assert.equal(result.beforeRelease.erasures, spectrum ? 0 : 1);
+    assert.equal(result.redrawErasures, spectrum ? 0 : 1);
+    assert.equal(result.erasures, 1);
+    assert.equal(result.signal, false);
+    assert.equal(result.vuRendered, false);
+  }
+});
+
+test("linked DSP self-test covers the actual window, DC removal and RMS calibration", () => {
+  const analyzer = fs.readFileSync(path.join(root, "src/audio/audio_spectrum.cpp"), "utf8");
+  const selfTest = analyzer.match(/bool AudioSpectrum::fftSelfTest\(\) \{[\s\S]*?\n\}/)[0];
+  assert.match(selfTest, /SpectrumMath::prepareFrame/);
+  assert.match(selfTest, /SpectrumMath::bandPowers/);
+  assert.match(selfTest, /rmsLeft = 0.0625f, rmsRight = 0.015625f/);
+  assert.match(selfTest, /samples.fill\(12000 << 16\)/);
+  assert.match(selfTest, /powerDb\(quiet\[leftBand\], -40\)/);
+  assert.match(selfTest, /powerDb\(0, -60\) == SpectrumMath::SILENCE_DB/);
+  assert.match(analyzer, /result.bandDb\[band\] = db/);
+  assert.doesNotMatch(analyzer, /result.bandDb\[band\].*levelFromDb/);
+});
+
+test("FFT sees post-EQ samples without truncating quiet Q31 audio or changing playback", () => {
+  const meter = fs.readFileSync(path.join(root, "src/audio/audio_meter.cpp"), "utf8");
+  const raw = meter.match(/void audio_process_raw_samples\([^]*?\n\}/)[0];
+  const post = meter.match(/void audio_process_i2s\([^]*?\n\}/)[0];
+  assert.doesNotMatch(raw, /AudioSpectrum/);
+  assert.match(post, /AudioSpectrum::instance\(\).capture\(outBuff, validSamples\)/);
+  assert.doesNotMatch(post, /\*continueI2S\s*=|outBuff\[.*\]\s*=/);
+  const analyzer = fs.readFileSync(path.join(root, "src/audio/audio_spectrum.cpp"), "utf8");
+  const capture = analyzer.match(/void AudioSpectrum::capture\([^]*?\n\}/)[0];
+  assert.match(capture, /memcpy\(frames_\[index\].samples.data\(\)/);
+  assert.doesNotMatch(capture, />> 16|log10|sqrt|malloc|Serial/);
+  assert.match(capture, /SpectrumMath::nextCaptureDeadline/);
+  assert.match(analyzer, /copy-max=%luus near-clip=%lu/);
+  assert.match(analyzer, /bands-dB low->high/);
+  const player = fs.readFileSync(path.join(root, "src/audio/audio_player.cpp"), "utf8");
+  assert.match(player, /VolumeMath::gainDb\(state.volume, curve\)/);
+  assert.doesNotMatch(player, /audio.setOutputSampleRate\(/); // Tap rate remains SR_ORIGIN.
 });

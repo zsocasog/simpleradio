@@ -20,6 +20,7 @@ public:
   bool findExistingLcdArtworkPath(const String& source, String& outPath) const;
   String lcdThumbnailPath(const String& imagePath, bool fillFrame = false) const;
   bool lcdThumbnailReady(const String& imagePath, bool fillFrame = false);
+  bool artworkExists(const String& imagePath) const;
   void invalidateLcdThumbnail(const String& imagePath);
   bool ensureLcdThumbnail(const String& imagePath, bool fillFrame = false);
   bool requestLcdThumbnail(const String& imagePath, bool idlePrewarm = false, bool fillFrame = false);
@@ -61,7 +62,9 @@ private:
     std::vector<String> compilations;
   };
 
-  bool download(const String& url, String& outPath, uint32_t budgetMs = 0, bool allowSecureFallback = true, const String& cacheKey = "");
+  bool download(const String& url, String& outPath, uint32_t budgetMs = 0, bool allowSecureFallback = true, const String& cacheKey = "",
+                bool* memoryUnavailable = nullptr);
+  bool prepareAlbumMemory(uint8_t*& data, size_t length, const String& key, String& outPath, bool& unavailable);
   bool resolveAndDownloadAlbumArtwork(const String& artist, const String& title, const String& key, String& outPath);
   bool downloadEmbedded(const String& url, const std::vector<uint32_t>& segments, const String& key, String& outPath);
   bool appendHttpRange(const String& url, uint32_t offset, uint32_t length, File& outFile,
@@ -103,6 +106,7 @@ private:
   void markDownloadFinished();
   bool idlePrewarmCancellationRequested();
   bool writeBufferYielding(File& file, const uint8_t* data, size_t length);
+  bool ensureLcdThumbnailPrepared(const String& imagePath, bool fillFrame, bool cacheBudgetReserved);
   bool compactRemoteArtwork(const String& source, const String& imagePath, String& outPath, bool fillFrame = false);
   bool isDownloadActive();
   void noteDownloadStatus(const String& status);

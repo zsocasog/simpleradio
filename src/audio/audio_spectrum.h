@@ -8,15 +8,19 @@
 #include "spectrum_math.h"
 
 struct AudioSpectrumSnapshot {
-  std::array<uint8_t, SpectrumMath::BAND_COUNT> bands{};
+  std::array<float, SpectrumMath::BAND_COUNT> bandDb{};
   bool active = false;
   uint32_t updatedMs = 0;
+  uint32_t generation = 0;
+  float peakDb = SpectrumMath::SILENCE_DB;
+  float rmsDb = SpectrumMath::SILENCE_DB;
+  float outputRmsDb = SpectrumMath::SILENCE_DB;
 };
 
 class AudioSpectrum {
 public:
   static AudioSpectrum& instance();
-  void setEnabled(bool enabled, uint32_t sampleRate);
+  void setEnabled(bool enabled, uint32_t sampleRate, float playbackGainDb = 0);
   void setDisplayVisible(bool visible);
   void capture(const int32_t* samples, int16_t frames);
   AudioSpectrumSnapshot snapshot();
@@ -24,11 +28,14 @@ public:
 private:
   enum class BufferState : uint8_t { Free, Writing, Ready, Processing };
   struct Frame {
-    std::array<int16_t, SpectrumMath::POINT_COUNT * 2> samples{};
+    // Preserve post-volume Q31 precision: shifting to int16 before compensating
+    // volume would manufacture bass/quantization noise at quiet volume settings.
+    std::array<int32_t, SpectrumMath::POINT_COUNT * 2> samples{};
     BufferState state = BufferState::Free;
     uint32_t sampleRate = 0;
     uint32_t generation = 0;
     uint32_t capturedMs = 0;
+    float playbackGainDb = 0;
   };
 
   bool begin();
@@ -50,6 +57,8 @@ private:
     uint32_t resets = 0;
     uint32_t maxQueueMs = 0;
     uint32_t maxProcessingUs = 0;
+    uint32_t maxCaptureUs = 0;
+    uint32_t nearClipSamples = 0;
   };
 
   portMUX_TYPE mux_ = portMUX_INITIALIZER_UNLOCKED;
@@ -57,7 +66,7 @@ private:
   alignas(16) std::array<float, SpectrumMath::POINT_COUNT> window_{};
   alignas(16) std::array<float, SpectrumMath::POINT_COUNT> coefficients_{};
   alignas(16) std::array<float, SpectrumMath::POINT_COUNT * 2> work_{};
-  float windowSum_ = 0;
+  float windowEnergy_ = 0;
   AudioSpectrumSnapshot published_;
   TaskHandle_t task_ = nullptr;
   bool initialized_ = false;
@@ -66,6 +75,7 @@ private:
   bool visible_ = false;
   bool firstFrame_ = true;
   uint32_t sampleRate_ = 0;
+  float playbackGainDb_ = 0;
   uint32_t generation_ = 0;
   uint32_t nextCaptureMs_ = 0;
   uint32_t lastInitAttemptMs_ = 0;

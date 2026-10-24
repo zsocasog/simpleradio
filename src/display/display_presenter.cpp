@@ -2,6 +2,7 @@
 #include <LittleFS.h>
 #include <WiFi.h>
 #include "../artwork/artwork_cache.h"
+#include "../artwork/album_art_store.h"
 #include "../config/app_config.h"
 #include "../wifi/wifi_manager.h"
 
@@ -86,8 +87,11 @@ DisplayModel DisplayPresenter::build(const PlayerState& s) {
   m.streamLogoUrl = state.streamLogoUrl;
   m.hasStreamImage = state.hasStreamImage;
   m.albumArtworkMode = AppConfig::instance().displayArtworkMode == "album";
-  m.logoPath = state.cachedArtworkPath.length() ? state.cachedArtworkPath : localLcdLogoPath(state.stationLogo);
-  if (!state.cachedArtworkPath.length()) {
+  const auto memoryAlbum = m.albumArtworkMode && !state.hasStreamImage
+      ? AlbumArtStore::instance().acquire(state.albumArtworkPath) : AlbumArtStore::Lease{};
+  m.logoPath = memoryAlbum ? memoryAlbum->path :
+      (state.cachedArtworkPath.length() ? state.cachedArtworkPath : localLcdLogoPath(state.stationLogo));
+  if (!memoryAlbum && !state.cachedArtworkPath.length()) {
     String cachedPath;
     if (state.embeddedArtworkKey.length() &&
         ArtworkCache::instance().findExistingCachePath(state.embeddedArtworkKey, cachedPath)) {
@@ -103,7 +107,10 @@ DisplayModel DisplayPresenter::build(const PlayerState& s) {
     }
   }
 
-  if (m.albumArtworkMode) {
+  if (memoryAlbum) {
+    m.logoPath = memoryAlbum->path;
+    m.isAlbumArtwork = true;
+  } else if (m.albumArtworkMode) {
     String stationFallbackPath = localLcdLogoPath(state.stationLogo);
     String cachedLogoPath;
     if (isRemoteUrl(state.streamLogoUrl) &&
@@ -132,7 +139,7 @@ DisplayModel DisplayPresenter::build(const PlayerState& s) {
                ArtworkCache::instance().lcdThumbnailReady(state.cachedArtworkPath, true)) {
       m.logoPath = state.cachedArtworkPath;
       m.isAlbumArtwork = true;
-    } else if (state.albumArtworkPath.length() && LittleFS.exists(state.albumArtworkPath) &&
+    } else if (state.albumArtworkPath.length() && ArtworkCache::instance().artworkExists(state.albumArtworkPath) &&
                ArtworkCache::instance().lcdThumbnailReady(state.albumArtworkPath, true)) {
       m.logoPath = state.albumArtworkPath;
       m.isAlbumArtwork = true;

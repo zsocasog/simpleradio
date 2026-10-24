@@ -3,6 +3,8 @@
 // ESP32-audioI2S exports this macro; our public headers must coexist with it.
 #define FFT_SIZE 256
 #include "../../src/audio/spectrum_math.h"
+#include "../../src/audio/spectrum_dynamics.h"
+#include "../../src/audio/volume_math.h"
 
 using namespace SpectrumMath;
 
@@ -94,18 +96,25 @@ static_assert(validWeightsAndRanges(48000));
 static_assert(validWeightsAndRanges(96000));
 static_assert(validWeightsAndRanges(192000));
 
-// Equal spectral density must NOT get taller just because a high band is wider.
-static_assert(meanBandPower(4, 1) == meanBandPower(80, 20));
-static_assert(meanBandPower(0.8f, 0.2f) == 4);
-static_assert(meanBandPower(123, 0) == 0);
-static_assert(meanBandPower(0, 20) == 0);
-static_assert(levelFromDb(DB_FLOOR) == 0 && levelFromDb(DB_CEILING) == 255);
-static_assert(levelFromDb(-36) > 127 && levelFromDb(-36) < 128);
-static_assert(levelFromDb(-24) > levelFromDb(-42));
-static_assert(levelWithGain(0, 6) == 0);
-static_assert(levelWithGain(255, 6) == 255);
-static_assert(levelWithGain(16, -6) == 0);
-static_assert(levelWithGain(100, 6) - levelWithGain(60, 6) == 40); // Contrast survives gain.
+// Band energy is additive, including fractional bass-cell ownership.
+static_assert(rmsBandPower(80, 192) == rmsBandPower(4, 192) * 20);
+static_assert(rmsBandPower(123, 0) == 0);
+static_assert(rmsBandPower(0, 192) == 0);
+static_assert(SpectrumDynamics::displayLevel(-120, 6, 200) == 0);
+static_assert(SpectrumDynamics::displayLevel(-66, 6, 200) == 0);
+static_assert(SpectrumDynamics::displayLevel(-12, 0, 100) < 130);
+static_assert(SpectrumDynamics::displayLevel(-30, 0, 100) < 50);
+static_assert(SpectrumDynamics::displayLevel(-24, 0, 100) > SpectrumDynamics::displayLevel(-36, 0, 100));
+static_assert(SpectrumDynamics::displayLevel(-24, 0, 50) == SpectrumDynamics::displayLevel(-24, 0, 100) * 0.5f);
+static_assert(SpectrumDynamics::displayLevel(-24, 0, 200) == SpectrumDynamics::displayLevel(-24, 0, 100) * 2);
+static_assert(VolumeMath::gainDb(50, VolumeMath::Curve::Soft) == -31);
+static_assert(VolumeMath::gainDb(50, VolumeMath::Curve::Linear) == -30);
+static_assert(VolumeMath::gainDb(50, VolumeMath::Curve::Log) == -45);
+static_assert(VolumeMath::gainDb(0, VolumeMath::Curve::Soft) == -120);
+static_assert(VolumeMath::gainDb(100, VolumeMath::Curve::Soft) == 0);
+static_assert(nextCaptureDeadline(152, 150, 50) == 200); // Preserve phase, not 202.
+static_assert(nextCaptureDeadline(1000, 150, 50) == 1050); // No burst catch-up.
+static_assert(nextCaptureDeadline(0xfffffff5u, 0xfffffff0u, 50) == 0x22u);
 static_assert(usableFrame(true, 450, 100)); // A brief 350ms scheduling gap is not silence.
 static_assert(usableFrame(true, 100 + FRAME_HOLD_MS, 100));
 static_assert(!usableFrame(true, 101 + FRAME_HOLD_MS, 100));
@@ -120,6 +129,19 @@ static_assert(smoothLevel(0, 255, 84) > smoothLevel(0, 255, 42));
 static_assert(smoothLevel(0.25f, 0, 42) == 0); // Eventually settle at silence.
 static_assert(smoothLevel(123, 123, 42) == 123);
 
+constexpr bool releaseIsNatural(float level) {
+  bool intermediate = false;
+  for (int frame = 0; frame < 24; ++frame) { // At most ~1 second, no PCM/FFT needed.
+    const float next = smoothLevel(level, 0, 42);
+    if (next > level || next < 0) return false;
+    if (next > 0 && next < level) intermediate = true;
+    level = next;
+  }
+  return intermediate && level == 0;
+}
+static_assert(releaseIsNatural(255) && releaseIsNatural(100) && releaseIsNatural(10));
+static_assert(smoothLevel(0, 0, 42) == 0); // Silence cannot grow an organ-pipe shape.
+
 // X(k)/X(N-k) for known left/right phasors, packed as L + iR.
 static_assert(stereoBinPower(0, 0, 0, 0) == 0);
 static_assert(stereoBinPower(1, 0, 1, 0) == 0.5f); // left only
@@ -127,3 +149,68 @@ static_assert(stereoBinPower(0, 1, 0, 1) == 0.5f); // right only
 static_assert(stereoBinPower(1, 1, 1, 1) == 1); // identical L/R
 static_assert(stereoBinPower(1, -1, 1, -1) == 1); // opposite phase: NOT silence
 static_assert(stereoBinPower(0, 0, 2, 0) == 1); // L=1, R=i
+
+// Exact DFT of a periodic Hann-windowed, bin-centered cosine. The production
+// integration must give the same RMS for equal-level bass/mid/treble, rather
+// than divide a treble tone by all the unused cells in its wider band.
+constexpr float absValue(float value) { return value < 0 ? -value : value; }
+constexpr auto hannTone(size_t bin, float amplitude, float rightSign = 1) {
+  std::array<float, POINT_COUNT * 2> fft{};
+  for (size_t k = bin - 1; k <= bin + 1; ++k) {
+    const float value = amplitude * POINT_COUNT * (k == bin ? 0.25f : -0.125f);
+    fft[k * 2] = fft[(POINT_COUNT - k) * 2] = value;
+    fft[k * 2 + 1] = fft[(POINT_COUNT - k) * 2 + 1] = value * rightSign;
+  }
+  return fft;
+}
+constexpr float hannEnergy = POINT_COUNT * 3.0f / 8;
+constexpr auto bassFft = hannTone(6, 0.5f);
+constexpr auto midFft = hannTone(36, 0.5f);
+constexpr auto trebleFft = hannTone(73, 0.5f);
+constexpr auto antiphaseFft = hannTone(73, 0.5f, -1);
+constexpr auto bass = bandPowers(bassFft.data(), 48000, hannEnergy);
+constexpr auto mid = bandPowers(midFft.data(), 48000, hannEnergy);
+constexpr auto treble = bandPowers(trebleFft.data(), 48000, hannEnergy);
+constexpr auto antiphase = bandPowers(antiphaseFft.data(), 48000, hannEnergy);
+constexpr float sumPower(const std::array<float, BAND_COUNT>& powers) {
+  float total = 0;
+  for (float power : powers) total += power;
+  return total;
+}
+static_assert(absValue(sumPower(bass) - 0.125f) < 0.00001f);
+static_assert(absValue(sumPower(mid) - 0.125f) < 0.00001f);
+static_assert(absValue(sumPower(treble) - 0.125f) < 0.00001f);
+static_assert(absValue(treble[19] - mid[16]) < 0.00001f);
+static_assert(bass[8] < mid[16]); // Shared low-resolution bins do not get amplified.
+static_assert(bass[8] > mid[16] * 0.70f); // Finite-window leakage, not a huge tilt.
+static_assert(absValue(antiphase[19] - treble[19]) < 0.00001f);
+
+constexpr bool dcAndSilenceAreEmpty() {
+  std::array<int16_t, POINT_COUNT * 2> samples{};
+  std::array<float, POINT_COUNT> window{};
+  std::array<float, POINT_COUNT * 2> work{};
+  for (size_t i = 0; i < POINT_COUNT; ++i) {
+    samples[i * 2] = 12000;
+    samples[i * 2 + 1] = -6000;
+    window[i] = static_cast<float>(i) / POINT_COUNT;
+  }
+  prepareFrame(samples.data(), window.data(), work.data());
+  for (float value : work) if (value != 0) return false;
+  const auto powers = bandPowers(work.data(), 44100, hannEnergy);
+  for (float value : powers) if (value != 0) return false;
+  return true;
+}
+static_assert(dcAndSilenceAreEmpty());
+
+constexpr auto packetWithLateBeat() {
+  std::array<int32_t, POINT_COUNT * 6> packet{};
+  for (size_t i = POINT_COUNT; i < POINT_COUNT * 2; ++i) {
+    packet[i * 2] = i % 2 ? 0x30000000 : -0x30000000;
+    packet[i * 2 + 1] = packet[i * 2];
+  }
+  return packet;
+}
+constexpr auto lateBeat = packetWithLateBeat();
+static_assert(captureWindowOffset(lateBeat.data(), POINT_COUNT * 3) == POINT_COUNT);
+static_assert(captureWindowOffset(lateBeat.data(), POINT_COUNT) == 0);
+static_assert(captureWindowOffset(nullptr, 0) == 0);

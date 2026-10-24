@@ -3,7 +3,9 @@
 #include <LovyanGFX.hpp>
 #include "../audio/audio_meter.h"
 #include "../audio/audio_spectrum.h"
+#include "../audio/spectrum_dynamics.h"
 #include "../artwork/artwork_cache.h"
+#include "../artwork/album_art_store.h"
 #include "../config/app_config.h"
 #include "../config/hardware_config.h"
 #include "../config/logging.h"
@@ -163,6 +165,7 @@ static const LcdFont* currentUiFont = &kLcdFontSmall;
 static uint8_t vuBars[VU_BAR_COUNT] = {0};
 static uint8_t renderedVuBars[VU_BAR_COUNT] = {0};
 static std::array<float, SpectrumMath::BAND_COUNT> spectrumEnvelope{};
+static SpectrumDynamics::LevelTracker spectrumLevelTracker;
 static unsigned long lastSpectrumEnvelopeMs = 0;
 static bool spectrumDisplayVisible = false;
 static bool vuRendered = false;
@@ -1061,6 +1064,23 @@ static void drawArtPlaceholder(const DisplayModel& m) {
 static void drawArt(const DisplayModel& m) {
   drawPlayerSurfaceRegion(ART_REGION_X, ART_REGION_Y, ART_REGION_W, ART_REGION_H);
 
+  if (AlbumArtStore::isPath(m.logoPath)) {
+    const auto frame = AlbumArtStore::instance().acquire(m.logoPath);
+    if (!frame || frame->side != ART_SIZE) {
+      drawArtPlaceholder(m);
+      return;
+    }
+    drawArtFrame(cBg, logoMatLine());
+    lcd.startWrite();
+    // Match the file-backed renderer's short transfers and rounded aperture,
+    // without its per-chunk filesystem reads or any image decoding on the UI.
+    for (int y = 0; y < ART_SIZE; y += 4) {
+      writeArtRows(frame->pixels + static_cast<size_t>(y) * ART_SIZE, y, min(4, ART_SIZE - y));
+    }
+    lcd.endWrite();
+    return;
+  }
+
   if (!m.logoPath.length() || !LittleFS.exists(m.logoPath)) {
     if (m.logoPath.length()) {
       Serial.printf("[display] logo missing: %s\n", m.logoPath.c_str());
@@ -1149,6 +1169,10 @@ static void drawArt(const DisplayModel& m) {
 }
 
 String Display::artRenderKeyFor(const DisplayModel& m) const {
+  if (AlbumArtStore::isPath(m.logoPath)) {
+    return AlbumArtStore::instance().acquire(m.logoPath)
+        ? String("memory:") + m.logoPath : String("placeholder:") + m.station;
+  }
   if (!m.logoPath.length() || !LittleFS.exists(m.logoPath)) {
     return String("placeholder:") + m.station;
   }
@@ -1174,7 +1198,7 @@ void Display::drawArtIfNeeded(const DisplayModel& m, bool force) {
 }
 
 static bool readyArtKey(const String& key) {
-  return key.startsWith("thumb:") || key.startsWith("source:");
+  return key.startsWith("memory:") || key.startsWith("thumb:") || key.startsWith("source:");
 }
 
 static String formatFooterBitrate(String bitrate) {
@@ -1291,6 +1315,7 @@ static void clearVuBars() {
     vuBars[i] = 0;
   }
   spectrumEnvelope.fill(0);
+  spectrumLevelTracker.reset();
   lastSpectrumEnvelopeMs = 0;
 }
 
@@ -1528,10 +1553,10 @@ static bool updateSpectrumBars(bool playing) {
   elapsedMs = min<uint32_t>(elapsedMs, 100);
   lastSpectrumEnvelopeMs = now;
   const uint16_t sensitivity = constrain(AppConfig::instance().displayVuSensitivity, 50, 200);
-  const float gainDb = 20.0f * log10f(sensitivity / 100.0f);
+  if (fresh) spectrumLevelTracker.update(spectrum.peakDb, spectrum.rmsDb, spectrum.updatedMs, spectrum.generation);
   bool changed = false;
   for (size_t i = 0; i < SpectrumMath::BAND_COUNT; ++i) {
-    const float level = fresh ? SpectrumMath::levelWithGain(spectrum.bands[i], gainDb) : 0;
+    const float level = fresh ? SpectrumDynamics::displayLevel(spectrum.bandDb[i], spectrumLevelTracker.gainDb, sensitivity) : 0;
     spectrumEnvelope[i] = SpectrumMath::smoothLevel(spectrumEnvelope[i], level, elapsedMs);
     const uint8_t next = static_cast<uint8_t>(lroundf(spectrumEnvelope[i] * VU_SYMMETRIC_MAX_H / 255.0f));
     const uint8_t current = vuBars[i];
@@ -1653,7 +1678,9 @@ static void clearRenderedVuArea(const VuLayout& layout) {
 static void drawVuMeter(const DisplayModel& m, bool forceFull = false) {
   VuLayout layout = currentVuLayout();
   if (vuRendered && vuRenderedStyleKey != layout.styleKey) clearVuBars();
-  if (!m.playing && !vuBarsHaveSignal()) {
+  const bool spectrumRelease = footerMode() == DisplayFooterMode::Spectrum && vuBarsHaveSignal();
+  if (!m.playing && !spectrumRelease) {
+    clearVuBars();
     if (vuRendered || forceFull) {
       clearRenderedVuArea(layout);
     }
@@ -3232,7 +3259,8 @@ void Display::renderPartial(const DisplayModel& previous, bool footerModeChanged
 
   const DisplayModel& m = lastModel;
 
-  bool logoMissing = !m.logoPath.length() || (m.logoPath.startsWith("/") && !LittleFS.exists(m.logoPath));
+  bool logoMissing = !m.logoPath.length() ||
+                     (m.logoPath.startsWith("/") && !ArtworkCache::instance().artworkExists(m.logoPath));
   String previousArtKey = artRenderKeyFor(previous);
   String currentArtKey = artRenderKeyFor(m);
   bool equivalentStationLogoSwap = previous.logoPath != m.logoPath &&
@@ -3264,6 +3292,7 @@ void Display::renderPartial(const DisplayModel& previous, bool footerModeChanged
 
   DisplayFooterMode currentFooterMode = footerMode();
   bool footerChanged = footerModeChanged ||
+                       (audioFooterMode() && previous.playing != m.playing) ||
                        previous.ip != m.ip ||
                        previous.bitrate != m.bitrate ||
                        previous.codec != m.codec ||
@@ -3442,7 +3471,10 @@ void Display::renderAudioMeterFrame(bool force) {
   const bool visible = hasRenderedModel &&
       !idleBlanked && !idleClockActive && !lastModel.apMode &&
       !stationPickerActive && !volumePopupUntil && audioFooterMode();
-  setSpectrumDisplayVisibility(visible && lastModel.playing && footerMode() == DisplayFooterMode::Spectrum);
+  // Visibility is not playback. On stop the worker is disabled by AudioPlayer,
+  // while the LCD retains its envelope and decays towards silence below.
+  const bool spectrum = footerMode() == DisplayFooterMode::Spectrum;
+  setSpectrumDisplayVisibility(visible && spectrum);
   if (!visible) {
     return;
   }
@@ -3451,18 +3483,22 @@ void Display::renderAudioMeterFrame(bool force) {
   if (!force && now - lastMeterRenderMs < METER_RENDER_MS) return;
   lastMeterRenderMs = now;
 
-  if (!lastModel.playing) {
-    if (vuBarsHaveSignal() || force) {
+  if (!lastModel.playing && !spectrum) {
+    // Visibility changes already zero the input bars. The LCD can still hold
+    // the last frame, so also consult the rendered state before skipping it.
+    if (vuRendered || vuBarsHaveSignal() || force) {
       clearVuBars();
-      drawVuMeter(lastModel);
+      drawVuMeter(lastModel, force);
     }
     return;
   }
 
-  bool active = footerMode() == DisplayFooterMode::Spectrum
+  bool active = spectrum
                   ? updateSpectrumBars(lastModel.playing) : updateVuBars(lastModel.playing);
-  if (!force && !active) return;
-  drawVuMeter(lastModel);
+  // After the final sub-pixel decay, erase the axis/last rendered frame once.
+  const bool releaseFinished = spectrum && !lastModel.playing && !vuBarsHaveSignal() && vuRendered;
+  if (!force && !active && !releaseFinished) return;
+  drawVuMeter(lastModel, force);
 }
 
 void Display::showStationPicker(int selectedStationId) {

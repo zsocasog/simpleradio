@@ -13,6 +13,7 @@
 #include "../config/hardware_capabilities.h"
 #include "../stations/station_manager.h"
 #include "../artwork/artwork_cache.h"
+#include "../artwork/album_art_store.h"
 #include "../display/display.h"
 #include "../display/display_presenter.h"
 #include "../i18n/i18n.h"
@@ -1523,6 +1524,32 @@ void webServerBegin() {
     },
     nullptr
   );
+
+  server.on(AlbumArtStore::ROUTE, HTTP_GET, [](AsyncWebServerRequest* request) {
+    if (!request->hasParam("id") || request->getParam("id")->value().length() != 17) {
+      request->send(400, "text/plain", "Invalid album image id");
+      return;
+    }
+    const auto frame = AlbumArtStore::instance().acquire(
+        String(AlbumArtStore::PATH_PREFIX) + request->getParam("id")->value());
+    if (!frame) {
+      request->send(404, "text/plain", "Album image expired");
+      return;
+    }
+    const char* contentType = frame->format == AlbumArtPolicy::Format::Png ? "image/png" : "image/jpeg";
+    // Capture the immutable lease for the ENTIRE async response, not just this
+    // handler call. A track change cannot free/reuse bytes being sent to a client.
+    auto* response = request->beginResponse(contentType, frame->imageBytes,
+        [frame](uint8_t* buffer, size_t maxLen, size_t index) -> size_t {
+          return frame->read(buffer, maxLen, index);
+        });
+    if (!response) {
+      request->send(503, "text/plain", "Album response unavailable");
+      return;
+    }
+    response->addHeader("Cache-Control", "no-store, max-age=0");
+    request->send(response);
+  });
 
   server.on(
     "/api/artwork/cache",

@@ -33,6 +33,7 @@ public:
   void applyTimeZone() const;
 
   String toJson() const;
+  String effectiveLastFmApiKey() const;
   bool applyJson(const JsonDocument& doc);
 
   bool displayInvert = false;

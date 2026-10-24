@@ -2,6 +2,7 @@
 
 #include <esp_dsp.h>
 #include <math.h>
+#include <cstring>
 
 namespace {
 constexpr uint32_t CAPTURE_INTERVAL_MS = 50;
@@ -10,6 +11,13 @@ constexpr BaseType_t SPECTRUM_TASK_CORE = 1;
 // Below the audio pump/decoder (2), but not idle priority: drawing/network work
 // must not starve the analyzer until every queued frame has expired.
 constexpr UBaseType_t SPECTRUM_TASK_PRIORITY = 1;
+
+float powerDb(float power, float playbackGainDb = 0) {
+  // Do not compensate an epsilon/noise-floor constant: at a low volume that
+  // would turn actual zeros into a false nonzero spectrum.
+  return power > 0 ? max(SpectrumMath::SILENCE_DB, 10.0f * log10f(power) - playbackGainDb)
+                   : SpectrumMath::SILENCE_DB;
+}
 }
 
 AudioSpectrum& AudioSpectrum::instance() {
@@ -32,10 +40,11 @@ bool AudioSpectrum::begin() {
     Serial.println("[spectrum] FFT initialization failed");
     return false;
   }
-  windowSum_ = 0;
+  windowEnergy_ = 0;
   for (size_t i = 0; i < SpectrumMath::POINT_COUNT; ++i) {
-    window_[i] = 0.5f * (1.0f - cosf(2.0f * M_PI * i / (SpectrumMath::POINT_COUNT - 1)));
-    windowSum_ += window_[i];
+    // Periodic Hann for the DFT; its squared sum calibrates band RMS power.
+    window_[i] = 0.5f * (1.0f - cosf(2.0f * M_PI * i / SpectrumMath::POINT_COUNT));
+    windowEnergy_ += window_[i] * window_[i];
   }
 #if CONFIG_DSP_OPTIMIZED && dsps_fft2r_fc32_aes3_enabled
   optimizedFft_ = true;
@@ -50,7 +59,7 @@ bool AudioSpectrum::begin() {
       return false;
     }
   }
-  Serial.printf("[spectrum] FFT self-test passed (stereo test tones, %s)\n", optimizedFft_ ? "S3" : "ANSI");
+  Serial.printf("[spectrum] FFT self-test passed (stereo, windowed RMS, DC/silence, %s)\n", optimizedFft_ ? "S3" : "ANSI");
   if (xTaskCreatePinnedToCore(taskEntry, "spectrum", 4096, this, SPECTRUM_TASK_PRIORITY,
                               &task_, SPECTRUM_TASK_CORE) != pdPASS) {
     task_ = nullptr;
@@ -60,7 +69,7 @@ bool AudioSpectrum::begin() {
   portENTER_CRITICAL(&mux_);
   initialized_ = true;
   portEXIT_CRITICAL(&mux_);
-  Serial.println("[spectrum] ready: 24 bands, 512-point FFT, up to 20 Hz capture");
+  Serial.println("[spectrum] ready: 24 bands, 512-point FFT, post-EQ Q31, 20 Hz capture budget");
   return true;
 }
 
@@ -75,33 +84,42 @@ int AudioSpectrum::transform() {
 }
 
 bool AudioSpectrum::fftSelfTest() {
-  // Run the actual linked DSP backend BEFORE the worker starts. Distinct,
-  // bin-aligned L/R tones catch wrong coefficient tables, ordering and unpacking.
-  constexpr size_t leftBin = 12;
-  constexpr size_t rightBin = 73;
+  // Three transforms total, before the worker starts: full-level Q31 PCM,
+  // quiet-volume Q31 PCM, and DC/silence. Distinct L/R tones check the linked
+  // backend, private coefficients, ordering, window, RMS and stereo unpacking.
+  constexpr uint32_t sampleRate = 48000;
+  constexpr size_t rmsLeftBin = 36, rmsRightBin = 73;
   for (size_t i = 0; i < SpectrumMath::POINT_COUNT; ++i) {
     const float phase = 2.0f * M_PI * i / SpectrumMath::POINT_COUNT;
-    work_[i * 2] = 0.5f * cosf(phase * leftBin);
-    work_[i * 2 + 1] = 0.25f * cosf(phase * rightBin);
+    frames_[0].samples[i * 2] = static_cast<int32_t>(268435456.0f + 1073741824.0f * cosf(phase * rmsLeftBin));
+    frames_[0].samples[i * 2 + 1] = static_cast<int32_t>(-134217728.0f + 536870912.0f * cosf(phase * rmsRightBin));
   }
+  SpectrumMath::prepareFrame(frames_[0].samples.data(), window_.data(), work_.data(), 2147483648.0f);
   if (transform() != ESP_OK) return false;
-  float leftPower = 0;
-  float rightPower = 0;
-  float leakage = 0;
-  for (size_t bin = 1; bin < SpectrumMath::POINT_COUNT / 2; ++bin) {
-    const size_t mirror = SpectrumMath::POINT_COUNT - bin;
-    const float power = SpectrumMath::stereoBinPower(work_[bin * 2], work_[bin * 2 + 1],
-                                                    work_[mirror * 2], work_[mirror * 2 + 1]);
-    if (bin == leftBin) leftPower = power;
-    else if (bin == rightBin) rightPower = power;
-    else leakage += power;
+  const auto powers = SpectrumMath::bandPowers(work_.data(), sampleRate, windowEnergy_);
+  const int leftBand = SpectrumMath::bandForBin(rmsLeftBin, sampleRate);
+  const int rightBand = SpectrumMath::bandForBin(rmsRightBin, sampleRate);
+  constexpr float rmsLeft = 0.0625f, rmsRight = 0.015625f; // A^2/2, stereo mean.
+  if (leftBand < 0 || rightBand < 0 || leftBand == rightBand ||
+      fabsf(powers[leftBand] - rmsLeft) > rmsLeft * 0.02f ||
+      fabsf(powers[rightBand] - rmsRight) > rmsRight * 0.02f) return false;
+  float otherPower = 0;
+  for (size_t band = 0; band < SpectrumMath::BAND_COUNT; ++band) {
+    if (static_cast<int>(band) != leftBand && static_cast<int>(band) != rightBand) otherPower += powers[band];
   }
-  const float expectedLeft = SpectrumMath::POINT_COUNT * SpectrumMath::POINT_COUNT * 0.25f / 8.0f;
-  const float expectedRight = expectedLeft * 0.25f;
-  return isfinite(leftPower) && isfinite(rightPower) && isfinite(leakage) &&
-         fabsf(leftPower - expectedLeft) < expectedLeft * 0.02f &&
-         fabsf(rightPower - expectedRight) < expectedRight * 0.02f &&
-         leakage < (expectedLeft + expectedRight) * 0.001f;
+  if (!isfinite(otherPower) || otherPower > (rmsLeft + rmsRight) * 0.001f) return false;
+  for (int32_t& sample : frames_[0].samples) sample = static_cast<int32_t>(sample * 0.01f);
+  SpectrumMath::prepareFrame(frames_[0].samples.data(), window_.data(), work_.data(), 2147483648.0f);
+  if (transform() != ESP_OK) return false;
+  const auto quiet = SpectrumMath::bandPowers(work_.data(), sampleRate, windowEnergy_);
+  if (fabsf(powerDb(quiet[leftBand], -40) - powerDb(rmsLeft)) > 0.1f ||
+      fabsf(powerDb(quiet[rightBand], -40) - powerDb(rmsRight)) > 0.1f) return false;
+  frames_[0].samples.fill(12000 << 16); // Constant Q31 PCM is DC, not a staircase spectrum.
+  SpectrumMath::prepareFrame(frames_[0].samples.data(), window_.data(), work_.data(), 2147483648.0f);
+  if (transform() != ESP_OK) return false;
+  const auto silence = SpectrumMath::bandPowers(work_.data(), sampleRate, windowEnergy_);
+  for (float power : silence) if (!isfinite(power) || power > 1.0e-12f) return false;
+  return powerDb(0, -60) == SpectrumMath::SILENCE_DB;
 }
 
 void AudioSpectrum::resetLocked() {
@@ -117,10 +135,11 @@ void AudioSpectrum::resetLocked() {
   firstFrame_ = true;
 }
 
-void AudioSpectrum::setEnabled(bool enabled, uint32_t sampleRate) {
+void AudioSpectrum::setEnabled(bool enabled, uint32_t sampleRate, float playbackGainDb) {
   if (enabled && (!sampleRate || !begin())) enabled = false;
   bool changed = false;
   portENTER_CRITICAL(&mux_);
+  playbackGainDb_ = enabled ? max(-60.0f, min(0.0f, playbackGainDb)) : 0;
   if (enabled_ != enabled || (enabled && sampleRate_ != sampleRate)) {
     enabled_ = enabled;
     sampleRate_ = enabled ? sampleRate : 0;
@@ -145,6 +164,7 @@ void AudioSpectrum::setDisplayVisible(bool visible) {
 
 void AudioSpectrum::capture(const int32_t* samples, int16_t frames) {
   if (!samples || frames <= 0) return;
+  const uint32_t startedUs = micros();
   const uint32_t now = millis();
   uint8_t index = 0;
   uint32_t generation = 0;
@@ -175,6 +195,7 @@ void AudioSpectrum::capture(const int32_t* samples, int16_t frames) {
       frames_[i].generation = generation_;
       frames_[i].sampleRate = sampleRate_;
       frames_[i].capturedMs = now;
+      frames_[i].playbackGainDb = playbackGainDb_;
       writePosition_ = 0;
       break;
     }
@@ -190,12 +211,10 @@ void AudioSpectrum::capture(const int32_t* samples, int16_t frames) {
   count = min<size_t>(static_cast<size_t>(frames), SpectrumMath::POINT_COUNT - start);
   portEXIT_CRITICAL(&mux_);
 
-  // Preserve L/R separately; this is a bounded copy, not FFT or rendering.
-  // 32-bit interleaved PCM -> signed 16-bit visualization samples.
-  for (size_t i = 0; i < count; ++i) {
-    frames_[index].samples[(start + i) * 2] = static_cast<int16_t>(samples[i * 2] >> 16);
-    frames_[index].samples[(start + i) * 2 + 1] = static_cast<int16_t>(samples[i * 2 + 1] >> 16);
-  }
+  // At most 4096 copied bytes. Only a bounded integer probe for long packets;
+  // never decimate FFT input, allocate, calculate FFT or write playback samples.
+  const size_t offset = start == 0 ? SpectrumMath::captureWindowOffset(samples, frames) : 0;
+  memcpy(frames_[index].samples.data() + start * 2, samples + offset * 2, count * 2 * sizeof(int32_t));
 
   bool ready = false;
   portENTER_CRITICAL(&mux_);
@@ -207,10 +226,11 @@ void AudioSpectrum::capture(const int32_t* samples, int16_t frames) {
       frames_[index].state = BufferState::Ready;
       writeBuffer_ = -1;
       writePosition_ = 0;
-      nextCaptureMs_ = frames_[index].capturedMs + CAPTURE_INTERVAL_MS;
+      nextCaptureMs_ = SpectrumMath::nextCaptureDeadline(now, nextCaptureMs_, CAPTURE_INTERVAL_MS);
       ready = true;
     }
   }
+  diagnostics_.maxCaptureUs = max(diagnostics_.maxCaptureUs, static_cast<uint32_t>(micros() - startedUs));
   portEXIT_CRITICAL(&mux_);
   if (ready && task_) xTaskNotifyGive(task_);
 }
@@ -251,17 +271,10 @@ void AudioSpectrum::processFrame(uint8_t index) {
   portEXIT_CRITICAL(&mux_);
   if (queueMs > SpectrumMath::MAX_QUEUE_AGE_MS) return;
   const uint32_t startedUs = micros();
-  float meanLeft = 0;
-  float meanRight = 0;
-  for (size_t i = 0; i < SpectrumMath::POINT_COUNT; ++i) {
-    meanLeft += frame.samples[i * 2];
-    meanRight += frame.samples[i * 2 + 1];
-  }
-  meanLeft /= SpectrumMath::POINT_COUNT;
-  meanRight /= SpectrumMath::POINT_COUNT;
-  for (size_t i = 0; i < SpectrumMath::POINT_COUNT; ++i) {
-    work_[i * 2] = (frame.samples[i * 2] - meanLeft) * window_[i] / 32768.0f;
-    work_[i * 2 + 1] = (frame.samples[i * 2 + 1] - meanRight) * window_[i] / 32768.0f;
+  const float inputPower = SpectrumMath::prepareFrame(frame.samples.data(), window_.data(), work_.data(), 2147483648.0f);
+  uint32_t nearClipSamples = 0;
+  for (int32_t sample : frame.samples) {
+    if (sample >= 0x7f000000 || sample <= -0x7f000000) ++nearClipSamples;
   }
 
   const int resultCode = transform();
@@ -274,40 +287,31 @@ void AudioSpectrum::processFrame(uint8_t index) {
     return;
   }
 
-  std::array<float, SpectrumMath::BAND_COUNT> powers{};
-  std::array<float, SpectrumMath::BAND_COUNT> weights{};
-  for (size_t band = 0; band < SpectrumMath::BAND_COUNT; ++band) {
-    const SpectrumMath::BinRange bins = SpectrumMath::binsForBand(band, frame.sampleRate);
-    for (size_t bin = bins.first; bin <= bins.last; ++bin) {
-      const size_t mirror = SpectrumMath::POINT_COUNT - bin;
-      const float weight = SpectrumMath::binBandWeight(bin, band, frame.sampleRate);
-      weights[band] += weight;
-      powers[band] += weight *
-          SpectrumMath::stereoBinPower(work_[bin * 2], work_[bin * 2 + 1],
-                                       work_[mirror * 2], work_[mirror * 2 + 1]);
-    }
-  }
+  const auto powers = SpectrumMath::bandPowers(work_.data(), frame.sampleRate, windowEnergy_);
   AudioSpectrumSnapshot result;
-  const float normalization = 2.0f / windowSum_;
   float minDb = 0;
-  float maxDb = -200;
+  float maxDb = SpectrumMath::SILENCE_DB;
   for (size_t band = 0; band < SpectrumMath::BAND_COUNT; ++band) {
-    const float amplitude = sqrtf(SpectrumMath::meanBandPower(powers[band], weights[band])) * normalization;
-    const float db = 20.0f * log10f(amplitude + 1.0e-9f);
-    if (weights[band] > 0) {
+    const float db = powerDb(powers[band], frame.playbackGainDb);
+    if (SpectrumMath::bandUpperHz(band, frame.sampleRate) > SpectrumMath::BAND_EDGES_HZ[band]) {
       minDb = min(minDb, db);
       maxDb = max(maxDb, db);
     }
-    result.bands[band] = static_cast<uint8_t>(lroundf(SpectrumMath::levelFromDb(db)));
+    result.bandDb[band] = db;
   }
   result.active = true;
   result.updatedMs = frame.capturedMs;
+  result.generation = frame.generation;
+  result.peakDb = maxDb;
+  result.rmsDb = powerDb(inputPower, frame.playbackGainDb);
+  result.outputRmsDb = powerDb(inputPower);
   bool report = false;
   portENTER_CRITICAL(&mux_);
   if (enabled_ && visible_ && frame.generation == generation_) {
     published_ = result;
     ++diagnostics_.processed;
     diagnostics_.maxProcessingUs = max(diagnostics_.maxProcessingUs, static_cast<uint32_t>(micros() - startedUs));
+    diagnostics_.nearClipSamples += nearClipSamples;
     lastMinDb_ = minDb;
     lastMaxDb_ = maxDb;
     report = firstFrame_;
@@ -317,7 +321,7 @@ void AudioSpectrum::processFrame(uint8_t index) {
   if (report) Serial.printf("[spectrum] first frame: %lu Hz, processing %lu us\n",
                             static_cast<unsigned long>(frame.sampleRate),
                             static_cast<unsigned long>(micros() - startedUs));
-  if (report) Serial.printf("[spectrum] third-octave bands, upper limit %lu Hz, mean spectral power\n",
+  if (report) Serial.printf("[spectrum] music dynamics v2: third-octave RMS energy, upper limit %lu Hz; EQ-following, volume-compensated\n",
                             static_cast<unsigned long>(SpectrumMath::bandUpperHz(SpectrumMath::BAND_COUNT - 1,
                                                                                frame.sampleRate)));
 }
@@ -352,23 +356,37 @@ void AudioSpectrum::reportDiagnostics() {
   Diagnostics stats;
   long inputAge = -1;
   long outputAge = -1;
+  AudioSpectrumSnapshot measured;
   portENTER_CRITICAL(&mux_);
   if (!enabled_ || !visible_) {
     portEXIT_CRITICAL(&mux_);
     return;
   }
   stats = diagnostics_;
+  measured = published_;
   diagnostics_ = {};
   if (lastPcmMs_) inputAge = static_cast<long>(now - lastPcmMs_);
   if (published_.active) outputAge = static_cast<long>(now - published_.updatedMs);
   portEXIT_CRITICAL(&mux_);
   lastDiagnosticsMs_ = now;
-  Serial.printf("[spectrum] pcm=%lu queued=%lu fft=%lu busy=%lu stale=%lu resets=%lu queue-max=%lums fft-max=%luus input-age=%ldms output-age=%ldms dB=%.1f..%.1f\n",
+  Serial.printf("[spectrum] pcm=%lu queued=%lu fft=%lu busy=%lu stale=%lu resets=%lu queue-max=%lums fft-max=%luus input-age=%ldms output-age=%ldms dB=%.1f..%.1f copy-max=%luus near-clip=%lu output-rms=%.1f music-rms=%.1f\n",
                 static_cast<unsigned long>(stats.callbacks), static_cast<unsigned long>(stats.captured),
                 static_cast<unsigned long>(stats.processed), static_cast<unsigned long>(stats.busyDrops),
                 static_cast<unsigned long>(stats.staleDrops), static_cast<unsigned long>(stats.resets),
                 static_cast<unsigned long>(stats.maxQueueMs), static_cast<unsigned long>(stats.maxProcessingUs),
-                inputAge, outputAge, lastMinDb_, lastMaxDb_);
+                inputAge, outputAge, lastMinDb_, lastMaxDb_,
+                static_cast<unsigned long>(stats.maxCaptureUs), static_cast<unsigned long>(stats.nearClipSamples),
+                measured.outputRmsDb, measured.rmsDb);
+  if (measured.active) {
+    char bands[200] = {};
+    size_t used = 0;
+    for (float db : measured.bandDb) {
+      const int written = snprintf(bands + used, sizeof(bands) - used, "%s%.0f", used ? "," : "", db);
+      if (written < 0 || static_cast<size_t>(written) >= sizeof(bands) - used) break;
+      used += written;
+    }
+    Serial.printf("[spectrum] bands-dB low->high: %s\n", bands);
+  }
 }
 
 AudioSpectrumSnapshot AudioSpectrum::snapshot() {

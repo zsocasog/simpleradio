@@ -11,10 +11,45 @@ constexpr size_t BAND_COUNT = 24;
 constexpr uint32_t MAX_QUEUE_AGE_MS = 400;
 constexpr uint32_t FRAME_HOLD_MS = 600;
 constexpr float DB_FLOOR = -60.0f;
-constexpr float DB_CEILING = -12.0f;
+constexpr float SILENCE_DB = -120.0f;
 
 constexpr bool beforeDeadline(uint32_t now, uint32_t deadline) {
   return deadline != 0 && static_cast<int32_t>(now - deadline) < 0;
+}
+
+// Advance the capture clock rather than restarting a 50ms delay after every
+// callback. MP3/FLAC callbacks are bursty; restarting it reduced real capture
+// rate to ~15Hz and made the animation miss more transients than necessary.
+constexpr uint32_t nextCaptureDeadline(uint32_t now, uint32_t previous, uint32_t interval) {
+  const uint32_t next = previous + interval;
+  return !previous || static_cast<int32_t>(now - next) >= 0 ? now + interval : next;
+}
+
+// Long decoder packets (e.g. FLAC) contain much more than one FFT window.
+// Find a representative high-energy CONTIGUOUS window instead of always missing
+// everything after the packet's first 11ms. A bounded coarse energy scan uses
+// at most 12*16 stereo probes; no FFT, floating point or output modification.
+constexpr size_t captureWindowOffset(const int32_t* samples, size_t frames) {
+  if (!samples || frames <= POINT_COUNT) return 0;
+  const size_t available = (frames + POINT_COUNT - 1) / POINT_COUNT;
+  const size_t candidates = available < 12 ? available : 12;
+  uint64_t bestEnergy = 0;
+  size_t bestOffset = 0;
+  for (size_t candidate = 0; candidate < candidates; ++candidate) {
+    const size_t offset = (frames - POINT_COUNT) * candidate / (candidates - 1);
+    uint64_t energy = 0;
+    for (size_t probe = 0; probe < 16; ++probe) {
+      const size_t i = offset + (probe * POINT_COUNT + POINT_COUNT / 2) / 16;
+      const int64_t left = samples[i * 2] >> 8;
+      const int64_t right = samples[i * 2 + 1] >> 8;
+      energy += left * left + right * right;
+    }
+    if (energy > bestEnergy) {
+      bestEnergy = energy;
+      bestOffset = offset;
+    }
+  }
+  return bestOffset;
 }
 // Third-octave (cbrt(2) ratio) boundaries in Hz, up to 20.48 kHz. The first
 // bucket also collects the unresolved lower bass; DC is always excluded.
@@ -73,24 +108,13 @@ constexpr float binBandWeight(size_t bin, size_t band, uint32_t sampleRate) {
   return high > low ? (high - low) / binWidth : 0;
 }
 
-// Average spectral power per FFT cell. Using the SUM instead would boost wide
-// high-frequency bands just because they contain more bins, flattening music.
-constexpr float meanBandPower(float weightedPower, float weightSum) {
-  return weightSum > 0 && weightedPower > 0 ? weightedPower / weightSum : 0;
-}
-
-constexpr float levelFromDb(float db) {
-  if (db <= DB_FLOOR) return 0;
-  if (db >= DB_CEILING) return 255;
-  return (db - DB_FLOOR) * 255.0f / (DB_CEILING - DB_FLOOR);
-}
-
-// Sensitivity is an amplitude gain in dB, NOT a multiplier of already-logarithmic
-// heights. The latter clipped most bars together at 150-200% sensitivity.
-constexpr float levelWithGain(float level, float gainDb) {
-  if (level <= 0) return 0; // Never turn digital silence into a visible baseline.
-  const float adjusted = level + gainDb * 255.0f / (DB_CEILING - DB_FLOOR);
-  return adjusted <= 0 ? 0 : (adjusted >= 255 ? 255 : adjusted);
+// One-sided, window-energy-corrected RMS power. A log-band meter displays
+// INTEGRATED band energy, not mean spectral density per FFT bin. Dividing by
+// the bin count attenuated equal-level treble tones and duplicated narrow bass
+// cells when their fractional weight cancelled in numerator and denominator.
+constexpr float rmsBandPower(float weightedPower, float windowEnergy) {
+  return weightedPower > 0 && windowEnergy > 0
+      ? weightedPower * (2.0f / (POINT_COUNT * windowEnergy)) : 0;
 }
 
 constexpr bool usableFrame(bool active, uint32_t now, uint32_t capturedMs) {
@@ -102,7 +126,7 @@ constexpr bool usableFrame(bool active, uint32_t now, uint32_t capturedMs) {
 constexpr float smoothLevel(float current, float target, uint32_t elapsedMs) {
   if (!elapsedMs) return current;
   if (elapsedMs > 250) elapsedMs = 250;
-  const float timeConstantMs = target > current ? 35.0f : 170.0f;
+  const float timeConstantMs = target > current ? 45.0f : 120.0f;
   const float blend = elapsedMs / (timeConstantMs + elapsedMs);
   const float next = current + (target - current) * blend;
   return target == 0 && next < 0.5f ? 0 : next;
@@ -118,6 +142,43 @@ constexpr float stereoBinPower(float real, float imag, float mirrorReal, float m
   const float rightImag = (mirrorReal - real) * 0.5f;
   return (leftReal * leftReal + leftImag * leftImag +
           rightReal * rightReal + rightImag * rightImag) * 0.5f;
+}
+
+// Portable production path, also exercised with deterministic signal tests.
+template<class Sample>
+constexpr float prepareFrame(const Sample* samples, const float* window, float* work, float fullScale = 32768.0f) {
+  float meanLeft = 0, meanRight = 0;
+  for (size_t i = 0; i < POINT_COUNT; ++i) {
+    meanLeft += static_cast<float>(samples[i * 2]) / fullScale;
+    meanRight += static_cast<float>(samples[i * 2 + 1]) / fullScale;
+  }
+  meanLeft /= POINT_COUNT;
+  meanRight /= POINT_COUNT;
+  float power = 0;
+  for (size_t i = 0; i < POINT_COUNT; ++i) {
+    const float left = static_cast<float>(samples[i * 2]) / fullScale - meanLeft;
+    const float right = static_cast<float>(samples[i * 2 + 1]) / fullScale - meanRight;
+    power += left * left + right * right;
+    work[i * 2] = left * window[i];
+    work[i * 2 + 1] = right * window[i];
+  }
+  return power / (POINT_COUNT * 2);
+}
+
+constexpr std::array<float, BAND_COUNT> bandPowers(const float* transformed, uint32_t sampleRate, float windowEnergy) {
+  std::array<float, BAND_COUNT> powers{};
+  for (size_t band = 0; band < BAND_COUNT; ++band) {
+    const BinRange bins = binsForBand(band, sampleRate);
+    float sum = 0;
+    for (size_t bin = bins.first; bin <= bins.last; ++bin) {
+      const size_t mirror = POINT_COUNT - bin;
+      sum += binBandWeight(bin, band, sampleRate) *
+          stereoBinPower(transformed[bin * 2], transformed[bin * 2 + 1],
+                         transformed[mirror * 2], transformed[mirror * 2 + 1]);
+    }
+    powers[band] = rmsBandPower(sum, windowEnergy);
+  }
+  return powers;
 }
 
 static_assert(POINT_COUNT == 512 && (POINT_COUNT & (POINT_COUNT - 1)) == 0, "FFT must have 512 points");
