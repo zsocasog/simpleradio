@@ -74,6 +74,10 @@ Az állomáslogóknál a letöltött JPEG formátumát még mentés előtt ellen
 
 Álló lejátszónál a kiválasztott adó logója elsőbbséget kap, majd a mentett adók hiányzó logói sorban készülnek elő. Egyszerre egy feladat fut, a munka között három másodperc ütemezési szünettel; a kész képeket kihagyjuk, a hibás források újrapróbálkozása késleltetett. Lejátszás közben nincs teljes állomásbejárás. Soros visszajelzés: idle station prewarm queued, prewarm download start és LCD station logo ready. Ehhez az LCD-kompatibilitási és előtöltési javításhoz a legutóbbi WebUI/data megtartása mellett csak firmware-feltöltés szükséges.
 
+Az albumborítók keresése az egyező előadó mellett a legalább 6 betűs címeknél egy, a legalább 12 betűs címeknél legfeljebb két apró elírást is elfogad. A pontos találat előrébb kerül; az eltérő számok és koncert/remix/feldolgozás jelölések nem mosódnak össze. A Last.fm automatikus javítását is kérjük, de a visszakapott előadót továbbra is ellenőrizzük. A metaadatválasz korlátja 192-ről 256 KiB-ra nőtt, PSRAM-pufferben; a korlát elérése és a Last.fm hiányzó album-/képadat külön naplóüzenetet kap.
+
+Az ismert hosszúságú, nem chunked HTTP(S)-válasz teljes beolvasása után az egyszer használatos kapcsolatot azonnal lezárjuk, így a keretrendszer lezáráskori utóolvasása nem okoz félrevezető TLS-hibát. A hiányos válasz továbbra is hiba; a chunked és ismeretlen hosszúságú válaszok feldolgozását az eddigi HTTPClient végzi. Az állomáslogók előtöltése, forrásválasztása, képfeldolgozása és az audio/spektrum kódja megmarad. Ehhez a keresési és kapcsolatlezárási javításhoz csak firmware-feltöltés szükséges, a legutóbbi data megtartásával.
+
 ## Képernyőképek
 
 ### LCD működés közben

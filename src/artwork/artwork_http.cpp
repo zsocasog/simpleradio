@@ -1,4 +1,5 @@
 #include "artwork_http.h"
+#include "artwork_http_policy.h"
 
 #include <HTTPClient.h>
 #include <NetworkClient.h>
@@ -51,6 +52,8 @@ template<class Base> class CooperativeClient : public Base {
 public:
   explicit CooperativeClient(Transfer& transfer) : transfer(transfer) {}
 
+  void expectBody(int length, bool chunked) { bodyBoundary.begin(length, chunked); }
+
   int connect(IPAddress ip, uint16_t port, int32_t timeout) override {
     if (!service()) return 0;
     return Base::connect(ip, port, boundedConnect(timeout));
@@ -68,7 +71,14 @@ public:
     return result == 1 ? byte : -1;
   }
   int read(uint8_t* buffer, size_t size) override {
-    return service() ? Base::read(buffer, size) : -1;
+    if (!service()) return -1;
+    const int received = Base::read(buffer, size);
+    // HTTPClient polls available()/connected() again after its last body
+    // block and while disconnecting. On a Connection: close TLS response that
+    // can read past the complete payload and produce a spurious -76. We never
+    // reuse this connection; close as soon as the declared payload is read.
+    if (received > 0 && bodyBoundary.consume(static_cast<size_t>(received))) Base::stop();
+    return received;
   }
   uint8_t connected() override {
     return service() ? Base::connected() : 0;
@@ -85,6 +95,7 @@ private:
     return remaining(transfer.options.deadlineMs, normal);
   }
   Transfer& transfer;
+  ArtworkHttpPolicy::BodyBoundary bodyBoundary;
 };
 
 class BufferSink : public Stream {
@@ -97,7 +108,8 @@ public:
   ~BufferSink() override { free(data); }
   size_t write(uint8_t byte) override { return write(&byte, 1); }
   size_t write(const uint8_t* bytes, size_t length) override {
-    if (!data || !transfer.service() || length > capacity - size) return 0;
+    if (!data || !transfer.service()) return 0;
+    if (length > capacity - size) { limitExceeded = true; return 0; }
     memcpy(data + size, bytes, length);
     size += length;
     return length;
@@ -109,6 +121,7 @@ public:
   uint8_t* release() { uint8_t* result = data; data = nullptr; return result; }
   uint8_t* data = nullptr;
   size_t size = 0;
+  bool limitExceeded = false;
 private:
   size_t capacity;
   Transfer& transfer;
@@ -138,8 +151,14 @@ template<class Client> bool request(Client& client, const String& url, size_t li
   http.setTimeout(remaining(transfer.options.deadlineMs, READ_MS));
   http.setFollowRedirects(HTTPC_DISABLE_FOLLOW_REDIRECTS);
   http.setUserAgent("SimpleRadio/0.8.24 (https://github.com/zsocasog/simpleradio)");
-  const char* headers[] = {"Content-Type"};
-  http.collectHeaders(headers, 1);
+  const char* headers[] = {"Content-Type", "Transfer-Encoding"};
+  http.collectHeaders(headers, 2);
+  auto finish = [&]() {
+    // This is a one-shot request. Do not drain/poll a socket that the server
+    // may already have closed after a complete response or a rejected status.
+    client.stop();
+    http.end();
+  };
   if (!http.begin(client, url)) {
     response.error = "HTTP begin failed";
     return false;
@@ -149,34 +168,42 @@ template<class Client> bool request(Client& client, const String& url, size_t li
   response.location = http.getLocation();
   response.contentType = http.header("Content-Type");
   if (redirectStatus(response.status)) {
-    http.end();
+    finish();
     return true;
   }
   const int expectedStatus = transfer.options.range.length() ? HTTP_CODE_PARTIAL_CONTENT : HTTP_CODE_OK;
   if (response.status != expectedStatus) {
     response.error = "HTTP " + String(response.status);
-    http.end();
+    finish();
     return false;
   }
   const int length = http.getSize();
   if (length == 0 || (length > 0 && static_cast<size_t>(length) > limit)) {
-    response.error = "invalid/oversized body: " + String(length);
-    http.end();
+    response.error = "invalid/oversized body: " + String(length) + " limit=" + String(limit);
+    finish();
     return false;
   }
   BufferSink sink(length > 0 ? static_cast<size_t>(length) : limit, transfer);
   if (!sink.data) {
     response.error = "response buffer allocation failed";
-    http.end();
+    finish();
     return false;
   }
   // writeToStream decodes Transfer-Encoding: chunked. getStream() does not;
   // passing that raw socket to ArduinoJson caused Invalid/IncompleteInput.
+  String encoding = http.header("Transfer-Encoding");
+  encoding.toLowerCase();
+  client.expectBody(length, encoding.indexOf("chunked") >= 0);
   const int written = http.writeToStream(&sink);
-  http.end();
+  finish();
+  if (sink.limitExceeded) {
+    response.error = "response size limit reached: limit=" + String(limit) + " bytes=" + String(sink.size);
+    return false;
+  }
   if (!transfer.service() || written < 0 || !sink.size ||
       (length > 0 && sink.size != static_cast<size_t>(length))) {
-    response.error = "body read failed: code=" + String(written) + " bytes=" + String(sink.size);
+    response.error = "body read failed: code=" + String(written) + " bytes=" + String(sink.size) +
+                     " expected=" + String(length);
     return false;
   }
   response.size = sink.size;

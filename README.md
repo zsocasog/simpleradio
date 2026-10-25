@@ -74,6 +74,10 @@ Station JPEGs are checked before storage. Progressive, extended and unsupported 
 
 While stopped, the selected station's logo takes priority, followed by missing saved-station logos serially. Background starts have a three-second scheduling interval, prepared images are skipped and failed sources have a retry delay. Playback suppresses station-list scans. Serial messages include idle station prewarm queued, prewarm download start and LCD station logo ready. This LCD-compatibility/preloading fix needs only a firmware upload when keeping the latest WebUI/data.
 
+Album artwork lookup tolerates one small spelling edit in titles of at least 6 letters, or up to two in titles of at least 12 letters, while retaining the existing strict artist check. Exact matches rank first; differing numbers and live/remix/cover markers remain protected. Last.fm autocorrection is requested and its returned artist is still checked locally. Metadata responses are bounded at 256 KiB instead of 192 KiB in PSRAM; size-limit failures and missing Last.fm album/image fields have separate diagnostics.
+
+After a complete, known-length, non-chunked HTTP(S) body, the one-shot connection closes immediately to avoid a misleading TLS receive error from a framework cleanup probe. Incomplete bodies still fail; HTTPClient retains its existing chunked and unknown-length handling. Station-logo preloading, source selection, image processing, and audio/spectrum code are preserved. These search and connection-cleanup changes require only the firmware upload with the latest data kept in place.
+
 ## Screenshots
 
 ### LCD in use

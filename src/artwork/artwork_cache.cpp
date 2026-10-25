@@ -4,6 +4,8 @@
 #include "album_art_store.h"
 #include "station_logo_policy.h"
 #include "lcd_image_policy.h"
+#include "artwork_title_match.h"
+#include "artwork_http_policy.h"
 
 #include <Arduino.h>
 static auto& artworkTraceSerial = Serial;
@@ -1283,7 +1285,9 @@ static bool fetchArtworkJson(const String& url, JsonDocument& doc,
   options.deadlineMs = deadlineMs;
   options.cancelled = cancelled;
   ArtworkHttp::Response response;
-  if (!ArtworkHttp::get(url, 192 * 1024, response, options)) {
+  // A few popular recordings have large release lists. Keep the extra 64 KiB
+  // in PSRAM and retain a hard bound rather than growing the internal heap.
+  if (!ArtworkHttp::get(url, ArtworkHttpPolicy::MAX_METADATA_BYTES, response, options)) {
     albumArtTrace("JSON %s: %s", ArtworkHttp::host(url).c_str(), response.error.c_str());
     return false;
   }
@@ -1457,7 +1461,7 @@ static bool artworkArtistsMatch(const String& foundArtist, const String& wantedA
 
 static bool exactTrackMatch(String foundArtist, String foundTitle,
                             const String& wantedArtist, const String& wantedTitle,
-                            bool allowStudioMix = false) {
+                            bool allowStudioMix = false, bool allowTitleTypos = false) {
 
   auto stripFeature = [](String value) {
     const char* markers[] = { " feat ", " ft ", " featuring ", " with " };
@@ -1510,7 +1514,12 @@ static bool exactTrackMatch(String foundArtist, String foundTitle,
   String expectedTitle = baseTitle(wantedTitle);
   String actualTitle = baseTitle(foundTitle);
   return artworkArtistsMatch(foundArtist, wantedArtist) &&
-         expectedTitle.length() && expectedTitle == actualTitle;
+         expectedTitle.length() && (expectedTitle == actualTitle ||
+           (allowTitleTypos && ArtworkTitleMatch::minorTypo(expectedTitle.c_str(), actualTitle.c_str())));
+}
+
+static const char* artworkMatchLabel(int quality) {
+  return quality == 3 ? "exact" : quality == 2 ? "minor-title-typo" : "studio-title";
 }
 
 static void addUniqueArtworkCandidate(std::vector<String>& urls, const String& url) {
@@ -1665,8 +1674,9 @@ std::vector<String> ArtworkCache::resolveAlbumArtworkUrls(const String& artist, 
     return !audioConnectionReady || !current.playing || current.artist != artist || current.title != title;
   };
   auto matchQuality = [&](const String& foundArtist, const String& foundTitle) {
-    if (exactTrackMatch(foundArtist, foundTitle, artist, title)) return 2;
-    return exactTrackMatch(foundArtist, foundTitle, artist, title, true) ? 1 : 0;
+    if (exactTrackMatch(foundArtist, foundTitle, artist, title)) return 3;
+    if (exactTrackMatch(foundArtist, foundTitle, artist, title, false, true)) return 2;
+    return exactTrackMatch(foundArtist, foundTitle, artist, title, true, true) ? 1 : 0;
   };
   auto addCandidate = [&](const String& url, AlbumArtworkKind kind, const String& albumTitle) {
     std::vector<String>* target = &urls;
@@ -1780,7 +1790,7 @@ std::vector<String> ArtworkCache::resolveAlbumArtworkUrls(const String& artist, 
                         foundTitle.c_str(), score);
           continue;
         }
-        albumArtTrace("MusicBrainz %s match: %s - %s", quality == 2 ? "exact" : "studio-title",
+        albumArtTrace("MusicBrainz %s match: %s - %s", artworkMatchLabel(quality),
                       foundArtist.c_str(), foundTitle.c_str());
 
         JsonArray releases = recording["releases"].as<JsonArray>();
@@ -1869,7 +1879,7 @@ std::vector<String> ArtworkCache::resolveAlbumArtworkUrls(const String& artist, 
   if (provider == AlbumArtworkProvider::LastFm && apiKey.length()) {
     String lastFmUrl = "https://ws.audioscrobbler.com/2.0/?method=track.getInfo&format=json&api_key=";
     lastFmUrl += encodeArtworkQuery(apiKey);
-    lastFmUrl += "&artist=" + artistQuery + "&track=" + titleQuery;
+    lastFmUrl += "&autocorrect=1&artist=" + artistQuery + "&track=" + titleQuery;
     unsigned long requestStartedMs = millis();
     bool lastFmOk = fetchArtworkJson(lastFmUrl, doc, deadlineMs, cancelled);
     if (lastFmOk && !doc["track"].is<JsonObject>()) {
@@ -1887,11 +1897,14 @@ std::vector<String> ArtworkCache::resolveAlbumArtworkUrls(const String& artist, 
       String foundTitle = doc["track"]["name"] | "";
       const int quality = matchQuality(foundArtist, foundTitle);
       if (quality) {
-        albumArtTrace("Last.fm %s match: %s - %s", quality == 2 ? "exact" : "studio-title",
+        albumArtTrace("Last.fm %s match: %s - %s", artworkMatchLabel(quality),
                       foundArtist.c_str(), foundTitle.c_str());
         const String albumArtist = doc["track"]["album"]["artist"] | "";
         const String albumTitle = doc["track"]["album"]["title"] | "";
         const String albumMbid = doc["track"]["album"]["mbid"] | "";
+        if (!doc["track"]["album"].is<JsonObject>()) {
+          albumArtTrace("Last.fm matched track has no album data");
+        }
         String cdnCover;
         {
           JsonArray images = doc["track"]["album"]["image"].as<JsonArray>();
@@ -1907,6 +1920,9 @@ std::vector<String> ArtworkCache::resolveAlbumArtworkUrls(const String& artist, 
           // no CAA cover. 174px is close to the 176px LCD frame and much smaller
           // than Last.fm's frequently 100-200KB 300px PNG.
           cdnCover = largeCover.length() ? largeCover : extraLargeCover;
+        }
+        if (!cdnCover.length() && !isMusicBrainzMbid(albumMbid)) {
+          albumArtTrace("Last.fm matched track has no usable album image or release MBID");
         }
         // track.getInfo can credit a compilation to the track performer. Do
         // not call it an artist album unless the release MBID confirms that.
@@ -1952,7 +1968,7 @@ std::vector<String> ArtworkCache::resolveAlbumArtworkUrls(const String& artist, 
         String foundTitle = track["title"] | "";
         const int quality = matchQuality(foundArtist, foundTitle);
         if (quality) {
-          albumArtTrace("Deezer %s match: %s - %s", quality == 2 ? "exact" : "studio-title",
+          albumArtTrace("Deezer %s match: %s - %s", artworkMatchLabel(quality),
                         foundArtist.c_str(), foundTitle.c_str());
           const String id = track["album"]["id"].as<String>();
           bool duplicate = false;
@@ -2010,7 +2026,7 @@ std::vector<String> ArtworkCache::resolveAlbumArtworkUrls(const String& artist, 
         String foundTitle = result["trackName"] | "";
         const int quality = matchQuality(foundArtist, foundTitle);
         if (quality) {
-          albumArtTrace("iTunes %s match: %s - %s", quality == 2 ? "exact" : "studio-title",
+          albumArtTrace("iTunes %s match: %s - %s", artworkMatchLabel(quality),
                         foundArtist.c_str(), foundTitle.c_str());
           String cover = result["artworkUrl100"] | "";
           if (cover.length()) {
@@ -2019,7 +2035,7 @@ std::vector<String> ArtworkCache::resolveAlbumArtworkUrls(const String& artist, 
             const String albumArtist = result["collectionArtistName"] | "";
             const String id = result["collectionId"].as<String>();
             if (isCompilationArtist(albumArtist)) {
-              if (quality == 2) addCandidate(cover, AlbumArtworkKind::Compilation, albumTitle);
+              if (quality >= 2) addCandidate(cover, AlbumArtworkKind::Compilation, albumTitle);
               continue;
             }
             bool duplicate = false;
@@ -4298,7 +4314,7 @@ static std::vector<String> resolveCoverArchiveServers(const String& url,
   ArtworkHttp::Response metadata;
   {
     ArtworkPhaseTrace phase("CAA-metadata");
-    if (ArtworkHttp::get("http://archive.org/metadata/" + item, 192 * 1024, metadata, options)) {
+    if (ArtworkHttp::get("http://archive.org/metadata/" + item, ArtworkHttpPolicy::MAX_METADATA_BYTES, metadata, options)) {
       JsonDocument doc;
       if (deserializeJson(doc, metadata.data, metadata.size) == DeserializationError::Ok) {
         const String directory = doc["dir"] | "";
