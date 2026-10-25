@@ -6,10 +6,10 @@
 
 namespace SpectrumMath {
 
-constexpr size_t POINT_COUNT = 512;
+constexpr size_t POINT_COUNT = 1024;
 constexpr size_t BAND_COUNT = 24;
 constexpr uint32_t MAX_QUEUE_AGE_MS = 400;
-constexpr uint32_t FRAME_HOLD_MS = 600;
+constexpr uint32_t FRAME_HOLD_MS = 180;
 constexpr float DB_FLOOR = -60.0f;
 constexpr float SILENCE_DB = -120.0f;
 
@@ -17,40 +17,6 @@ constexpr bool beforeDeadline(uint32_t now, uint32_t deadline) {
   return deadline != 0 && static_cast<int32_t>(now - deadline) < 0;
 }
 
-// Advance the capture clock rather than restarting a 50ms delay after every
-// callback. MP3/FLAC callbacks are bursty; restarting it reduced real capture
-// rate to ~15Hz and made the animation miss more transients than necessary.
-constexpr uint32_t nextCaptureDeadline(uint32_t now, uint32_t previous, uint32_t interval) {
-  const uint32_t next = previous + interval;
-  return !previous || static_cast<int32_t>(now - next) >= 0 ? now + interval : next;
-}
-
-// Long decoder packets (e.g. FLAC) contain much more than one FFT window.
-// Find a representative high-energy CONTIGUOUS window instead of always missing
-// everything after the packet's first 11ms. A bounded coarse energy scan uses
-// at most 12*16 stereo probes; no FFT, floating point or output modification.
-constexpr size_t captureWindowOffset(const int32_t* samples, size_t frames) {
-  if (!samples || frames <= POINT_COUNT) return 0;
-  const size_t available = (frames + POINT_COUNT - 1) / POINT_COUNT;
-  const size_t candidates = available < 12 ? available : 12;
-  uint64_t bestEnergy = 0;
-  size_t bestOffset = 0;
-  for (size_t candidate = 0; candidate < candidates; ++candidate) {
-    const size_t offset = (frames - POINT_COUNT) * candidate / (candidates - 1);
-    uint64_t energy = 0;
-    for (size_t probe = 0; probe < 16; ++probe) {
-      const size_t i = offset + (probe * POINT_COUNT + POINT_COUNT / 2) / 16;
-      const int64_t left = samples[i * 2] >> 8;
-      const int64_t right = samples[i * 2 + 1] >> 8;
-      energy += left * left + right * right;
-    }
-    if (energy > bestEnergy) {
-      bestEnergy = energy;
-      bestOffset = offset;
-    }
-  }
-  return bestOffset;
-}
 // Third-octave (cbrt(2) ratio) boundaries in Hz, up to 20.48 kHz. The first
 // bucket also collects the unresolved lower bass; DC is always excluded.
 // Keep this frequency axis stable and recalculate its FFT-bin mapping for the
@@ -96,7 +62,7 @@ constexpr BinRange binsForBand(size_t band, uint32_t sampleRate) {
 // Integrate each FFT cell's overlap with the log band instead of assigning
 // only its center. This avoids artificial empty bass bars when a narrow band
 // falls between FFT centers. It does NOT invent extra low-frequency resolution:
-// at 44.1 kHz one 512-point FFT bin is still about 86 Hz wide.
+// at 44.1 kHz one 1024-point FFT bin is still about 43 Hz wide.
 constexpr float binBandWeight(size_t bin, size_t band, uint32_t sampleRate) {
   if (!sampleRate || !bin || bin >= POINT_COUNT / 2 || band >= BAND_COUNT) return 0;
   const float binWidth = static_cast<float>(sampleRate) / POINT_COUNT;
@@ -126,7 +92,7 @@ constexpr bool usableFrame(bool active, uint32_t now, uint32_t capturedMs) {
 constexpr float smoothLevel(float current, float target, uint32_t elapsedMs) {
   if (!elapsedMs) return current;
   if (elapsedMs > 250) elapsedMs = 250;
-  const float timeConstantMs = target > current ? 45.0f : 120.0f;
+  const float timeConstantMs = target > current ? 12.0f : 85.0f;
   const float blend = elapsedMs / (timeConstantMs + elapsedMs);
   const float next = current + (target - current) * blend;
   return target == 0 && next < 0.5f ? 0 : next;
@@ -181,7 +147,7 @@ constexpr std::array<float, BAND_COUNT> bandPowers(const float* transformed, uin
   return powers;
 }
 
-static_assert(POINT_COUNT == 512 && (POINT_COUNT & (POINT_COUNT - 1)) == 0, "FFT must have 512 points");
+static_assert(POINT_COUNT == 1024 && (POINT_COUNT & (POINT_COUNT - 1)) == 0, "FFT must have 1024 points");
 static_assert(BAND_COUNT == 24, "Spectrum must have 24 bands");
 
 } // namespace SpectrumMath

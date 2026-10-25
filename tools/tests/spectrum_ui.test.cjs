@@ -71,7 +71,7 @@ test("spectrum uses the complete 24-column VU grid without widening the bars", (
 test("analyzer sleeps until PCM arrives and retains the fractional display envelope", () => {
   const analyzer = fs.readFileSync(path.join(root, "src/audio/audio_spectrum.cpp"), "utf8");
   const display = fs.readFileSync(path.join(root, "src/display/display.cpp"), "utf8");
-  assert.match(analyzer, /active \? pdMS_TO_TICKS\(1000\) : portMAX_DELAY/);
+  assert.match(analyzer, /active \? max<TickType_t>\(1, pdMS_TO_TICKS\(waitMs\)\) : portMAX_DELAY/);
   assert.match(display, /std::array<float, SpectrumMath::BAND_COUNT> spectrumEnvelope/);
   assert.match(display, /SpectrumMath::smoothLevel\(spectrumEnvelope\[i\], level, elapsedMs\)/);
 });
@@ -90,8 +90,8 @@ test("drawing stalls do not clear the envelope, and sensitivity preserves spectr
   const update = display.match(/static bool updateSpectrumBars\(bool playing\) \{[\s\S]*?\n\}/)[0];
   assert.doesNotMatch(update, /spectrumEnvelope\.fill\(0\)/);
   assert.match(update, /SpectrumMath::usableFrame/);
-  assert.match(update, /SpectrumDynamics::displayLevel\(spectrum.bandDb\[i\], spectrumLevelTracker.gainDb, sensitivity\)/);
-  assert.match(update, /if \(fresh\) spectrumLevelTracker.update/);
+  assert.match(update, /SpectrumDynamics::displayLevel\(spectrum.bandDb\[i\], sensitivity\)/);
+  assert.doesNotMatch(update, /spectrumLevelTracker|gainDb/);
   assert.doesNotMatch(update, /log10f\(sensitivity/);
   assert.doesNotMatch(update, /spectrum\.bands\[i\] \* sensitivity/);
   const visibility = display.match(/static void setSpectrumDisplayVisibility\(bool visible\) \{[\s\S]*?\n\}/)[0];
@@ -183,7 +183,7 @@ test("linked DSP self-test covers the actual window, DC removal and RMS calibrat
   assert.match(selfTest, /SpectrumMath::prepareFrame/);
   assert.match(selfTest, /SpectrumMath::bandPowers/);
   assert.match(selfTest, /rmsLeft = 0.0625f, rmsRight = 0.015625f/);
-  assert.match(selfTest, /samples.fill\(12000 << 16\)/);
+  assert.match(selfTest, /std::fill_n\(frames_\[0\].samples, SpectrumMath::POINT_COUNT \* 2, 12000 << 16\)/);
   assert.match(selfTest, /powerDb\(quiet\[leftBand\], -40\)/);
   assert.match(selfTest, /powerDb\(0, -60\) == SpectrumMath::SILENCE_DB/);
   assert.match(analyzer, /result.bandDb\[band\] = db/);
@@ -199,9 +199,9 @@ test("FFT sees post-EQ samples without truncating quiet Q31 audio or changing pl
   assert.doesNotMatch(post, /\*continueI2S\s*=|outBuff\[.*\]\s*=/);
   const analyzer = fs.readFileSync(path.join(root, "src/audio/audio_spectrum.cpp"), "utf8");
   const capture = analyzer.match(/void AudioSpectrum::capture\([^]*?\n\}/)[0];
-  assert.match(capture, /memcpy\(frames_\[index\].samples.data\(\)/);
+  assert.match(capture, /memcpy\(frames_\[index\].samples \+ start \* 2/);
   assert.doesNotMatch(capture, />> 16|log10|sqrt|malloc|Serial/);
-  assert.match(capture, /SpectrumMath::nextCaptureDeadline/);
+  assert.match(capture, /SpectrumCapture::windowHop/);
   assert.match(analyzer, /copy-max=%luus near-clip=%lu/);
   assert.match(analyzer, /bands-dB low->high/);
   const player = fs.readFileSync(path.join(root, "src/audio/audio_player.cpp"), "utf8");

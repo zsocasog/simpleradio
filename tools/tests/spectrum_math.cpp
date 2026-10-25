@@ -4,11 +4,12 @@
 #define FFT_SIZE 256
 #include "../../src/audio/spectrum_math.h"
 #include "../../src/audio/spectrum_dynamics.h"
+#include "../../src/audio/spectrum_capture.h"
 #include "../../src/audio/volume_math.h"
 
 using namespace SpectrumMath;
 
-static_assert(POINT_COUNT == 512 && BAND_COUNT == 24);
+static_assert(POINT_COUNT == 1024 && BAND_COUNT == 24);
 static_assert(!beforeDeadline(0x90000000u, 0));
 static_assert(beforeDeadline(100, 150) && !beforeDeadline(150, 150));
 static_assert(beforeDeadline(0xfffffff0u, 0x10u));
@@ -22,14 +23,14 @@ static_assert(bandForFrequency(1000) == 10);
 static_assert(bandForFrequency(20479) == 23);
 static_assert(bandForFrequency(20480) == -1);
 static_assert(bandForBin(0, 44100) == -1); // DC must not become bass.
-static_assert(bandForBin(256, 44100) == -1);
+static_assert(bandForBin(POINT_COUNT / 2, 44100) == -1);
 static_assert(bandForBin(12, 0) == -1);
-static_assert(bandForBin(12, 44100) == 11);
-static_assert(bandForBin(11, 48000) == 11);
-static_assert(bandForBin(6, 96000) == 11);
-static_assert(bandForBin(3, 192000) == 11);
-static_assert(bandForBin(200, 48000) == 23);
-static_assert(bandForBin(200, 96000) == -1);
+static_assert(bandForBin(24, 44100) == 11);
+static_assert(bandForBin(22, 48000) == 11);
+static_assert(bandForBin(12, 96000) == 11);
+static_assert(bandForBin(6, 192000) == 11);
+static_assert(bandForBin(400, 48000) == 23);
+static_assert(bandForBin(400, 96000) == -1);
 
 constexpr bool orderedBands(uint32_t sampleRate) {
   int previous = -1;
@@ -59,14 +60,14 @@ static_assert(bandUpperHz(16, 8000) == 4000); // Clip the crossing band at Nyqui
 static_assert(binsForBand(17, 8000).first > binsForBand(17, 8000).last);
 static_assert(binsForBand(0, 0).first > binsForBand(0, 0).last);
 static_assert(binBandWeight(0, 0, 44100) == 0); // No DC leakage into the bass bucket.
-static_assert(binBandWeight(256, 23, 44100) == 0);
+static_assert(binBandWeight(POINT_COUNT / 2, 23, 44100) == 0);
 static_assert(binBandWeight(1, BAND_COUNT, 44100) == 0);
 static_assert(binBandWeight(12, 11, 0) == 0);
-static_assert(binBandWeight(16, 12, 44100) == 1); // 1.38 kHz stays in its band.
-static_assert(binBandWeight(16, 11, 44100) == 0);
+static_assert(binBandWeight(32, 12, 44100) == 1); // 1.38 kHz stays in its band.
+static_assert(binBandWeight(32, 11, 44100) == 0);
 // At 48 kHz there is no FFT center in band 1. Weight the actual FFT cells,
 // rather than leaving that whole log band permanently empty.
-static_assert(binBandWeight(1, 1, 48000) > 0 && binBandWeight(1, 2, 48000) > 0);
+static_assert(binBandWeight(3, 1, 48000) > 0 && binBandWeight(3, 2, 48000) > 0);
 
 constexpr bool validWeightsAndRanges(uint32_t sampleRate) {
   const float binWidth = static_cast<float>(sampleRate) / POINT_COUNT;
@@ -100,22 +101,19 @@ static_assert(validWeightsAndRanges(192000));
 static_assert(rmsBandPower(80, 192) == rmsBandPower(4, 192) * 20);
 static_assert(rmsBandPower(123, 0) == 0);
 static_assert(rmsBandPower(0, 192) == 0);
-static_assert(SpectrumDynamics::displayLevel(-120, 6, 200) == 0);
-static_assert(SpectrumDynamics::displayLevel(-66, 6, 200) == 0);
-static_assert(SpectrumDynamics::displayLevel(-12, 0, 100) < 130);
-static_assert(SpectrumDynamics::displayLevel(-30, 0, 100) < 50);
-static_assert(SpectrumDynamics::displayLevel(-24, 0, 100) > SpectrumDynamics::displayLevel(-36, 0, 100));
-static_assert(SpectrumDynamics::displayLevel(-24, 0, 50) == SpectrumDynamics::displayLevel(-24, 0, 100) * 0.5f);
-static_assert(SpectrumDynamics::displayLevel(-24, 0, 200) == SpectrumDynamics::displayLevel(-24, 0, 100) * 2);
+static_assert(SpectrumDynamics::displayLevel(-120, 200) == 0);
+static_assert(SpectrumDynamics::displayLevel(-66, 200) == 0);
+static_assert(SpectrumDynamics::displayLevel(-12, 100) > 210);
+static_assert(SpectrumDynamics::displayLevel(-30, 100) > 80);
+static_assert(SpectrumDynamics::displayLevel(-24, 100) > SpectrumDynamics::displayLevel(-36, 100));
+static_assert(SpectrumDynamics::displayLevel(-24, 50) == SpectrumDynamics::displayLevel(-24, 100) * 0.5f);
+static_assert(SpectrumDynamics::displayLevel(-24, 200) == SpectrumDynamics::displayLevel(-24, 100) * 2);
 static_assert(VolumeMath::gainDb(50, VolumeMath::Curve::Soft) == -31);
 static_assert(VolumeMath::gainDb(50, VolumeMath::Curve::Linear) == -30);
 static_assert(VolumeMath::gainDb(50, VolumeMath::Curve::Log) == -45);
 static_assert(VolumeMath::gainDb(0, VolumeMath::Curve::Soft) == -120);
 static_assert(VolumeMath::gainDb(100, VolumeMath::Curve::Soft) == 0);
-static_assert(nextCaptureDeadline(152, 150, 50) == 200); // Preserve phase, not 202.
-static_assert(nextCaptureDeadline(1000, 150, 50) == 1050); // No burst catch-up.
-static_assert(nextCaptureDeadline(0xfffffff5u, 0xfffffff0u, 50) == 0x22u);
-static_assert(usableFrame(true, 450, 100)); // A brief 350ms scheduling gap is not silence.
+static_assert(usableFrame(true, 250, 100)); // Brief scheduling gaps retain the envelope.
 static_assert(usableFrame(true, 100 + FRAME_HOLD_MS, 100));
 static_assert(!usableFrame(true, 101 + FRAME_HOLD_MS, 100));
 static_assert(!usableFrame(false, 150, 100));
@@ -164,10 +162,10 @@ constexpr auto hannTone(size_t bin, float amplitude, float rightSign = 1) {
   return fft;
 }
 constexpr float hannEnergy = POINT_COUNT * 3.0f / 8;
-constexpr auto bassFft = hannTone(6, 0.5f);
-constexpr auto midFft = hannTone(36, 0.5f);
-constexpr auto trebleFft = hannTone(73, 0.5f);
-constexpr auto antiphaseFft = hannTone(73, 0.5f, -1);
+constexpr auto bassFft = hannTone(12, 0.5f);
+constexpr auto midFft = hannTone(72, 0.5f);
+constexpr auto trebleFft = hannTone(146, 0.5f);
+constexpr auto antiphaseFft = hannTone(146, 0.5f, -1);
 constexpr auto bass = bandPowers(bassFft.data(), 48000, hannEnergy);
 constexpr auto mid = bandPowers(midFft.data(), 48000, hannEnergy);
 constexpr auto treble = bandPowers(trebleFft.data(), 48000, hannEnergy);
@@ -202,15 +200,14 @@ constexpr bool dcAndSilenceAreEmpty() {
 }
 static_assert(dcAndSilenceAreEmpty());
 
-constexpr auto packetWithLateBeat() {
-  std::array<int32_t, POINT_COUNT * 6> packet{};
-  for (size_t i = POINT_COUNT; i < POINT_COUNT * 2; ++i) {
-    packet[i * 2] = i % 2 ? 0x30000000 : -0x30000000;
-    packet[i * 2 + 1] = packet[i * 2];
-  }
-  return packet;
+static_assert(SpectrumCapture::windowHop(44100) == 1102);
+static_assert(SpectrumCapture::windowHop(48000) == 1200);
+static_assert(SpectrumCapture::windowHop(8000) == POINT_COUNT);
+constexpr bool clockTracksPackets() {
+  SpectrumCapture::Clock clock;
+  clock.start(0xfffffff0u);
+  if (clock.append(4096) != 0 || clock.append(1152) != 4096) return false;
+  if (clock.timeAt(4800, 48000) != 84) return false; // millis rollover.
+  return !clock.discontinuity(84, 48000) && clock.discontinuity(1000, 48000);
 }
-constexpr auto lateBeat = packetWithLateBeat();
-static_assert(captureWindowOffset(lateBeat.data(), POINT_COUNT * 3) == POINT_COUNT);
-static_assert(captureWindowOffset(lateBeat.data(), POINT_COUNT) == 0);
-static_assert(captureWindowOffset(nullptr, 0) == 0);
+static_assert(clockTracksPackets());

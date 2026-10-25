@@ -6,6 +6,7 @@
 #include <freertos/semphr.h>
 #include <freertos/task.h>
 #include <vector>
+#include "album_search_policy.h"
 
 struct PlayerStateSnapshot;
 
@@ -62,6 +63,18 @@ private:
     std::vector<String> compilations;
   };
 
+  struct AlbumArtworkSearch {
+    AlbumSearchPolicy::MusicBrainzRound musicBrainz;
+    bool retryReleaseGroup = false;
+    struct DeferredAlbum {
+      String mbid;
+      String artist;
+      String title;
+      String cover;
+      int quality = 0;
+    } lastFmAlbum;
+  };
+
   bool download(const String& url, String& outPath, uint32_t budgetMs = 0, bool allowSecureFallback = true, const String& cacheKey = "",
                 bool* memoryUnavailable = nullptr);
   bool prepareAlbumMemory(uint8_t*& data, size_t length, const String& key, String& outPath, bool& unavailable);
@@ -81,7 +94,8 @@ private:
   bool startDownloadTask(const String& url, bool idlePrewarm = false, bool allowSecureFallback = true);
   bool startAlbumArtworkTask(const String& artist, const String& title, const String& key);
   std::vector<String> resolveAlbumArtworkUrls(const String& artist, const String& title, AlbumArtworkProvider provider,
-                                            uint32_t deadlineMs, AlbumArtworkFallbacks& fallbacks);
+                                            uint32_t deadlineMs, AlbumArtworkFallbacks& fallbacks,
+                                            AlbumArtworkSearch& search);
   void removeCachedArtworkFamily(const String& imagePath);
   bool startEmbeddedDownloadTask(const String& key, const String& url, const std::vector<uint32_t>& segments);
   bool startThumbnailTask(const String& imagePath, bool idlePrewarm = false, bool fillFrame = false);

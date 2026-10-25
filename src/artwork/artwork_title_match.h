@@ -21,6 +21,57 @@ constexpr bool hasWord(std::string_view text, std::string_view word) {
   return false;
 }
 
+constexpr std::string_view trim(std::string_view text) {
+  while (!text.empty() && (text.front() == ' ' || text.front() == '\t' || text.front() == '\r' || text.front() == '\n')) text.remove_prefix(1);
+  while (!text.empty() && (text.back() == ' ' || text.back() == '\t' || text.back() == '\r' || text.back() == '\n')) text.remove_suffix(1);
+  return text;
+}
+
+struct TitleParts {
+  std::string_view main;
+  std::string_view subtitle;
+  bool valid = true;
+};
+
+// Only trailing balanced (...) / [...] groups can be optional. Never truncate
+// unbracketed words ("Diamond Eyes Theme") or text after a closing bracket.
+constexpr TitleParts splitSubtitle(std::string_view text) {
+  text = trim(text);
+  size_t first = text.size();
+  for (size_t i = 1; i < text.size(); ++i) {
+    if ((text[i] == '(' || text[i] == '[') && (text[i - 1] == ' ' || text[i - 1] == '\t')) { first = i; break; }
+  }
+  if (first == text.size()) return {text, {}, true};
+  char stack[8] = {};
+  size_t depth = 0;
+  for (size_t i = first; i < text.size(); ++i) {
+    const char c = text[i];
+    if (c == '(' || c == '[') {
+      if (depth == sizeof(stack)) return {{}, {}, false};
+      stack[depth++] = c;
+    } else if (c == ')' || c == ']') {
+      if (!depth || (c == ')' ? stack[depth - 1] != '(' : stack[depth - 1] != '[')) return {{}, {}, false};
+      --depth;
+    } else if (!depth && c != ' ' && c != '\t' && c != '\r' && c != '\n') return {{}, {}, false};
+  }
+  return depth ? TitleParts{{}, {}, false} : TitleParts{trim(text.substr(0, first)), text.substr(first), true};
+}
+
+// Inspect the COMPLETE normalized annotation before dropping any groups.
+// A live marker in a second/nested group must not disappear behind an innocent
+// first subtitle. Numbers/parts can identify a different composition/version.
+constexpr bool protectedSubtitle(std::string_view normalized) {
+  for (char c : normalized) if (c >= '0' && c <= '9') return true;
+  for (const char* marker : {"live", "remix", "acoustic", "demo", "karaoke", "tribute",
+                             "instrumental", "extended", "cover", "commentary", "alternate",
+                             "alternative", "version", "edit", "mix", "sped", "slowed",
+                             "remaster", "remastered", "mono", "stereo", "dub", "session",
+                             "rehearsal", "unplugged", "part", "pt", "volume", "vol"}) {
+    if (hasWord(normalized, marker)) return true;
+  }
+  return false;
+}
+
 // Inputs have already passed the existing accent/case/feature normalization.
 // Never fuzzy-match artists, version markers, numbers, or very short titles.
 constexpr bool minorTypo(std::string_view expected, std::string_view actual) {

@@ -95,11 +95,12 @@ test('minor title spelling differences cannot bypass the existing strict artist 
 test('exact title matches rank ahead of minor typos and provider order stays intact', () => {
   const quality = block(cache, 'auto matchQuality =')
     .replace(/const String& /g, '').replace(/\bartist\b/g, 'wantedArtist').replace(/\btitle\b/g, 'wantedTitle');
-  const rank = new Function('exactTrackMatch', `const foundArtist='',foundTitle='',wantedArtist='',wantedTitle=''; ${quality}`);
-  assert.equal(rank((_a, _t, _wa, _wt, studio, typos) => !studio && !typos), 3);
-  assert.equal(rank((_a, _t, _wa, _wt, studio, typos) => !studio && typos), 2);
-  assert.equal(rank((_a, _t, _wa, _wt, studio) => !!studio), 1);
-  assert.match(cache, /if \(quality >= 2\) addCandidate\(cover, AlbumArtworkKind::Compilation/);
+  const rank = new Function('exactTrackMatch', 'subtitleTrackMatch', `const foundArtist='',foundTitle='',wantedArtist='',wantedTitle=''; ${quality}`);
+  assert.equal(rank((_a, _t, _wa, _wt, studio, typos) => !studio && !typos, () => true), 4);
+  assert.equal(rank((_a, _t, _wa, _wt, studio, typos) => !studio && typos, () => true), 3);
+  assert.equal(rank((_a, _t, _wa, _wt, studio) => !!studio, () => true), 2);
+  assert.equal(rank(() => false, () => true), 1);
+  assert.match(cache, /if \(!artworkMatchNeedsVerifiedAlbum\(quality\)\) addCandidate\(cover, AlbumArtworkKind::Compilation/);
   assert.match(cache, /MusicBrainz,\s*AlbumArtworkProvider::LastFm,\s*AlbumArtworkProvider::ITunes,\s*AlbumArtworkProvider::Deezer/);
 });
 test('Last.fm correction is checked locally and missing album/image fields get distinct logs', () => {

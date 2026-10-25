@@ -6,6 +6,7 @@
 #include <freertos/portmacro.h>
 #include <freertos/task.h>
 #include "spectrum_math.h"
+#include "spectrum_capture.h"
 
 struct AudioSpectrumSnapshot {
   std::array<float, SpectrumMath::BAND_COUNT> bandDb{};
@@ -30,7 +31,7 @@ private:
   struct Frame {
     // Preserve post-volume Q31 precision: shifting to int16 before compensating
     // volume would manufacture bass/quantization noise at quiet volume settings.
-    std::array<int32_t, SpectrumMath::POINT_COUNT * 2> samples{};
+    int32_t* samples = nullptr;
     BufferState state = BufferState::Free;
     uint32_t sampleRate = 0;
     uint32_t generation = 0;
@@ -59,10 +60,12 @@ private:
     uint32_t maxProcessingUs = 0;
     uint32_t maxCaptureUs = 0;
     uint32_t nearClipSamples = 0;
+    uint32_t pcmFrames = 0;
   };
 
   portMUX_TYPE mux_ = portMUX_INITIALIZER_UNLOCKED;
-  std::array<Frame, 2> frames_{};
+  std::array<Frame, SpectrumCapture::BUFFER_COUNT> frames_{};
+  int32_t* sampleStorage_ = nullptr;
   alignas(16) std::array<float, SpectrumMath::POINT_COUNT> window_{};
   alignas(16) std::array<float, SpectrumMath::POINT_COUNT> coefficients_{};
   alignas(16) std::array<float, SpectrumMath::POINT_COUNT * 2> work_{};
@@ -77,7 +80,8 @@ private:
   uint32_t sampleRate_ = 0;
   float playbackGainDb_ = 0;
   uint32_t generation_ = 0;
-  uint32_t nextCaptureMs_ = 0;
+  SpectrumCapture::Clock captureClock_;
+  uint64_t nextWindowFrame_ = 0;
   uint32_t lastInitAttemptMs_ = 0;
   uint32_t lastErrorMs_ = 0;
   uint32_t lastPcmMs_ = 0;

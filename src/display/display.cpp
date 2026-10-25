@@ -106,6 +106,7 @@ static constexpr int FOOTER_REGION_Y = sy(252);
 static constexpr int FOOTER_REGION_W = SCREEN_W;
 static constexpr int FOOTER_REGION_H = SCREEN_H - FOOTER_REGION_Y;
 static constexpr unsigned long METER_RENDER_MS = 42;
+static constexpr unsigned long SPECTRUM_RENDER_MS = 33;
 static constexpr int VU_BAR_COUNT = 24;
 static_assert(SpectrumMath::BAND_COUNT <= VU_BAR_COUNT, "Spectrum exceeds the shared meter buffers");
 static constexpr int VU_HALF_COUNT = VU_BAR_COUNT / 2;
@@ -165,7 +166,6 @@ static const LcdFont* currentUiFont = &kLcdFontSmall;
 static uint8_t vuBars[VU_BAR_COUNT] = {0};
 static uint8_t renderedVuBars[VU_BAR_COUNT] = {0};
 static std::array<float, SpectrumMath::BAND_COUNT> spectrumEnvelope{};
-static SpectrumDynamics::LevelTracker spectrumLevelTracker;
 static unsigned long lastSpectrumEnvelopeMs = 0;
 static bool spectrumDisplayVisible = false;
 static bool vuRendered = false;
@@ -1315,7 +1315,6 @@ static void clearVuBars() {
     vuBars[i] = 0;
   }
   spectrumEnvelope.fill(0);
-  spectrumLevelTracker.reset();
   lastSpectrumEnvelopeMs = 0;
 }
 
@@ -1547,16 +1546,15 @@ static bool updateSpectrumBars(bool playing) {
   const AudioSpectrumSnapshot spectrum = AudioSpectrum::instance().snapshot();
   const unsigned long now = millis();
   const bool fresh = playing && SpectrumMath::usableFrame(spectrum.active, now, spectrum.updatedMs);
-  uint32_t elapsedMs = lastSpectrumEnvelopeMs ? now - lastSpectrumEnvelopeMs : METER_RENDER_MS;
+  uint32_t elapsedMs = lastSpectrumEnvelopeMs ? now - lastSpectrumEnvelopeMs : SPECTRUM_RENDER_MS;
   // A delayed LCD frame is not a visibility change. Preserve the envelope
   // through a drawing stall instead of clearing every bar at once.
   elapsedMs = min<uint32_t>(elapsedMs, 100);
   lastSpectrumEnvelopeMs = now;
   const uint16_t sensitivity = constrain(AppConfig::instance().displayVuSensitivity, 50, 200);
-  if (fresh) spectrumLevelTracker.update(spectrum.peakDb, spectrum.rmsDb, spectrum.updatedMs, spectrum.generation);
   bool changed = false;
   for (size_t i = 0; i < SpectrumMath::BAND_COUNT; ++i) {
-    const float level = fresh ? SpectrumDynamics::displayLevel(spectrum.bandDb[i], spectrumLevelTracker.gainDb, sensitivity) : 0;
+    const float level = fresh ? SpectrumDynamics::displayLevel(spectrum.bandDb[i], sensitivity) : 0;
     spectrumEnvelope[i] = SpectrumMath::smoothLevel(spectrumEnvelope[i], level, elapsedMs);
     const uint8_t next = static_cast<uint8_t>(lroundf(spectrumEnvelope[i] * VU_SYMMETRIC_MAX_H / 255.0f));
     const uint8_t current = vuBars[i];
@@ -3480,7 +3478,8 @@ void Display::renderAudioMeterFrame(bool force) {
   }
 
   unsigned long now = millis();
-  if (!force && now - lastMeterRenderMs < METER_RENDER_MS) return;
+  const unsigned long frameInterval = spectrum ? SPECTRUM_RENDER_MS : METER_RENDER_MS;
+  if (!force && now - lastMeterRenderMs < frameInterval) return;
   lastMeterRenderMs = now;
 
   if (!lastModel.playing && !spectrum) {

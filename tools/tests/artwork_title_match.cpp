@@ -30,3 +30,20 @@ constexpr bool longTitle() {
   return !minorTypo(std::string_view(text, 193), std::string_view(text, 193));
 }
 static_assert(longTitle());
+
+using ArtworkTitleMatch::splitSubtitle;
+using ArtworkTitleMatch::protectedSubtitle;
+static_assert(splitSubtitle("Diamond Eyes (Boom-Lay Boom-Lay Boom)").main == "Diamond Eyes");
+static_assert(splitSubtitle(" Diamond Eyes (Boom-Lay...) ").subtitle == "(Boom-Lay...)");
+static_assert(splitSubtitle("Diamond Eyes Theme").main == "Diamond Eyes Theme");
+static_assert(splitSubtitle("Diamond Eyes (Boom) [Live from Washington State]").subtitle == "(Boom) [Live from Washington State]");
+static_assert(splitSubtitle("Diamond Eyes (Boom (nested))").valid);
+static_assert(!splitSubtitle("Diamond Eyes (Boom) Live").valid);
+static_assert(!splitSubtitle("Diamond Eyes (Boom]").valid);
+static_assert(!splitSubtitle("Diamond Eyes (Boom").valid);
+static_assert(!protectedSubtitle("boom lay boom lay boom"));
+static_assert(protectedSubtitle("boom lay boom lay boom live from washington state"));
+static_assert(protectedSubtitle("boom remix"));
+static_assert(protectedSubtitle("boom instrumental demo"));
+static_assert(protectedSubtitle("part ii"));
+static_assert(protectedSubtitle("take 2"));

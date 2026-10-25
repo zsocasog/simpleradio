@@ -55,26 +55,19 @@ const functions = [
 const rangeBody = translate(body(math, "binsForBand"))
   .replace(/return \{([^,{}]*),([^{}]*)\}/g, "return { first: $1, last: $2 }")
   .replace(/return \{\}/g, "return { first: 1, last: 0 }");
-const trackerBody = translate(body(dynamics, "update"))
-  .replace(/\bSILENCE_DB\b/g, "DISPLAY_SILENCE_DB")
-  .replace(/\b(gainDb|ready|generation|frameMs)\b/g, "this.$1");
 const production = vm.runInNewContext(`
   ${constants}
   const BAND_EDGES_HZ = [${edges}], HEIGHT = [${heights}];
   const DISPLAY_SILENCE_DB = ${translate(dynamics.match(/constexpr float SILENCE_DB = ([^;]+);/)[1])};
   const Curve = { Soft: 0, Linear: 1, Log: 2 };
   function clamp(value, low, high) ${translate(body(dynamics, "clamp"))}
-  function displayLevel(measuredDb, commonGainDb, sensitivity) ${translate(body(dynamics, "displayLevel")).replace(/\bSILENCE_DB\b/g, "DISPLAY_SILENCE_DB")}
+  function displayLevel(measuredDb, sensitivity) ${translate(body(dynamics, "displayLevel")).replace(/\bSILENCE_DB\b/g, "DISPLAY_SILENCE_DB")}
   function binsForBand(band, sampleRate) ${rangeBody}
   function gainDb(volume, curve) ${translate(body(read("src/audio/volume_math.h"), "gainDb"))}
   function powerDb(power, playbackGainDb = 0) ${translate(body(read("src/audio/audio_spectrum.cpp"), "powerDb"))}
   ${functions}
-  class Tracker {
-    constructor() { this.gainDb = 0; this.frameMs = 0; this.generation = 0; this.ready = false; }
-    update(peakDb, rmsDb, capturedMs, frameGeneration) ${trackerBody}
-  }
   ({ POINT_COUNT, BAND_COUNT, BAND_EDGES_HZ, prepareFrame, bandPowers,
-     bandForFrequency, displayLevel, smoothLevel, gainDb, powerDb, Tracker, Curve });
+     bandForFrequency, displayLevel, smoothLevel, gainDb, powerDb, Curve });
 `);
 
 const N = production.POINT_COUNT;
@@ -114,7 +107,7 @@ function analyze(samples, { sampleRate = 44100, attenuationDb = 0 } = {}) {
   const powers = production.bandPowers(dft(work), sampleRate, windowEnergy);
   const db = Array.from(powers, (power) => production.powerDb(power, attenuationDb));
   return { powers, db, rmsDb: production.powerDb(rms, attenuationDb),
-    levels: db.map((value) => production.displayLevel(value, 0, 100)) };
+    levels: db.map((value) => production.displayLevel(value, 100)) };
 }
 
 test("full Q31 -> window -> DFT -> production bands tracks a frequency sweep", () => {
@@ -124,7 +117,7 @@ test("full Q31 -> window -> DFT -> production bands tracks a frequency sweep", (
       const dominant = result.db.indexOf(Math.max(...result.db));
       const expected = production.bandForFrequency(hz);
       assert.ok(Math.abs(dominant - expected) <= 1, `${hz}Hz at ${sampleRate}: band ${dominant}, expected near ${expected}`);
-      assert.ok(result.levels[dominant] > 20 && result.levels[dominant] < 130);
+      assert.ok(result.levels[dominant] > 50 && result.levels[dominant] < 220);
       assert.ok(result.levels.every(Number.isFinite));
     }
   }
@@ -166,33 +159,19 @@ test("opposite-phase stereo does not cancel, and DC/silence cannot become organ 
 
 test("visual sensitivity halves/doubles heights, and quiet tones stay visibly smaller", () => {
   for (const db of [-55, -40, -30, -24, -18, -12]) {
-    const normal = production.displayLevel(db, 0, 100);
-    assert.ok(Math.abs(production.displayLevel(db, 0, 50) - normal / 2) < 0.0001);
-    assert.ok(Math.abs(production.displayLevel(db, 0, 200) - Math.min(255, normal * 2)) < 0.0001);
+    const normal = production.displayLevel(db, 100);
+    assert.ok(Math.abs(production.displayLevel(db, 50) - normal / 2) < 0.0001);
+    assert.ok(Math.abs(production.displayLevel(db, 200) - Math.min(255, normal * 2)) < 0.0001);
   }
-  assert.ok(production.displayLevel(-30, 0, 100) < 255 * 0.20);
-  assert.ok(production.displayLevel(-12.5, 0, 100) < 255 * 0.51);
-  assert.equal(production.displayLevel(-100, 6, 200), 0);
-});
-
-test("one bounded level tracker cannot normalize each band or pump up a quiet passage", () => {
-  const tracker = new production.Tracker();
-  for (let time = 50; time <= 10000; time += 50) tracker.update(-18, -12, time, 1);
-  assert.ok(tracker.gainDb > 0 && tracker.gainDb < 6);
-  const before = tracker.gainDb;
-  for (let time = 10050; time <= 11000; time += 50) tracker.update(-38, -32, time, 1);
-  assert.ok(tracker.gainDb - before < 0.5);
-  const quietGain = tracker.gainDb;
-  for (let time = 11050; time <= 12000; time += 50) tracker.update(-90, -85, time, 1);
-  assert.equal(tracker.gainDb, quietGain);
-  tracker.update(-90, -85, 12000, 2); // New stream/generation starts neutral.
-  assert.equal(tracker.gainDb, 0);
+  assert.ok(production.displayLevel(-30, 100) > 255 * 0.30);
+  assert.ok(production.displayLevel(-12.5, 100) > 255 * 0.80);
+  assert.equal(production.displayLevel(-100, 200), 0);
 });
 
 test("beats rise, softer sections recede, and stop decays monotonically without new PCM", () => {
   let level = 0;
-  const weak = production.displayLevel(-36, 0, 100);
-  const beat = production.displayLevel(-6, 0, 100);
+  const weak = production.displayLevel(-36, 100);
+  const beat = production.displayLevel(-6, 100);
   for (let i = 0; i < 8; ++i) level = production.smoothLevel(level, weak, 42);
   const before = level;
   for (let i = 0; i < 3; ++i) level = production.smoothLevel(level, beat, 42);
@@ -207,22 +186,10 @@ test("beats rise, softer sections recede, and stop decays monotonically without 
   assert.equal(level, 0);
 });
 
-test("long packets retain a late beat in one contiguous window with bounded work", () => {
-  // The C++ integer division is intentionally explicit in this small bridge.
-  const choose = vm.runInNewContext(`
-    const POINT_COUNT = ${N};
-    function choose(samples, frames) ${translate(body(math, "captureWindowOffset"))
-      .replace(/const available = ([^;]+);/, "const available = Math.trunc($1);")
-      .replace(/const offset = ([^;]+);/, "const offset = Math.trunc($1);")
-      .replace(/const i = ([^;]+);/, "const i = Math.trunc($1);")}
-    choose;
-  `);
-  const packet = new Int32Array(N * 6);
-  for (let i = N; i < N * 2; ++i) packet[i * 2] = packet[i * 2 + 1] = i % 2 ? 0x30000000 : -0x30000000;
-  const original = new Int32Array(packet);
-  assert.equal(choose(packet, N * 3), N);
-  assert.deepEqual(packet, original);
-  assert.equal(choose(packet, N), 0);
-  assert.match(body(math, "captureWindowOffset"), /probe < 16/);
-  assert.match(body(math, "captureWindowOffset"), /available < 12/);
+test("one LCD frame catches a beat and releases it without a long plateau", () => {
+  const beat = production.displayLevel(-12, 100);
+  const first = production.smoothLevel(0, beat, 33);
+  assert.ok(first > beat * 0.70);
+  const released = production.smoothLevel(first, 0, 33);
+  assert.ok(released < first * 0.75);
 });
