@@ -1554,7 +1554,7 @@ static bool updateSpectrumBars(bool playing) {
   const uint16_t sensitivity = constrain(AppConfig::instance().displayVuSensitivity, 50, 200);
   bool changed = false;
   for (size_t i = 0; i < SpectrumMath::BAND_COUNT; ++i) {
-    const float level = fresh ? SpectrumDynamics::displayLevel(spectrum.bandDb[i], sensitivity) : 0;
+    const float level = fresh ? SpectrumDynamics::bandDisplayLevel(spectrum.bandDb[i], i, sensitivity) : 0;
     spectrumEnvelope[i] = SpectrumMath::smoothLevel(spectrumEnvelope[i], level, elapsedMs);
     const uint8_t next = static_cast<uint8_t>(lroundf(spectrumEnvelope[i] * VU_SYMMETRIC_MAX_H / 255.0f));
     const uint8_t current = vuBars[i];

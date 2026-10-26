@@ -27,7 +27,7 @@ public:
   AudioSpectrumSnapshot snapshot();
 
 private:
-  enum class BufferState : uint8_t { Free, Writing, Ready, Processing };
+  enum class BufferState : uint8_t { Free, Writing, Ready, Processing, Analyzed };
   struct Frame {
     // Preserve post-volume Q31 precision: shifting to int16 before compensating
     // volume would manufacture bass/quantization noise at quiet volume settings.
@@ -53,6 +53,8 @@ private:
     uint32_t callbacks = 0;
     uint32_t captured = 0;
     uint32_t processed = 0;
+    uint32_t presented = 0;
+    uint32_t merged = 0;
     uint32_t busyDrops = 0;
     uint32_t staleDrops = 0;
     uint32_t resets = 0;
@@ -66,6 +68,8 @@ private:
   portMUX_TYPE mux_ = portMUX_INITIALIZER_UNLOCKED;
   std::array<Frame, SpectrumCapture::BUFFER_COUNT> frames_{};
   int32_t* sampleStorage_ = nullptr;
+  AudioSpectrumSnapshot* resultStorage_ = nullptr;
+  SpectrumMath::BandPlan* bandPlan_ = nullptr;
   alignas(16) std::array<float, SpectrumMath::POINT_COUNT> window_{};
   alignas(16) std::array<float, SpectrumMath::POINT_COUNT> coefficients_{};
   alignas(16) std::array<float, SpectrumMath::POINT_COUNT * 2> work_{};

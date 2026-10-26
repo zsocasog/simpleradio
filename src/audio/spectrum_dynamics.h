@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <cstddef>
 #include <cstdint>
 
 namespace SpectrumDynamics {
@@ -25,6 +26,16 @@ constexpr float displayLevel(float measuredDb, uint16_t sensitivity) {
       HEIGHT[index] + (HEIGHT[index + 1] - HEIGHT[index]) * (position - index);
   // This is VISUAL sensitivity: 50% really halves the height. Clip only last.
   return clamp(height * gate * clamp(sensitivity, 50, 200) / 100.0f, 0, 255);
+}
+
+// Visual-only bass taper for the first ERB centers (~67, 122, 188 Hz).
+// Raw measured dB, playback EQ, PCM and the remaining bands are untouched.
+constexpr float visualCorrectionDb(std::size_t band) {
+  return band == 0 ? -6.0f : band == 1 ? -4.0f : band == 2 ? -2.0f : 0.0f;
+}
+
+constexpr float bandDisplayLevel(float measuredDb, std::size_t band, uint16_t sensitivity) {
+  return displayLevel(measuredDb + visualCorrectionDb(band), sensitivity);
 }
 
 } // namespace SpectrumDynamics

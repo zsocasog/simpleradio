@@ -15,21 +15,21 @@ static_assert(beforeDeadline(100, 150) && !beforeDeadline(150, 150));
 static_assert(beforeDeadline(0xfffffff0u, 0x10u));
 static_assert(!beforeDeadline(0x20u, 0x10u));
 static_assert(bandForFrequency(-1) == -1);
-static_assert(bandForFrequency(0) == 0);
-static_assert(bandForFrequency(100) == 0);
+static_assert(bandForFrequency(0) == -1);
+static_assert(bandForFrequency(100) == 1);
 static_assert(bandForFrequency(126) == 1);
-static_assert(bandForFrequency(160) == 3);
-static_assert(bandForFrequency(1000) == 10);
-static_assert(bandForFrequency(20479) == 23);
-static_assert(bandForFrequency(20480) == -1);
+static_assert(bandForFrequency(160) == 2);
+static_assert(bandForFrequency(1000) == 8);
+static_assert(bandForFrequency(17999) == 23);
+static_assert(bandForFrequency(18000) == -1);
 static_assert(bandForBin(0, 44100) == -1); // DC must not become bass.
 static_assert(bandForBin(POINT_COUNT / 2, 44100) == -1);
 static_assert(bandForBin(12, 0) == -1);
-static_assert(bandForBin(24, 44100) == 11);
-static_assert(bandForBin(22, 48000) == 11);
-static_assert(bandForBin(12, 96000) == 11);
-static_assert(bandForBin(6, 192000) == 11);
-static_assert(bandForBin(400, 48000) == 23);
+static_assert(bandForBin(24, 44100) == 8);
+static_assert(bandForBin(22, 48000) == bandForBin(11, 96000));
+static_assert(bandForBin(12, 96000) == 9);
+static_assert(bandForBin(6, 192000) == 9);
+static_assert(bandForBin(360, 48000) == 23);
 static_assert(bandForBin(400, 96000) == -1);
 
 constexpr bool orderedBands(uint32_t sampleRate) {
@@ -46,16 +46,17 @@ static_assert(orderedBands(8000) && orderedBands(22050));
 static_assert(orderedBands(44100) && orderedBands(48000));
 static_assert(orderedBands(96000) && orderedBands(192000));
 
-constexpr bool thirdOctaves() {
-  // The lowest bucket extends to zero to retain unresolved bass; every
-  // positive boundary is a cbrt(2) multiple of the previous one.
-  for (size_t band = 1; band < BAND_COUNT; ++band) {
-    const float ratio = BAND_EDGES_HZ[band + 1] / BAND_EDGES_HZ[band];
-    if (ratio < 1.25990f || ratio > 1.25994f) return false;
+constexpr bool erbKnotsOrdered() {
+  for (size_t i = 1; i < ERB_KNOTS_HZ.size(); ++i) {
+    if (ERB_KNOTS_HZ[i] <= ERB_KNOTS_HZ[i - 1]) return false;
   }
   return true;
 }
-static_assert(thirdOctaves());
+static_assert(erbKnotsOrdered());
+static_assert(ERB_KNOTS_HZ.front() == 20 && ERB_KNOTS_HZ.back() == 18000);
+static_assert(triangleWeight(bandCenterHz(0), 0) == 1);
+static_assert(triangleWeight(bandCenterHz(10), 10) == 1);
+static_assert(triangleWeight(bandCenterHz(10), 9) == 0);
 static_assert(bandUpperHz(16, 8000) == 4000); // Clip the crossing band at Nyquist.
 static_assert(binsForBand(17, 8000).first > binsForBand(17, 8000).last);
 static_assert(binsForBand(0, 0).first > binsForBand(0, 0).last);
@@ -63,10 +64,9 @@ static_assert(binBandWeight(0, 0, 44100) == 0); // No DC leakage into the bass b
 static_assert(binBandWeight(POINT_COUNT / 2, 23, 44100) == 0);
 static_assert(binBandWeight(1, BAND_COUNT, 44100) == 0);
 static_assert(binBandWeight(12, 11, 0) == 0);
-static_assert(binBandWeight(32, 12, 44100) == 1); // 1.38 kHz stays in its band.
-static_assert(binBandWeight(32, 11, 44100) == 0);
-// At 48 kHz there is no FFT center in band 1. Weight the actual FFT cells,
-// rather than leaving that whole log band permanently empty.
+static_assert(binBandWeight(32, 10, 44100) > 0); // 1.38 kHz transitions between neighbors.
+static_assert(binBandWeight(32, 9, 44100) > 0);
+static_assert(binBandWeight(32, 12, 44100) == 0);
 static_assert(binBandWeight(3, 1, 48000) > 0 && binBandWeight(3, 2, 48000) > 0);
 
 constexpr bool validWeightsAndRanges(uint32_t sampleRate) {
@@ -80,13 +80,14 @@ constexpr bool validWeightsAndRanges(uint32_t sampleRate) {
       if (weight > 0 && (bin < range.first || bin > range.last)) return false;
       sum += weight;
     }
-    // Integration must conserve a cell's power, except the portion beyond
-    // our 20.48 kHz ceiling. Adjacent bass bars may share but never duplicate it.
+    // Interior triangles conserve power; only the 20Hz/18kHz outer slopes
+    // taper. Overlap must never duplicate or manufacture energy.
     const float low = (bin - 0.5f) * binWidth;
     const float high = (bin + 0.5f) * binWidth;
-    const float expected = high <= BAND_EDGES_HZ[BAND_COUNT] ? 1.0f :
-        (low >= BAND_EDGES_HZ[BAND_COUNT] ? 0.0f : (BAND_EDGES_HZ[BAND_COUNT] - low) / binWidth);
-    if (sum < expected - 0.0001f || sum > expected + 0.0001f) return false;
+    if (sum < 0 || sum > 1.0001f) return false;
+    if (low >= bandCenterHz(0) && high <= bandCenterHz(BAND_COUNT - 1) &&
+        (sum < 0.9999f || sum > 1.0001f)) return false;
+    if ((high <= ERB_KNOTS_HZ.front() || low >= ERB_KNOTS_HZ.back()) && sum != 0) return false;
   }
   return true;
 }
@@ -108,6 +109,13 @@ static_assert(SpectrumDynamics::displayLevel(-30, 100) > 80);
 static_assert(SpectrumDynamics::displayLevel(-24, 100) > SpectrumDynamics::displayLevel(-36, 100));
 static_assert(SpectrumDynamics::displayLevel(-24, 50) == SpectrumDynamics::displayLevel(-24, 100) * 0.5f);
 static_assert(SpectrumDynamics::displayLevel(-24, 200) == SpectrumDynamics::displayLevel(-24, 100) * 2);
+static_assert(SpectrumDynamics::visualCorrectionDb(0) == -6);
+static_assert(SpectrumDynamics::visualCorrectionDb(1) == -4);
+static_assert(SpectrumDynamics::visualCorrectionDb(2) == -2);
+static_assert(SpectrumDynamics::visualCorrectionDb(3) == 0);
+static_assert(SpectrumDynamics::bandDisplayLevel(-14, 0, 100) < SpectrumDynamics::displayLevel(-14, 100));
+static_assert(SpectrumDynamics::bandDisplayLevel(-28, 10, 100) == SpectrumDynamics::displayLevel(-28, 100));
+static_assert(SpectrumDynamics::bandDisplayLevel(-120, 0, 200) == 0);
 static_assert(VolumeMath::gainDb(50, VolumeMath::Curve::Soft) == -31);
 static_assert(VolumeMath::gainDb(50, VolumeMath::Curve::Linear) == -30);
 static_assert(VolumeMath::gainDb(50, VolumeMath::Curve::Log) == -45);
@@ -178,10 +186,14 @@ constexpr float sumPower(const std::array<float, BAND_COUNT>& powers) {
 static_assert(absValue(sumPower(bass) - 0.125f) < 0.00001f);
 static_assert(absValue(sumPower(mid) - 0.125f) < 0.00001f);
 static_assert(absValue(sumPower(treble) - 0.125f) < 0.00001f);
-static_assert(absValue(treble[19] - mid[16]) < 0.00001f);
-static_assert(bass[8] < mid[16]); // Shared low-resolution bins do not get amplified.
-static_assert(bass[8] > mid[16] * 0.70f); // Finite-window leakage, not a huge tilt.
-static_assert(absValue(antiphase[19] - treble[19]) < 0.00001f);
+constexpr bool antiphasePreservesEveryBand() {
+  for (size_t band = 0; band < BAND_COUNT; ++band) {
+    if (absValue(antiphase[band] - treble[band]) > 0.00001f) return false;
+  }
+  return true;
+}
+static_assert(antiphasePreservesEveryBand());
+static_assert(sizeof(BandPlan) < 50 * 1024); // Allocated in PSRAM, not the worker stack.
 
 constexpr bool dcAndSilenceAreEmpty() {
   std::array<int16_t, POINT_COUNT * 2> samples{};

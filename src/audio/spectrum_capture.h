@@ -6,6 +6,9 @@
 
 namespace SpectrumCapture {
 constexpr uint32_t INTERVAL_MS = 25;
+// One LCD frame only: preserve a brief measured peak between two refreshes,
+// without replaying a packet's old peaks after a display stall.
+constexpr uint32_t PEAK_MERGE_MS = 33;
 // Enough for the pinned driver's 8192-frame DMA lead plus a 4608-frame packet.
 // PCM lives in PSRAM; queued windows are never replayed late after a stall.
 constexpr size_t BUFFER_COUNT = 16;
