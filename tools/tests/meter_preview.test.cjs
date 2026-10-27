@@ -18,6 +18,7 @@ function harness(fetch) {
     clearTimeout: (id) => timers.delete(id), postConfig: () => ++saves
   });
   vm.runInContext(`let configSaveTimer, meterSensitivityTimer;
+    let configSaveDeferred = false; const sliderGestures = new Map();
     let meterSensitivityEditing = false, meterSensitivityDirty = false, meterSensitivityRevision = 0;
     let meterSensitivityFlight = null, meterSensitivityPending = null;
     ${functions}`, context);
@@ -68,7 +69,8 @@ test("live sensitivity route performs neither flash save nor full display reconf
   const html = fs.readFileSync(path.join(root, "data/index.html"), "utf8");
   const slider = html.match(/<input id="displayVuSensitivity"[^>]+>/)[0];
   assert.match(slider, /oninput="previewMeterSensitivity\(\)"/);
-  assert.match(slider, /onchange="commitMeterSensitivity\(\)"/);
+  assert.doesNotMatch(slider, /onchange=|onblur=/);
+  assert.match(app, /return commitMeterSensitivity\(\).finally\(flushReleasedSliders\)/);
 });
 
 test("resuming a drag while its previous release waits does not save in mid-drag", async () => {

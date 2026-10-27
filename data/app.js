@@ -13,6 +13,16 @@ let configSaveStatusTimer;
 let configSaving = false;
 let configSavePending = false;
 let deferredConfigAction = {};
+let configSaveDeferred = false;
+const sliderGestures = new Map();
+const sliderDirty = new Map();
+let sliderRevision = 0;
+let playerPreviewTimer = null;
+let playerPreviewPending = {};
+let sliderEditAnnounced = false;
+const playerSliderFields = {
+  volume: "volume", soundEqLow: "eqLow", soundEqMid: "eqMid", soundEqHigh: "eqHigh", soundBalance: "balance"
+};
 let meterSensitivityTimer;
 let meterSensitivityFlight = null;
 let meterSensitivityPending = null;
@@ -33,6 +43,7 @@ let systemStatusTimer;
 let currentConfig = {};
 let hardwareCapabilities = {
   schemaVersion: 0,
+  transientPlayerControls: false,
   encoderCount: 0,
   encoder1: { available: false, hasButton: false },
   encoder2: { available: false, hasButton: false },
@@ -117,6 +128,154 @@ function applyLanguage(root = document) {
 function setValue(id, value) {
   const node = $(id);
   if (node) node.value = value;
+}
+
+function sliderIsProtected(id) {
+  if (id === "themeCustomColorText" || id === "themeAccent") id = "themeCustomColor";
+  if (id === "frontLedColorText") id = "frontLedColor";
+  return sliderGestures.has(id) || sliderDirty.has(id);
+}
+
+function setConfigValue(id, value) {
+  if (!sliderIsProtected(id)) setValue(id, value);
+}
+
+function beginSliderGesture(node) {
+  if (!sliderGestures.has(node.id)) sliderGestures.set(node.id, { node, changed: false, pointer: null, keys: new Set() });
+  announceSliderEditing(true);
+  if (configSaveTimer) {
+    clearTimeout(configSaveTimer);
+    configSaveTimer = null;
+    configSaveDeferred = true;
+  }
+  return sliderGestures.get(node.id);
+}
+
+function announceSliderEditing(editing) {
+  if (!hardwareCapabilities.transientPlayerControls || sliderEditAnnounced === editing) return;
+  if (sendCommand({ controlEdit: editing })) sliderEditAnnounced = editing;
+}
+
+function resetPlayerSliderCommits() {
+  sliderEditAnnounced = false;
+  for (const [id, dirty] of sliderDirty) if (playerSliderFields[id]) delete dirty.sentRevision;
+}
+
+function trackSliderInput(node) {
+  beginSliderGesture(node).changed = true;
+  if (node.id !== "displayVuSensitivity") sliderDirty.set(node.id, { value: node.value, revision: ++sliderRevision });
+  if (!playerSliderFields[node.id]) {
+    configSaveDeferred = true;
+    setConfigSaveState("pending");
+  }
+}
+
+function finishSliderGesture(node) {
+  const gesture = sliderGestures.get(node.id);
+  if (!gesture) return;
+  sliderGestures.delete(node.id);
+  if (gesture.changed && node.id === "displayVuSensitivity") {
+    return commitMeterSensitivity().finally(flushReleasedSliders);
+  }
+  flushReleasedSliders();
+}
+
+function queuePlayerPreview(values) {
+  Object.assign(playerPreviewPending, values);
+  if (playerPreviewTimer === null) playerPreviewTimer = setTimeout(flushPlayerPreview, 80);
+}
+
+function flushPlayerPreview() {
+  clearTimeout(playerPreviewTimer);
+  playerPreviewTimer = null;
+  if (!Object.keys(playerPreviewPending).length) return true;
+  // Older firmware safely falls back to release-only commands, never a stream
+  // of supposedly transient commands which it would actually persist.
+  if (!hardwareCapabilities.transientPlayerControls) { playerPreviewPending = {}; return true; }
+  if (sliderGestures.size || meterSensitivityEditing) announceSliderEditing(true);
+  if (!sendCommand({ ...playerPreviewPending, persist: false })) return false;
+  playerPreviewPending = {};
+  return true;
+}
+
+function sendPlayerControls(values, preview = false) {
+  if (preview) { queuePlayerPreview(values); return; }
+  for (const field of Object.keys(values)) delete playerPreviewPending[field];
+  for (const [id, field] of Object.entries(playerSliderFields)) if (field in values) sliderDirty.delete(id);
+  sendCommand(values);
+}
+
+function flushReleasedSliders() {
+  if (sliderGestures.size || meterSensitivityEditing) return;
+  const controls = {};
+  const revisions = new Map();
+  for (const [id, field] of Object.entries(playerSliderFields)) {
+    const dirty = sliderDirty.get(id);
+    if (dirty && dirty.sentRevision !== dirty.revision) {
+      controls[field] = Number(dirty.value);
+      revisions.set(id, dirty.revision);
+    }
+  }
+  if (Object.keys(controls).length && flushPlayerPreview() && sendCommand({ ...controls, persist: true })) {
+    for (const [id, revision] of revisions) {
+      const dirty = sliderDirty.get(id);
+      if (dirty?.revision === revision) dirty.sentRevision = revision;
+    }
+  }
+  if (configSaveDeferred) queueConfigSave();
+  announceSliderEditing(false);
+}
+
+function acknowledgePlayerSliders(state) {
+  for (const [id, field] of Object.entries(playerSliderFields)) {
+    const dirty = sliderDirty.get(id);
+    if (dirty && dirty.sentRevision === dirty.revision && Number(state[field]) === Number(dirty.value)) sliderDirty.delete(id);
+  }
+}
+
+function acknowledgeConfigSliders(saved, submitted, revisions) {
+  for (const [id, revision] of revisions) {
+    if (playerSliderFields[id]) continue;
+    if (sliderDirty.get(id)?.revision === revision && String(saved[id]) === String(submitted[id])) sliderDirty.delete(id);
+  }
+}
+
+function initSliderControls() {
+  const sliderKeys = new Set(["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End"]);
+  document.querySelectorAll('input[type="range"], input[type="color"]').forEach(node => {
+    node.addEventListener("pointerdown", event => {
+      if (node.type === "range" && !(event.button > 0)) beginSliderGesture(node).pointer = event.pointerId;
+    });
+    node.addEventListener("input", () => trackSliderInput(node), true);
+    node.addEventListener("keydown", event => {
+      if (node.type === "range" && sliderKeys.has(event.key)) beginSliderGesture(node).keys.add(event.key);
+    });
+    node.addEventListener("change", () => {
+      const gesture = sliderGestures.get(node.id);
+      if (gesture && gesture.pointer === null && !gesture.keys.size) finishSliderGesture(node);
+    });
+    node.addEventListener("blur", () => finishSliderGesture(node));
+  });
+  const releasePointer = event => {
+    for (const gesture of [...sliderGestures.values()]) {
+      if (gesture.pointer === event.pointerId) {
+        gesture.pointer = null;
+        if (!gesture.keys.size) finishSliderGesture(gesture.node);
+      }
+    }
+  };
+  document.addEventListener("pointerup", releasePointer, true);
+  document.addEventListener("pointercancel", releasePointer, true);
+  document.addEventListener("keyup", event => {
+    for (const gesture of [...sliderGestures.values()]) {
+      if (gesture.keys.delete(event.key) && !gesture.keys.size && gesture.pointer === null) finishSliderGesture(gesture.node);
+    }
+  }, true);
+  const finishAll = () => {
+    for (const gesture of [...sliderGestures.values()]) finishSliderGesture(gesture.node);
+  };
+  window.addEventListener("blur", finishAll);
+  document.addEventListener("visibilitychange", () => { if (document.hidden) finishAll(); });
 }
 
 function hexToRgb(color) {
@@ -252,8 +411,12 @@ function connectWS() {
     setText("connectionInfo", t("status.connected", "Csatlakozva"));
     sendHeartbeat();
     wsHeartbeatTimer = setInterval(sendHeartbeat, WS_HEARTBEAT_MS);
+    if (sliderGestures.size || meterSensitivityEditing) announceSliderEditing(true);
+    flushPlayerPreview();
+    flushReleasedSliders();
   };
   ws.onclose = () => {
+    resetPlayerSliderCommits();
     stopWsHeartbeat();
     showDisconnectedState();
     wsReconnectTimer = setTimeout(connectWS, 1000);
@@ -274,7 +437,9 @@ function connectWS() {
 }
 
 function sendCommand(cmd) {
-  if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(cmd));
+  if (!ws || ws.readyState !== WebSocket.OPEN) return false;
+  ws.send(JSON.stringify(cmd));
+  return true;
 }
 
 function showView(view) {
@@ -566,11 +731,11 @@ function togglePlay() {
   sendCommand({ play: !playing });
 }
 
-function setVolume(v) {
+function setVolume(v, preview = false) {
   const value = clampNumber(parseInt(v, 10), 0, 100, 50);
   setValue("volume", value);
   setText("volValue", `${value}%`);
-  sendCommand({ volume: value });
+  sendPlayerControls({ volume: value }, preview);
 }
 
 function changeVolume(delta) {
@@ -596,22 +761,22 @@ function eqValue(band) {
   return 0;
 }
 
-function setEq() {
+function setEq(preview = false) {
   const low = eqValue("low");
   const mid = eqValue("mid");
   const high = eqValue("high");
   syncEqLabels(low, mid, high);
-  sendCommand({ eqLow: low, eqMid: mid, eqHigh: high });
+  sendPlayerControls({ eqLow: low, eqMid: mid, eqHigh: high }, preview);
 }
 
-function mirrorEq(band, value) {
+function mirrorEq(band, value, preview = false) {
   const map = {
     low: ["eqLow", "soundEqLow"],
     mid: ["eqMid", "soundEqMid"],
     high: ["eqHigh", "soundEqHigh"]
   };
   map[band].forEach(id => setValue(id, value));
-  setEq();
+  setEq(preview);
 }
 
 function resetTone() {
@@ -620,10 +785,10 @@ function resetTone() {
   setBalance(0);
 }
 
-function setBalance(v) {
+function setBalance(v, preview = false) {
   const value = parseInt(v, 10);
   syncBalance(value);
-  sendCommand({ balance: value });
+  sendPlayerControls({ balance: value }, preview);
 }
 
 function syncBalance(value) {
@@ -633,8 +798,8 @@ function syncBalance(value) {
   setText("soundBalanceValue", balanceLabel(value));
 }
 
-function mirrorBalance(v) {
-  setBalance(v);
+function mirrorBalance(v, preview = false) {
+  setBalance(v, preview);
 }
 
 function selectStation(id) {
@@ -1906,8 +2071,10 @@ function collectConfig() {
 }
 
 async function postConfig(action = {}) {
+  configSaveTimer = null;
   Object.assign(deferredConfigAction, action);
-  if (meterSensitivityEditing) {
+  if (meterSensitivityEditing || sliderGestures.size) {
+    configSaveDeferred = true;
     setConfigSaveState("pending");
     return false;
   }
@@ -1918,6 +2085,7 @@ async function postConfig(action = {}) {
   }
 
   configSaving = true;
+  configSaveDeferred = false;
   setConfigSaveState("busy");
   let savedOk = false;
 
@@ -1925,6 +2093,7 @@ async function postConfig(action = {}) {
     const submittedConfig = { ...collectConfig(), ...deferredConfigAction };
     deferredConfigAction = {};
     const submittedSensitivityRevision = meterSensitivityRevision;
+    const submittedSliderRevisions = new Map([...sliderDirty].map(([id, dirty]) => [id, dirty.revision]));
     if (submittedConfig.clearLastFmApiKey === "1") delete submittedConfig.lastFmApiKey;
     const response = await fetch("/api/config/save", {
       method: "POST",
@@ -1933,6 +2102,7 @@ async function postConfig(action = {}) {
     });
     if (!response.ok) throw new Error(`Config save failed: ${response.status}`);
     const savedConfig = await response.json();
+    acknowledgeConfigSliders(savedConfig, submittedConfig, submittedSliderRevisions);
     if (!meterSensitivityEditing && submittedSensitivityRevision === meterSensitivityRevision &&
         Number(savedConfig.displayVuSensitivity) === Number(submittedConfig.displayVuSensitivity)) {
       meterSensitivityDirty = false;
@@ -1963,6 +2133,8 @@ async function postConfig(action = {}) {
     if (configSavePending) {
       configSavePending = false;
       postConfig();
+    } else if (configSaveDeferred || sliderGestures.size || meterSensitivityEditing) {
+      setConfigSaveState("pending");
     } else {
       setConfigSaveState(savedOk ? "success" : "error");
     }
@@ -1972,7 +2144,7 @@ async function postConfig(action = {}) {
 function queueConfigSave() {
   clearTimeout(configSaveTimer);
   setConfigSaveState("pending");
-  if (meterSensitivityEditing) return;
+  if (meterSensitivityEditing || sliderGestures.size) { configSaveDeferred = true; return; }
   configSaveTimer = setTimeout(postConfig, 140);
 }
 
@@ -2136,18 +2308,18 @@ function applyConfigToUI(config) {
   if (!config.irActionLearning) clearInterval(irPollTimer);
 
   $("displayInvert").checked = !!config.displayInvert;
-  setValue("brightness", config.brightness || 0);
+  setConfigValue("brightness", config.brightness || 0);
   setPercentLabel("brightness");
   $("displayIdleEnabled").checked = !!config.displayIdleEnabled;
   $("displayIdleBlank").checked = !!config.displayIdleBlank;
-  setValue("displayIdleSeconds", config.displayIdleSeconds || 120);
-  setValue("displayIdleBrightness", config.displayIdleBrightness || 16);
+  setConfigValue("displayIdleSeconds", config.displayIdleSeconds || 120);
+  setConfigValue("displayIdleBrightness", config.displayIdleBrightness ?? 16);
   setPercentLabel("displayIdleBrightness");
   $("displayClockEnabled").checked = !!config.displayClockEnabled;
-  setValue("displayClockStyle", config.displayClockStyle || "digital");
-  setValue("displayFooterMode", config.displayFooterMode || "volume");
-  setValue("displayArtworkMode", config.displayArtworkMode || "logo");
-  setValue("lastFmApiKey", "");
+  setConfigValue("displayClockStyle", config.displayClockStyle || "digital");
+  setConfigValue("displayFooterMode", config.displayFooterMode || "volume");
+  setConfigValue("displayArtworkMode", config.displayArtworkMode || "logo");
+  setConfigValue("lastFmApiKey", "");
   $("lastFmApiKey").placeholder = config.hasSavedLastFmApiKey
     ? "Van mentett kulcs — üresen hagyva megmarad"
     : config.hasLastFmApiKey ? "Előre megadott kulcs aktív — új kulcs beillesztése" : "API-kulcs beillesztése";
@@ -2158,62 +2330,64 @@ function applyConfigToUI(config) {
   updateLastFmDeleteButton();
   $("lastFmApiKeyStatus")?.classList.toggle("is-saved", !!config.hasLastFmApiKey);
   $("lastFmApiKeyStatus")?.classList.remove("is-error");
-  setValue("displayVuStyle", config.displayVuStyle || "bars");
-  if (!meterSensitivityEditing && !meterSensitivityDirty) setValue("displayVuSensitivity", config.displayVuSensitivity || 100);
+  setConfigValue("displayVuStyle", config.displayVuStyle || "bars");
+  if (!meterSensitivityEditing && !meterSensitivityDirty) setConfigValue("displayVuSensitivity", config.displayVuSensitivity || 100);
   setRawPercentLabel("displayVuSensitivity");
   const themeColor = normalizeHexColor(config.themeCustomColor || "#a9f7bf");
-  setValue("themeCustomColor", themeColor);
-  setValue("themeCustomColorText", themeColor);
-  setValue("themeAccent", config.themeAccent || "green");
+  setConfigValue("themeCustomColor", themeColor);
+  setConfigValue("themeCustomColorText", themeColor);
+  setConfigValue("themeAccent", config.themeAccent || "green");
   syncThemeAccent();
   syncDisplayFooterMode();
-  setValue("timeZone", config.timeZone || "CET-1CEST,M3.5.0/2,M10.5.0/3");
+  setConfigValue("timeZone", config.timeZone || "CET-1CEST,M3.5.0/2,M10.5.0/3");
   const idleMode = config.displayClockEnabled ? "clock" : (config.displayIdleBlank ? "blank" : "dim");
-  setValue("displayIdleMode", idleMode);
+  setConfigValue("displayIdleMode", idleMode);
   syncDisplayIdleMode();
   $("autoBrightness").checked = !!config.autoBrightness;
-  setValue("dayStartTime", minutesToTime(config.dayStartMinute ?? 420));
-  setValue("nightStartTime", minutesToTime(config.nightStartMinute ?? 1320));
-  setValue("dayBrightness", config.dayBrightness || 0);
+  setConfigValue("dayStartTime", minutesToTime(config.dayStartMinute ?? 420));
+  setConfigValue("nightStartTime", minutesToTime(config.nightStartMinute ?? 1320));
+  setConfigValue("dayBrightness", config.dayBrightness || 0);
   setPercentLabel("dayBrightness");
-  setValue("nightBrightness", config.nightBrightness || 0);
+  setConfigValue("nightBrightness", config.nightBrightness || 0);
   setPercentLabel("nightBrightness");
 
   $("irEnabled").checked = !!config.irEnabled;
-  syncIrSensitivity(config.irSensitivity || 40);
-  setValue("irActionLearning", config.irActionLearning || "");
+  setConfigValue("irSensitivity", config.irSensitivity || 40);
+  syncIrSensitivity($("irSensitivity").value);
+  setConfigValue("irActionLearning", config.irActionLearning || "");
   if (config.irActionLearning) selectedIrAction = config.irActionLearning;
   updateIrPanel();
 
   $("encoderEnabled").checked = !!config.encoderEnabled;
   $("secondEncoderEnabled").checked = !!config.secondEncoderEnabled;
-  syncEncoderSensitivity(config.encoderSensitivity || 8);
-  setValue("encoderVolumeStep", config.encoderVolumeStep || 5);
-  setValue("encoderLongPressMs", config.encoderLongPressMs || 700);
+  setConfigValue("encoderSensitivity", config.encoderSensitivity || 8);
+  syncEncoderSensitivity($("encoderSensitivity").value);
+  setConfigValue("encoderVolumeStep", config.encoderVolumeStep || 5);
+  setConfigValue("encoderLongPressMs", config.encoderLongPressMs || 700);
   $("encoderAutoPlayStation").checked = config.encoderAutoPlayStation !== false;
-  setValue("encoderAutoPlayMs", config.encoderAutoPlayMs || 2500);
+  setConfigValue("encoderAutoPlayMs", config.encoderAutoPlayMs || 2500);
   syncEncoderControls();
 
   $("mqttEnabled").checked = !!config.mqttEnabled;
-  setValue("mqttHost", config.mqttHost || "");
-  setValue("mqttPort", config.mqttPort || 1883);
-  setValue("mqttUser", config.mqttUser || "");
-  setValue("mqttPassword", config.mqttPassword || "");
-  setValue("mqttRootTopic", config.mqttRootTopic || "simpleradio");
+  setConfigValue("mqttHost", config.mqttHost || "");
+  setConfigValue("mqttPort", config.mqttPort || 1883);
+  setConfigValue("mqttUser", config.mqttUser || "");
+  setConfigValue("mqttPassword", config.mqttPassword || "");
+  setConfigValue("mqttRootTopic", config.mqttRootTopic || "simpleradio");
   $("streamRetryEnabled").checked = config.streamRetryEnabled !== false;
-  setValue("streamRetryMs", config.streamRetryMs || 5000);
+  setConfigValue("streamRetryMs", config.streamRetryMs || 5000);
   $("autoStart").checked = !!config.autoStart;
-  setValue("volumeCurve", config.volumeCurve || "soft");
+  setConfigValue("volumeCurve", config.volumeCurve || "soft");
   syncVolumeCurve();
   $("frontLedEnabled").checked = !!config.frontLedEnabled;
   $("frontLedUseTheme").checked = config.frontLedUseTheme !== false;
-  setValue("frontLedBrightness", config.frontLedBrightness ?? 128);
+  setConfigValue("frontLedBrightness", config.frontLedBrightness ?? 128);
   setPercentLabel("frontLedBrightness");
-  setValue("frontLedStandbyBrightness", config.frontLedStandbyBrightness ?? 13);
+  setConfigValue("frontLedStandbyBrightness", config.frontLedStandbyBrightness ?? 13);
   setPercentLabel("frontLedStandbyBrightness");
   const ledColor = normalizeHexColor(config.frontLedColor || "#a9f7bf");
-  setValue("frontLedColor", ledColor);
-  setValue("frontLedColorText", ledColor);
+  setConfigValue("frontLedColor", ledColor);
+  setConfigValue("frontLedColorText", ledColor);
   syncFrontLedControls();
 }
 
@@ -2318,6 +2492,7 @@ function streamConnectionMessage(state) {
 }
 
 function updateUI(state) {
+  acknowledgePlayerSliders(state);
   const previousStationId = currentStationId;
   playing = !!state.playing;
   currentStationId = state.stationId;
@@ -2325,14 +2500,15 @@ function updateUI(state) {
   updatePlayButtons();
 
   setText("connectionInfo", state.station || t("state.noStation", "Nincs állomás"));
-  setValue("volume", state.volume);
-  setText("volValue", `${state.volume}%`);
+  const shownVolume = sliderIsProtected("volume") ? numberValue("volume", state.volume) : state.volume;
+  setValue("volume", shownVolume);
+  setText("volValue", `${shownVolume}%`);
 
-  const low = state.eqLow || 0;
-  const mid = state.eqMid || 0;
-  const high = state.eqHigh || 0;
+  const low = sliderIsProtected("soundEqLow") ? eqValue("low") : state.eqLow || 0;
+  const mid = sliderIsProtected("soundEqMid") ? eqValue("mid") : state.eqMid || 0;
+  const high = sliderIsProtected("soundEqHigh") ? eqValue("high") : state.eqHigh || 0;
   syncEqLabels(low, mid, high);
-  syncBalance(state.balance || 0);
+  syncBalance(sliderIsProtected("soundBalance") ? numberValue("soundBalance") : state.balance || 0);
 
   const connectionMessage = playing ? streamConnectionMessage(state) : "";
   const meta = playing ? [state.artist, state.title].filter(Boolean).join(" - ") : "";
@@ -2347,6 +2523,7 @@ renderRemote();
 initLogoDropZone();
 initOtaUploads();
 initStationDrawers();
+initSliderControls();
 window.addEventListener("resize", () => requestAnimationFrame(drawVolumeCurvePreview));
 applyHardwareCapabilitiesToUI();
 loadWebUiBranding();

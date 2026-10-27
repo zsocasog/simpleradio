@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>SimpleRadio</title>
-  <link rel="stylesheet" href="style.css?v=0.8.24">
+  <link rel="stylesheet" href="style.css?v=1.0.27">
 </head>
 <body>
   <div class="app-shell">
@@ -52,7 +52,7 @@
                 <span class="volume-label">Hangerő</span>
                 <div class="volume-control-row">
                   <button class="volume-step" type="button" onclick="changeVolume(-5)" aria-label="Hangerő csökkentése 5 százalékkal" title="Hangerő -5%">−</button>
-                  <input id="volume" type="range" min="0" max="100" oninput="setVolume(this.value)">
+<input id="volume" type="range" min="0" max="100" oninput="setVolume(this.value, true)">
                   <button class="volume-step" type="button" onclick="changeVolume(5)" aria-label="Hangerő növelése 5 százalékkal" title="Hangerő +5%">+</button>
                 </div>
                 <strong id="volValue">50%</strong>
@@ -210,15 +210,15 @@
                 </header>
                 <label class="setting-row">
                   <span>Bass</span>
-                  <span class="setting-range"><input id="soundEqLow" type="range" min="-12" max="6" value="0" oninput="mirrorEq('low', this.value)"><strong id="soundEqLowValue">0 dB</strong></span>
+                  <span class="setting-range"><input id="soundEqLow" type="range" min="-12" max="6" value="0" oninput="mirrorEq('low', this.value, true)"><strong id="soundEqLowValue">0 dB</strong></span>
                 </label>
                 <label class="setting-row">
                   <span>Közép</span>
-                  <span class="setting-range"><input id="soundEqMid" type="range" min="-12" max="6" value="0" oninput="mirrorEq('mid', this.value)"><strong id="soundEqMidValue">0 dB</strong></span>
+                  <span class="setting-range"><input id="soundEqMid" type="range" min="-12" max="6" value="0" oninput="mirrorEq('mid', this.value, true)"><strong id="soundEqMidValue">0 dB</strong></span>
                 </label>
                 <label class="setting-row">
                   <span>Treble</span>
-                  <span class="setting-range"><input id="soundEqHigh" type="range" min="-12" max="6" value="0" oninput="mirrorEq('high', this.value)"><strong id="soundEqHighValue">0 dB</strong></span>
+                  <span class="setting-range"><input id="soundEqHigh" type="range" min="-12" max="6" value="0" oninput="mirrorEq('high', this.value, true)"><strong id="soundEqHighValue">0 dB</strong></span>
                 </label>
               </section>
             </div>
@@ -231,7 +231,7 @@
                 </header>
                 <label class="setting-row">
                   <span>Bal / jobb</span>
-                  <span class="setting-range"><input id="soundBalance" type="range" min="-100" max="100" value="0" oninput="mirrorBalance(this.value)"><strong id="soundBalanceValue">Közép</strong></span>
+                  <span class="setting-range"><input id="soundBalance" type="range" min="-100" max="100" value="0" oninput="mirrorBalance(this.value, true)"><strong id="soundBalanceValue">Közép</strong></span>
                 </label>
               </section>
 
@@ -282,19 +282,19 @@
                 </label>
                 <label id="themeCustomColorField" class="setting-row hidden"><span>Egyéni témaszín</span>
                   <span class="color-picker-row">
-                <input id="themeCustomColor" type="color" value="#a9f7bf" oninput="syncThemeCustomColorFromPicker(); queueConfigSave()" onchange="syncThemeCustomColorFromPicker(); saveConfigNow()">
+                <input id="themeCustomColor" type="color" value="#a9f7bf" oninput="syncThemeCustomColorFromPicker()">
                 <input id="themeCustomColorText" type="text" value="#a9f7bf" maxlength="7" autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false" oninput="syncThemeCustomColorFromText(); queueConfigSave()" onchange="syncThemeCustomColorFromText(); saveConfigNow()">
                   </span>
                 </label>
-                <label class="setting-row"><span>Fényerő</span><span class="setting-range"><input id="brightness" type="range" min="0" max="255" oninput="setPercentLabel('brightness'); queueConfigSave()"><strong id="brightnessValue">0%</strong></span></label>
+                <label class="setting-row"><span>Fényerő</span><span class="setting-range"><input id="brightness" type="range" min="0" max="255" oninput="setPercentLabel('brightness')"><strong id="brightnessValue">0%</strong></span></label>
                 <label class="setting-row setting-toggle">
                   <span class="setting-copy"><strong>Automatikus nappal / éjszaka mód</strong></span>
                   <span class="toggle-switch"><input id="autoBrightness" type="checkbox" onchange="saveConfigNow()"><span></span></span>
                 </label>
                 <label class="setting-row"><span>Nappali mód kezdete</span><input id="dayStartTime" type="time" onchange="saveConfigNow()"></label>
                 <label class="setting-row"><span>Éjszakai mód kezdete</span><input id="nightStartTime" type="time" onchange="saveConfigNow()"></label>
-                <label class="setting-row"><span>Nappali</span><span class="setting-range"><input id="dayBrightness" type="range" min="0" max="255" oninput="setPercentLabel('dayBrightness'); queueConfigSave()"><strong id="dayBrightnessValue">0%</strong></span></label>
-                <label class="setting-row"><span>Éjszakai</span><span class="setting-range"><input id="nightBrightness" type="range" min="0" max="255" oninput="setPercentLabel('nightBrightness'); queueConfigSave()"><strong id="nightBrightnessValue">0%</strong></span></label>
+                <label class="setting-row"><span>Nappali</span><span class="setting-range"><input id="dayBrightness" type="range" min="0" max="255" oninput="setPercentLabel('dayBrightness')"><strong id="dayBrightnessValue">0%</strong></span></label>
+                <label class="setting-row"><span>Éjszakai</span><span class="setting-range"><input id="nightBrightness" type="range" min="0" max="255" oninput="setPercentLabel('nightBrightness')"><strong id="nightBrightnessValue">0%</strong></span></label>
               </section>
             </div>
 
@@ -327,7 +327,7 @@
                 <option value="classic">Középről induló VU</option>
                   </select>
                 </label>
-                <label id="displayVuSensitivityField" class="setting-row"><span data-i18n="display.vuSensitivity">VU / spektrum érzékenység</span><span class="setting-range"><input id="displayVuSensitivity" type="range" min="50" max="200" step="5" oninput="previewMeterSensitivity()" onchange="commitMeterSensitivity()" onblur="commitMeterSensitivity()"><strong id="displayVuSensitivityValue">100%</strong></span></label>
+                <label id="displayVuSensitivityField" class="setting-row"><span data-i18n="display.vuSensitivity">VU / spektrum érzékenység</span><span class="setting-range"><input id="displayVuSensitivity" type="range" min="50" max="200" step="5" oninput="previewMeterSensitivity()"><strong id="displayVuSensitivityValue">100%</strong></span></label>
               </section>
 
               <section class="settings-section">
@@ -361,7 +361,7 @@
                   </select>
                 </label>
                 <label class="setting-row"><span>Készenléti idő (másodperc)</span><input id="displayIdleSeconds" type="number" min="10" max="3600" onchange="saveConfigNow()"></label>
-                <label class="setting-row"><span>Készenléti fényerő</span><span class="setting-range"><input id="displayIdleBrightness" type="range" min="0" max="255" oninput="setPercentLabel('displayIdleBrightness'); queueConfigSave()"><strong id="displayIdleBrightnessValue">0%</strong></span></label>
+                <label class="setting-row"><span>Készenléti fényerő</span><span class="setting-range"><input id="displayIdleBrightness" type="range" min="0" max="255" oninput="setPercentLabel('displayIdleBrightness')"><strong id="displayIdleBrightnessValue">0%</strong></span></label>
               </section>
             </div>
           </div>
@@ -392,7 +392,7 @@
                     <span class="setting-copy"><strong>Második enkóder</strong><small id="encoder2HardwareHint"></small></span>
                     <span class="toggle-switch"><input id="secondEncoderEnabled" type="checkbox" onchange="syncEncoderControls(); saveConfigNow()"><span></span></span>
                   </label>
-                  <label class="setting-row"><span>Érzékenység</span><span class="setting-range"><input id="encoderSensitivity" type="range" min="1" max="8" step="1" oninput="syncEncoderSensitivity(this.value); queueConfigSave()"><strong id="encoderSensitivityValue">8/8</strong></span></label>
+                  <label class="setting-row"><span>Érzékenység</span><span class="setting-range"><input id="encoderSensitivity" type="range" min="1" max="8" step="1" oninput="syncEncoderSensitivity(this.value)"><strong id="encoderSensitivityValue">8/8</strong></span></label>
                   <label class="setting-row"><span>Hosszú nyomás (ms)</span><input id="encoderLongPressMs" type="number" min="300" max="3000" step="50" onchange="saveConfigNow()"></label>
                 </div>
               </section>
@@ -460,7 +460,7 @@
             <input id="irActionLearning" type="hidden">
             <label class="range-line">
               <span data-i18n="ir.sensitivity">IR érzékenység</span>
-              <input id="irSensitivity" type="range" min="15" max="60" step="1" oninput="syncIrSensitivity(this.value); queueConfigSave()">
+              <input id="irSensitivity" type="range" min="15" max="60" step="1" oninput="syncIrSensitivity(this.value)">
               <strong id="irSensitivityValue">40%</strong>
             </label>
             <div class="learn-display">
@@ -605,9 +605,9 @@
                 <div class="settings-fields">
                   <label class="setting-row setting-toggle"><span class="setting-copy"><strong>LED használata</strong></span><span class="toggle-switch"><input id="frontLedEnabled" type="checkbox" onchange="syncFrontLedControls(); saveConfigNow()"><span></span></span></label>
                   <label class="setting-row setting-toggle"><span class="setting-copy"><strong>Téma színének követése</strong></span><span class="toggle-switch"><input id="frontLedUseTheme" type="checkbox" onchange="syncFrontLedControls(); saveConfigNow()"><span></span></span></label>
-                  <label class="setting-row"><span>LED fényerő</span><span class="setting-range"><input id="frontLedBrightness" type="range" min="0" max="255" oninput="setPercentLabel('frontLedBrightness'); queueConfigSave()"><strong id="frontLedBrightnessValue">0%</strong></span></label>
-                  <label class="setting-row"><span>LED készenléti fényerő</span><span class="setting-range"><input id="frontLedStandbyBrightness" type="range" min="0" max="255" oninput="setPercentLabel('frontLedStandbyBrightness'); queueConfigSave()"><strong id="frontLedStandbyBrightnessValue">0%</strong></span></label>
-                  <label class="setting-row"><span>Egyedi szín</span><span class="color-picker-row"><input id="frontLedColor" type="color" value="#a9f7bf" oninput="syncFrontLedColorFromPicker(); queueConfigSave()" onchange="syncFrontLedColorFromPicker(); saveConfigNow()"><input id="frontLedColorText" type="text" value="#a9f7bf" maxlength="7" autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false" oninput="syncFrontLedColorFromText(); queueConfigSave()" onchange="syncFrontLedColorFromText(); saveConfigNow()"></span></label>
+                  <label class="setting-row"><span>LED fényerő</span><span class="setting-range"><input id="frontLedBrightness" type="range" min="0" max="255" oninput="setPercentLabel('frontLedBrightness')"><strong id="frontLedBrightnessValue">0%</strong></span></label>
+                  <label class="setting-row"><span>LED készenléti fényerő</span><span class="setting-range"><input id="frontLedStandbyBrightness" type="range" min="0" max="255" oninput="setPercentLabel('frontLedStandbyBrightness')"><strong id="frontLedStandbyBrightnessValue">0%</strong></span></label>
+                  <label class="setting-row"><span>Egyedi szín</span><span class="color-picker-row"><input id="frontLedColor" type="color" value="#a9f7bf" oninput="syncFrontLedColorFromPicker()"><input id="frontLedColorText" type="text" value="#a9f7bf" maxlength="7" autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false" oninput="syncFrontLedColorFromText(); queueConfigSave()" onchange="syncFrontLedColorFromText(); saveConfigNow()"></span></label>
                 </div>
               </section>
             </div>
@@ -645,7 +645,7 @@
       <span id="footerVersion">v-</span>
     </footer>
   </div>
-  <script src="i18n.js?v=0.8.24&amp;ui=logos2"></script>
-  <script src="app.js?v=0.8.24&amp;ui=logos2"></script>
+  <script src="i18n.js?v=1.0.27&amp;ui=logos2"></script>
+  <script src="app.js?v=1.0.27&amp;ui=logos2"></script>
 </body>
 </html>

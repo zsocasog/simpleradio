@@ -57,6 +57,8 @@ function frontend(savedKey = true) {
   const context = { currentConfig: { hasSavedLastFmApiKey: savedKey }, configSaving: false,
     meterSensitivityEditing: false, meterSensitivityDirty: false, meterSensitivityRevision: 0,
     deferredConfigAction: {},
+    configSaveDeferred: false, sliderGestures: new Map(), sliderDirty: new Map(),
+    acknowledgeConfigSliders() {},
     configSavePending: false, configSaveTimer: 0, URLSearchParams, console, clearTimeout() {},
     $: () => ({ ...node, classList: { add() {}, remove() {}, toggle() {} } }),
     collectConfig: () => ({ lastFmApiKey: "unsaved-typed-key" }),
@@ -125,5 +127,5 @@ test("an older full-config response cannot acknowledge a newer sensitivity edit"
   app.context.fetch = async () => ({ ok: true, json: async () => ({ displayVuSensitivity: 150 }) });
   await app.context.postConfig();
   assert.equal(app.context.meterSensitivityDirty, false);
-  assert.match(js, /if \(!meterSensitivityEditing && !meterSensitivityDirty\) setValue\("displayVuSensitivity"/);
+  assert.match(js, /if \(!meterSensitivityEditing && !meterSensitivityDirty\) setConfigValue\("displayVuSensitivity"/);
 });

@@ -48,10 +48,15 @@ test("all shipped language bundles contain the spectrum label", () => {
   }
 });
 
-test("application version stays unchanged while modified scripts get new cache keys", () => {
+test("web asset cache keys and manifest match the firmware version", () => {
   const html = fs.readFileSync(path.join(root, "data/index.html"), "utf8");
-  assert.match(html, /i18n\.js\?v=0\.8\.24&amp;ui=logos2/);
-  assert.match(html, /app\.js\?v=0\.8\.24&amp;ui=logos2/);
+  const header = fs.readFileSync(path.join(root, "src/config/version.h"), "utf8");
+  const version = header.match(/#define APP_VERSION "([^"]+)"/)[1];
+  const manifest = JSON.parse(fs.readFileSync(path.join(root, "data/build-info.json"), "utf8"));
+  assert.equal(manifest.webuiVersion, version);
+  for (const asset of ["style.css", "i18n.js", "app.js"]) {
+    assert.ok(html.includes(`${asset}?v=${version}`), `${asset} cache key must match firmware`);
+  }
 });
 
 test("spectrum uses the complete 24-column VU grid without widening the bars", () => {

@@ -73,6 +73,8 @@ enum QueuedActionType : uint8_t {
 
 struct QueuedPlayerAction {
   QueuedActionType type = ACTION_NONE;
+  bool persistState = true;
+  bool forceStateSave = false;
   bool hasPlay = false;
   bool play = false;
   bool hasVolume = false;
@@ -110,6 +112,33 @@ static PendingDelete pendingDelete;
 static portMUX_TYPE stateSaveMux = portMUX_INITIALIZER_UNLOCKED;
 static bool stateSavePending = false;
 static unsigned long stateSaveDue = 0;
+struct ControlEditor { uint32_t clientId = 0; bool active = false; };
+static ControlEditor controlEditors[8];
+
+static bool controlsBeingEditedLocked() {
+  for (const auto& editor : controlEditors) if (editor.active) return true;
+  return false;
+}
+
+static void setWebControlEditing(uint32_t clientId, bool editing) {
+  const unsigned long now = millis();
+  portENTER_CRITICAL(&stateSaveMux);
+  int freeSlot = -1;
+  bool found = false;
+  for (size_t i = 0; i < 8; ++i) {
+    if (controlEditors[i].active && controlEditors[i].clientId == clientId) {
+      controlEditors[i].active = editing;
+      found = true;
+      break;
+    }
+    if (!controlEditors[i].active) freeSlot = static_cast<int>(i);
+  }
+  if (editing && !found && freeSlot >= 0) controlEditors[freeSlot] = {clientId, true};
+  // A second gesture can start before the previous 800 ms save timer expires.
+  // Pause that pending write until the final release (or client disconnect).
+  if (!editing && found && !controlsBeingEditedLocked() && stateSavePending) stateSaveDue = now + 800;
+  portEXIT_CRITICAL(&stateSaveMux);
+}
 static volatile bool displayActivityPending = false;
 static volatile bool displayConfigRefreshPending = false;
 static volatile bool rebootPending = false;
@@ -505,6 +534,7 @@ static String systemStatusJson() {
 static String hardwareCapabilitiesJson() {
   JsonDocument doc;
   doc["schemaVersion"] = 1;
+  doc["transientPlayerControls"] = true;
   doc["encoderCount"] = HardwareCapabilities::encoderCount;
 
   JsonObject encoder1 = doc["encoder1"].to<JsonObject>();
@@ -546,7 +576,7 @@ static void flushScheduledStateSave(bool force = false) {
   unsigned long now = millis();
 
   portENTER_CRITICAL(&stateSaveMux);
-  if (stateSavePending && (force || now >= stateSaveDue)) {
+  if (stateSavePending && (force || (!controlsBeingEditedLocked() && now >= stateSaveDue))) {
     stateSavePending = false;
     shouldSave = true;
   }
@@ -561,14 +591,15 @@ static void enqueuePlayerAction(const QueuedPlayerAction& action) {
   if (action.type == ACTION_NONE) return;
 
   portENTER_CRITICAL(&actionMux);
-  if (isPureVolumeAction(action)) {
-    for (uint8_t i = 0; i < actionCount; ++i) {
-      uint8_t index = (actionTail + i) % ACTION_QUEUE_SIZE;
-      if (isPureVolumeAction(actionQueue[index])) {
-        actionQueue[index] = action;
-        portEXIT_CRITICAL(&actionMux);
-        return;
-      }
+  // Only merge the trailing compatible command. A release/commit is a barrier:
+  // a new drag must never replace a preview before the previous drag's commit.
+  if (isPureVolumeAction(action) && actionCount && !action.forceStateSave) {
+    const uint8_t index = (actionHead + ACTION_QUEUE_SIZE - 1) % ACTION_QUEUE_SIZE;
+    if (isPureVolumeAction(actionQueue[index]) && !actionQueue[index].forceStateSave &&
+        actionQueue[index].persistState == action.persistState) {
+      actionQueue[index] = action;
+      portEXIT_CRITICAL(&actionMux);
+      return;
     }
   }
 
@@ -639,6 +670,12 @@ bool queuePlayerCommand(const JsonDocument& cmd) {
   }
 
   if (!hasField) return false;
+  // Web sliders may preview only volume/EQ/balance without persisting. Normal
+  // commands (including MQTT/older web UIs) keep their previous save behavior.
+  if (!action.hasPlay && !action.hasStation && cmd["persist"].is<bool>()) {
+    action.persistState = cmd["persist"].as<bool>();
+    action.forceStateSave = action.persistState; // The final value may already be live.
+  }
   enqueuePlayerAction(action);
   return true;
 }
@@ -924,6 +961,7 @@ static void onWsEvent(
   uint8_t *data,
   size_t len
 ) {
+  if (type == WS_EVT_DISCONNECT) { setWebControlEditing(client->id(), false); return; }
   if (type == WS_EVT_CONNECT) {
     String stateJson = cachedStateJson();
     if (!stateJson.length()) stateJson = PlayerState::instance().toJson();
@@ -939,6 +977,10 @@ static void onWsEvent(
     if (deserializeJson(cmd, data, len) != DeserializationError::Ok) return;
     if (!cmd["ping"].isNull()) {
       client->text("{\"pong\":true}");
+      return;
+    }
+    if (cmd["controlEdit"].is<bool>()) {
+      setWebControlEditing(client->id(), cmd["controlEdit"].as<bool>());
       return;
     }
     requestDisplayActivity();
@@ -1098,8 +1140,8 @@ static void executeQueuedAction(const QueuedPlayerAction& action) {
       break;
   }
 
-  if (changed) {
-    scheduleStateSave();
+  if ((changed && action.persistState) || action.forceStateSave) scheduleStateSave();
+  if (changed || action.forceStateSave) {
     broadcastState();
   }
 }
