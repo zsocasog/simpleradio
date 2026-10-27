@@ -1530,18 +1530,22 @@ void webServerBegin() {
       request->send(400, "text/plain", "Invalid album image id");
       return;
     }
-    const auto frame = AlbumArtStore::instance().acquire(
+    auto frame = AlbumArtStore::instance().acquire(
         String(AlbumArtStore::PATH_PREFIX) + request->getParam("id")->value());
     if (!frame) {
       request->send(404, "text/plain", "Album image expired");
       return;
     }
     const char* contentType = frame->format == AlbumArtPolicy::Format::Png ? "image/png" : "image/jpeg";
-    // Capture the immutable lease for the ENTIRE async response, not just this
-    // handler call. A track change cannot free/reuse bytes being sent to a client.
+    // The pinned server copies each callback result into its own send buffer,
+    // whose remainder survives partial TCP writes. Once all source bytes have
+    // been copied, a slow ACK/keepalive must no longer pin an album pool slot.
     auto* response = request->beginResponse(contentType, frame->imageBytes,
-        [frame](uint8_t* buffer, size_t maxLen, size_t index) -> size_t {
-          return frame->read(buffer, maxLen, index);
+        [frame](uint8_t* buffer, size_t maxLen, size_t index) mutable -> size_t {
+          if (!frame) return 0;
+          const size_t count = frame->read(buffer, maxLen, index);
+          if (index >= frame->imageBytes || count >= frame->imageBytes - index) frame.reset();
+          return count;
         });
     if (!response) {
       request->send(503, "text/plain", "Album response unavailable");

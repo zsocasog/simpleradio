@@ -26,6 +26,13 @@ private:
 
 class AlbumArtStore {
 public:
+  enum class ReserveFailure { None, Invalid, InternalLow, SlotsBusy, FrameAllocation, PsramLow, PixelAllocation };
+  struct ReserveStatus {
+    ReserveFailure failure = ReserveFailure::None;
+    size_t internalFree = 0, internalLargest = 0, psramFree = 0, psramLargest = 0;
+    long references[AlbumArtPolicy::SLOT_COUNT] = {};
+    int published = -1;
+  };
   using Lease = std::shared_ptr<const AlbumArtFrame>;
   using Preparation = std::shared_ptr<AlbumArtFrame>;
   static constexpr const char* ROUTE = "/api/artwork/album";
@@ -33,7 +40,9 @@ public:
 
   static AlbumArtStore& instance();
   static bool isPath(const String& path);
-  Preparation reserve(const String& key, uint16_t side);
+  Preparation reserve(const String& key, uint16_t side, AlbumArtPolicy::Format format = AlbumArtPolicy::Format::Jpeg,
+                      ReserveStatus* status = nullptr);
+  static const char* failureName(ReserveFailure failure);
   bool publish(const Preparation& frame);
   Lease acquire(const String& path) const;
   Lease find(const String& key); // Reusing a cached track selects its slot as current.

@@ -6,6 +6,8 @@
 #include <NetworkClientSecure.h>
 #include <WiFi.h>
 #include <esp_heap_caps.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
 
 namespace ArtworkHttp {
 namespace {
@@ -53,6 +55,7 @@ public:
   explicit CooperativeClient(Transfer& transfer) : transfer(transfer) {}
 
   void expectBody(int length, bool chunked) { bodyBoundary.begin(length, chunked); }
+  const String& connectionFailure() const { return connectionFailure_; }
 
   int connect(IPAddress ip, uint16_t port, int32_t timeout) override {
     if (!service()) return 0;
@@ -84,7 +87,7 @@ public:
     return service() ? Base::connected() : 0;
   }
 
-private:
+protected:
   bool service() {
     if (transfer.service()) return true;
     Base::stop();
@@ -95,7 +98,72 @@ private:
     return remaining(transfer.options.deadlineMs, normal);
   }
   Transfer& transfer;
+  String connectionFailure_;
   ArtworkHttpPolicy::BodyBoundary bodyBoundary;
+};
+
+// A continuously scheduled FFT/LCD can starve an idle-priority TLS handshake.
+// Share their priority ONLY while establishing a connection. Audio remains at
+// priority 2; body downloads, image decoding and flash work stay at the caller's
+// original background priority. No scheduler/core/library global is changed.
+class TlsPriorityScope {
+public:
+  TlsPriorityScope() : original_(uxTaskPriorityGet(nullptr)) {
+    if (original_ == tskIDLE_PRIORITY) vTaskPrioritySet(nullptr, tskIDLE_PRIORITY + 1);
+  }
+  ~TlsPriorityScope() {
+    if (original_ == tskIDLE_PRIORITY) vTaskPrioritySet(nullptr, original_);
+  }
+private:
+  UBaseType_t original_;
+};
+
+class SecureArtworkClient : public CooperativeClient<NetworkClientSecure> {
+public:
+  explicit SecureArtworkClient(Transfer& transfer) : CooperativeClient(transfer) {}
+  int connect(const char* name, uint16_t port, int32_t timeout) override {
+    return establish([&]() { return NetworkClientSecure::connect(name, port, boundedConnect(timeout)); });
+  }
+  int connect(IPAddress ip, uint16_t port, int32_t timeout) override {
+    return establish([&]() { return NetworkClientSecure::connect(ip, port, boundedConnect(timeout)); });
+  }
+private:
+  template<class Connect> int establish(Connect connectSocket) {
+    connectionFailure_ = "";
+    if (!transfer.service()) return 0;
+    TlsPriorityScope priority;
+    // PlainStart prepares TCP and TLS state but sends NO application data.
+    // HTTPClient only receives success after the encrypted handshake below.
+    setPlainStart();
+    const uint32_t setupStarted = millis();
+    if (!connectSocket()) {
+      failure("TCP/TLS setup", millis() - setupStarted, sslclient->last_error);
+      return 0;
+    }
+    const uint32_t setupMs = millis() - setupStarted;
+    if (!transfer.service()) { NetworkClientSecure::stop(); return 0; }
+    setHandshakeTimeout(max<uint32_t>(1, (remaining(transfer.options.deadlineMs, 6000) + 999) / 1000));
+    const uint32_t tlsStarted = millis();
+    // The core's startTLS() discards the handshake return code. Use its same
+    // pinned native helper so cancellation boundaries and the real error stay
+    // visible, without changing the crypto implementation or trust settings.
+    const int result = ssl_starttls_handshake(sslclient.get());
+    sslclient->last_error = result;
+    if (result < 0) {
+      failure("TLS handshake", millis() - tlsStarted, result);
+      connectionFailure_ += "; setup=" + String(setupMs) + "ms";
+      NetworkClientSecure::stop();
+      return 0;
+    }
+    _stillinPlainStart = false;
+    if (!transfer.service()) { NetworkClientSecure::stop(); return 0; }
+    return 1;
+  }
+  void failure(const char* phase, uint32_t elapsedMs, int code) {
+    connectionFailure_ = String(phase) + " failed: code=" + String(code) + " elapsed=" + String(elapsedMs) +
+        "ms internal=" + String(heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)) +
+        " largest=" + String(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+  }
 };
 
 class BufferSink : public Stream {
@@ -174,6 +242,7 @@ template<class Client> bool request(Client& client, const String& url, size_t li
   const int expectedStatus = transfer.options.range.length() ? HTTP_CODE_PARTIAL_CONTENT : HTTP_CODE_OK;
   if (response.status != expectedStatus) {
     response.error = "HTTP " + String(response.status);
+    if (response.status < 0 && client.connectionFailure().length()) response.error += "; " + client.connectionFailure();
     finish();
     return false;
   }
@@ -253,7 +322,7 @@ bool get(const String& url, size_t limit, Response& response, const Options& sup
         response.error = "HTTPS deferred during audio connection";
         return false;
       }
-      CooperativeClient<NetworkClientSecure> client(transfer);
+      SecureArtworkClient client(transfer);
       client.setInsecure();
       client.setHandshakeTimeout(max<uint32_t>(1, (remaining(options.deadlineMs, 6000) + 999) / 1000));
       ok = request(client, current, limit, response, transfer);

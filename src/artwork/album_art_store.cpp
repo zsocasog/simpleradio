@@ -27,11 +27,39 @@ bool AlbumArtStore::isPath(const String& path) {
   return path.startsWith(PATH_PREFIX);
 }
 
-AlbumArtStore::Preparation AlbumArtStore::reserve(const String& key, uint16_t side) {
-  if (!side || side > 512 || key.isEmpty() ||
-      heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT) < AlbumArtPolicy::INTERNAL_HEADROOM) return {};
+const char* AlbumArtStore::failureName(ReserveFailure failure) {
+  switch (failure) {
+    case ReserveFailure::None: return "none";
+    case ReserveFailure::Invalid: return "invalid image request";
+    case ReserveFailure::InternalLow: return "internal reserve or contiguous block low";
+    case ReserveFailure::SlotsBusy: return "both slots retained by display/web readers";
+    case ReserveFailure::FrameAllocation: return "frame allocation failed";
+    case ReserveFailure::PsramLow: return "PSRAM reserve low";
+    case ReserveFailure::PixelAllocation: return "PSRAM pixel allocation failed";
+  }
+  return "unknown";
+}
+
+AlbumArtStore::Preparation AlbumArtStore::reserve(const String& key, uint16_t side, AlbumArtPolicy::Format format,
+                                                  ReserveStatus* status) {
+  ReserveStatus current;
+  current.internalFree = heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+  current.internalLargest = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+  current.psramFree = heap_caps_get_free_size(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+  current.psramLargest = heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+  portENTER_CRITICAL(&mux_);
+  current.published = published_;
+  for (size_t i = 0; i < slots_.size(); ++i) current.references[i] = slots_[i].use_count();
+  portEXIT_CRITICAL(&mux_);
+  auto reject = [&](ReserveFailure failure) -> Preparation {
+    current.failure = failure;
+    if (status) *status = current;
+    return {};
+  };
+  if (!side || side > 512 || key.isEmpty()) return reject(ReserveFailure::Invalid);
+  if (!AlbumArtPolicy::internalReady(format, current.internalFree, current.internalLargest)) return reject(ReserveFailure::InternalLow);
   Preparation next(new (std::nothrow) AlbumArtFrame);
-  if (!next) return {};
+  if (!next) return reject(ReserveFailure::FrameAllocation);
   next->key = key;
   next->side = side;
   Preparation old;
@@ -54,18 +82,22 @@ AlbumArtStore::Preparation AlbumArtStore::reserve(const String& key, uint16_t si
     }
   }
   portEXIT_CRITICAL(&mux_);
-  if (chosen < 0) return {}; // Slow web readers pin both slots: do not allocate a third.
+  if (chosen < 0) return reject(ReserveFailure::SlotsBusy); // Never allocate a third slot.
   old.reset(); // May free a large old JPEG; always outside the critical section.
   const size_t pixelBytes = static_cast<size_t>(side) * side * sizeof(uint16_t);
-  if (heap_caps_get_free_size(MALLOC_CAP_SPIRAM) >= pixelBytes + AlbumArtPolicy::PSRAM_HEADROOM) {
+  current.psramFree = heap_caps_get_free_size(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+  current.psramLargest = heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+  const bool psramReady = current.psramFree >= pixelBytes + AlbumArtPolicy::PSRAM_HEADROOM && current.psramLargest >= pixelBytes;
+  if (psramReady) {
     next->pixels = static_cast<uint16_t*>(heap_caps_malloc(pixelBytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
   }
   if (!next->pixels) {
     const String failedPath = next->path;
     next.reset();
     retire(failedPath);
-    return {};
+    return reject(psramReady ? ReserveFailure::PixelAllocation : ReserveFailure::PsramLow);
   }
+  if (status) *status = current;
   return next;
 }
 

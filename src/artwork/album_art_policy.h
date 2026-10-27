@@ -8,6 +8,11 @@ constexpr size_t SLOT_COUNT = 2;
 constexpr size_t MAX_IMAGE_BYTES = 384 * 1024;
 constexpr size_t PSRAM_HEADROOM = 512 * 1024;
 constexpr size_t INTERNAL_HEADROOM = 32 * 1024;
+constexpr size_t JPEG_INTERNAL_HEADROOM = 24 * 1024;
+
+// The pinned LovyanGFX JPEG decoder allocates a 3900-byte work pool. Pixels
+// and compressed data are already in PSRAM; preserve 24 KiB before decoding,
+// rather than applying the PNG reserve to every JPEG. Keep a contiguous margin.
 
 // A displayed image is never a scratch buffer. An HTTP/LCD reader retains a
 // shared reference; only the pool's sole reference permits recycling a slot.
@@ -20,6 +25,15 @@ constexpr size_t readableBytes(size_t size, size_t offset, size_t requested) {
 }
 
 enum class Format { Invalid, Jpeg, Png };
+constexpr size_t internalHeadroom(Format format) {
+  return format == Format::Jpeg ? JPEG_INTERNAL_HEADROOM : INTERNAL_HEADROOM;
+}
+constexpr size_t internalBlock(Format format) {
+  return format == Format::Jpeg ? 6 * 1024 : 8 * 1024;
+}
+constexpr bool internalReady(Format format, size_t freeBytes, size_t largestBlock) {
+  return freeBytes >= internalHeadroom(format) && largestBlock >= internalBlock(format);
+}
 struct ImageInfo {
   Format format = Format::Invalid;
   uint16_t width = 0;

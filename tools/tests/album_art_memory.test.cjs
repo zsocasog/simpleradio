@@ -31,7 +31,7 @@ test("fixed two-slot pool cannot recycle published, preparing or leased frames",
   assert.match(read("src/artwork/album_art_policy.h"), /SLOT_COUNT = 2;/);
   assert.match(header, /std::array<Preparation, AlbumArtPolicy::SLOT_COUNT> slots_/);
   assert.match(store, /AlbumArtPolicy::reusable\(static_cast<int>\(i\) == published_, slots_\[i\]\.use_count\(\)\)/);
-  assert.match(store, /if \(chosen < 0\) return \{\};/);
+  assert.match(store, /if \(chosen < 0\) return reject\(ReserveFailure::SlotsBusy\);/);
   assert.ok(store.indexOf("next->path = String(PATH_PREFIX)") < store.indexOf("slots_[i] = next"));
   assert.match(store, /if \(slots_\[i\]\.use_count\(\) == 1\) old = std::move\(slots_\[i\]\);/);
   for (const lock of store.matchAll(/portENTER_CRITICAL\(&mux_\);([\s\S]*?)portEXIT_CRITICAL\(&mux_\);/g)) {
@@ -41,7 +41,7 @@ test("fixed two-slot pool cannot recycle published, preparing or leased frames",
 
 test("memory allocation leaves headroom and never puts LCD pixels in internal RAM", () => {
   assert.match(store, /pixelBytes \+ AlbumArtPolicy::PSRAM_HEADROOM/);
-  assert.match(store, /MALLOC_CAP_INTERNAL \| MALLOC_CAP_8BIT\) < AlbumArtPolicy::INTERNAL_HEADROOM/);
+  assert.match(store, /AlbumArtPolicy::internalReady\(format, current.internalFree, current.internalLargest\)/);
   assert.match(store, /heap_caps_malloc\(pixelBytes, MALLOC_CAP_SPIRAM \| MALLOC_CAP_8BIT\)/);
   assert.doesNotMatch(store, /pixels.*\bmalloc\(/);
   assert.match(cache, /if \(memoryUnavailable\) \{\s*albumArtTrace\("search stopped:/);
@@ -65,10 +65,11 @@ test("stale tracks are checked after decoding and before publishing web/LCD toge
   assert.match(store, /frame->ready = true;\s*published_ =/);
 });
 
-test("async web response pins the exact immutable frame until transmission ends", () => {
+test("async web response pins immutable source until its final copy, then frees the lease", () => {
   const route = web.slice(web.indexOf("server.on(AlbumArtStore::ROUTE"), web.indexOf('"/api/artwork/cache"'));
-  assert.match(route, /\[frame\]\(uint8_t\* buffer, size_t maxLen, size_t index\)/);
-  assert.match(route, /return frame->read\(buffer, maxLen, index\);/);
+  assert.match(route, /\[frame\]\(uint8_t\* buffer, size_t maxLen, size_t index\) mutable/);
+  assert.match(route, /const size_t count = frame->read\(buffer, maxLen, index\);/);
+  assert.match(route, /count >= frame->imageBytes - index\) frame.reset\(\);/);
   assert.match(route, /frame->imageBytes/);
   assert.match(route, /Album image expired/);
   assert.match(route, /Cache-Control.*no-store/);

@@ -4,6 +4,12 @@
 
 using namespace AlbumArtPolicy;
 static_assert(SLOT_COUNT == 2);
+static_assert(internalReady(Format::Jpeg, 30 * 1024, 8 * 1024));
+static_assert(!internalReady(Format::Png, 30 * 1024, 8 * 1024));
+static_assert(!internalReady(Format::Jpeg, 23 * 1024, 8 * 1024));
+static_assert(!internalReady(Format::Jpeg, 30 * 1024, 3900));
+static_assert(internalReady(Format::Png, 32 * 1024, 8 * 1024));
+static_assert(internalHeadroom(Format::Jpeg) - 3900 > 20 * 1024);
 static_assert(reusable(false, 1));
 static_assert(!reusable(true, 1)); // Published pixels cannot be used as scratch.
 static_assert(!reusable(false, 2)); // An HTTP or LCD reader still holds a lease.

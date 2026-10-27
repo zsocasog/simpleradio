@@ -2074,11 +2074,19 @@ std::vector<String> ArtworkCache::resolveAlbumArtworkUrls(const String& artist, 
       // Search results normally omit album.artist. Verify ownership once on
       // the album endpoint, not by assuming the song artist owns the album.
       const size_t verifyCount = min<size_t>(albums.size(), 2);
+      bool verificationUnavailable = false;
       for (size_t i = 0; i < verifyCount && !cancelled() && !deadlineReached(deadlineMs); ++i) {
         const StoreArtworkAlbum& album = albums[i];
         AlbumArtworkKind kind = AlbumArtworkKind::Unverified;
         String cover = album.cover;
-        if (fetchArtworkJson("https://api.deezer.com/album/" + album.id, doc, deadlineMs, cancelled) &&
+        int lookupStatus = 0;
+        const bool lookupOk = !verificationUnavailable &&
+            fetchArtworkJson("https://api.deezer.com/album/" + album.id, doc, deadlineMs, cancelled, &lookupStatus);
+        if (!lookupOk && (lookupStatus <= 0 || lookupStatus == 503)) {
+          if (!verificationUnavailable) albumArtTrace("Deezer album verification unavailable; retaining remaining exact-match covers as unverified fallbacks");
+          verificationUnavailable = true;
+        }
+        if (lookupOk &&
             doc["id"].as<String>() == album.id) {
           const String albumArtist = doc["artist"]["name"] | "";
           const String albumTitle = doc["title"] | album.title;
@@ -4445,25 +4453,43 @@ bool ArtworkCache::prepareAlbumMemory(uint8_t*& data, size_t length, const Strin
     noteDownloadStatus("unsupported/oversized RAM cover image");
     return false;
   }
+  auto stillCurrent = [&]() {
+    const auto current = PlayerState::instance().snapshot();
+    return !idlePrewarmCancellationRequested() && current.playing &&
+           key == String(ALBUM_ART_CACHE_PREFIX) + current.artist + "|" + current.title;
+  };
+  if (!stillCurrent()) { noteDownloadStatus("stale artwork cancelled"); return false; }
   AlbumArtStore::Preparation frame;
+  AlbumArtStore::ReserveStatus reserveStatus;
   {
     ArtworkPhaseTrace phase("RAM-reserve");
-    frame = AlbumArtStore::instance().reserve(key, LCD_THUMB_SIZE);
+    const uint32_t retryUntil = millis() + 250;
+    do {
+      frame = AlbumArtStore::instance().reserve(key, LCD_THUMB_SIZE, info.format, &reserveStatus);
+      if (frame || reserveStatus.failure != AlbumArtStore::ReserveFailure::SlotsBusy ||
+          !stillCurrent() || deadlineReached(retryUntil)) break;
+      vTaskDelay(pdMS_TO_TICKS(25)); // Let a finishing web response release its lease; retain the downloaded bytes.
+    } while (true);
   }
+  if (!frame && !stillCurrent()) { noteDownloadStatus("stale artwork cancelled"); return false; }
   if (!frame) {
-    unavailable = true;
-    noteDownloadStatus("album RAM unavailable: insufficient headroom or both slots leased");
+    // A PNG may need more internal scratch than a JPEG from the next source.
+    // Keep that candidate-specific failure from stopping the whole search.
+    unavailable = reserveStatus.failure != AlbumArtStore::ReserveFailure::InternalLow ||
+                  info.format == AlbumArtPolicy::Format::Jpeg;
+    albumArtTrace("RAM reserve failed: %s; internal=%u largest=%u need=%u; PSRAM=%u largest=%u; slots=%ld,%ld published=%d",
+                  AlbumArtStore::failureName(reserveStatus.failure),
+                  static_cast<unsigned>(reserveStatus.internalFree), static_cast<unsigned>(reserveStatus.internalLargest),
+                  static_cast<unsigned>(AlbumArtPolicy::internalHeadroom(info.format)),
+                  static_cast<unsigned>(reserveStatus.psramFree), static_cast<unsigned>(reserveStatus.psramLargest),
+                  reserveStatus.references[0], reserveStatus.references[1], reserveStatus.published);
+    noteDownloadStatus(String("album RAM unavailable: ") + AlbumArtStore::failureName(reserveStatus.failure));
     return false;
   }
   auto discard = [&]() {
     const String failedPath = frame->path;
     frame.reset(); // Release the worker lease before retiring an unpublished frame.
     AlbumArtStore::instance().retire(failedPath);
-  };
-  auto stillCurrent = [&]() {
-    const auto current = PlayerState::instance().snapshot();
-    return !idlePrewarmCancellationRequested() && current.playing &&
-           key == String(ALBUM_ART_CACHE_PREFIX) + current.artist + "|" + current.title;
   };
   if (!stillCurrent()) {
     discard();
