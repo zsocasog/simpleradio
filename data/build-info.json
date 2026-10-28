@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "webuiVersion": "1.0.27",
+  "webuiVersion": "1.1.28",
   "requiresFirmwareApi": {
     "min": 1,
     "max": 1

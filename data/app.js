@@ -137,7 +137,7 @@ function sliderIsProtected(id) {
 }
 
 function setConfigValue(id, value) {
-  if (!sliderIsProtected(id)) setValue(id, value);
+  if (!sliderIsProtected(id) && !window.SRUI?.protectsConfig(id)) setValue(id, value);
 }
 
 function beginSliderGesture(node) {
@@ -330,6 +330,7 @@ function rememberButtonLabel(button) {
 
 function setButtonFeedback(button, state, label) {
   if (!button) return;
+  if (window.SRUI?.feedback(button, state, label)) return;
   const idleLabel = rememberButtonLabel(button);
   const labels = {
     idle: idleLabel,
@@ -359,6 +360,7 @@ function setConfigSaveState(state) {
   clearTimeout(configSaveStatusTimer);
   configSaveButtons().forEach(button => setButtonFeedback(button, state === "pending" ? "busy" : state));
   updateLastFmDeleteButton();
+  window.SRUI?.saveState(state);
 
   if (state === "success" || state === "error") {
     configSaveStatusTimer = setTimeout(() => {
@@ -460,6 +462,7 @@ function showView(view) {
     clearInterval(systemStatusTimer);
     systemStatusTimer = undefined;
   }
+  window.SRUI?.view(view);
 }
 
 function formatBytes(bytes) {
@@ -572,7 +575,7 @@ function renderSystemStatus(status) {
   setText("statusSystem", `${system.chipModel || "ESP32"} · ${system.cpuMhz || 0} MHz`);
   const firmwareVersion = system.version || "-";
   const webuiVersion = webui.version || "-";
-  setText("statusSystemDetail", `${t("status.versionPair", "Firmware {firmware} · WebUI {webui}", { firmware: firmwareVersion, webui: webuiVersion })} · Uptime: ${formatDuration(system.uptimeMs)} · reset: ${system.resetReasonText || "-"} · flash: ${formatBytes(system.flashSize)} · SDK: ${system.sdk || "-"}`);
+  setText("statusSystemDetail", t("status.technicalDetail", "Futásidő: {uptime} · újraindulás oka: {reset} · flash: {flash} · SDK: {sdk}", { uptime: formatDuration(system.uptimeMs), reset: system.resetReasonText || "-", flash: formatBytes(system.flashSize), sdk: system.sdk || "-" }));
   setText("statusAboutVersion", t("status.versionPair", "Firmware {firmware} · WebUI {webui}", { firmware: firmwareVersion, webui: webuiVersion }));
   setText("footerVersion", webuiVersion === "-" ? "v-" : `v${webuiVersion}`);
   setText("otaVersion", `FW v${firmwareVersion}`);
@@ -592,6 +595,7 @@ function renderSystemStatus(status) {
     }
   }
   setStatusCard("statusSystemCard", system.resetReason === 4 ? "warn" : "good");
+  window.SRUI?.systemStatus(status);
 }
 
 async function requestSystemReboot() {
@@ -735,6 +739,7 @@ function setVolume(v, preview = false) {
   const value = clampNumber(parseInt(v, 10), 0, 100, 50);
   setValue("volume", value);
   setText("volValue", `${value}%`);
+  window.SRUI?.volume?.(value);
   sendPlayerControls({ volume: value }, preview);
 }
 
@@ -966,6 +971,7 @@ function stationRow(station, compact = false, index = 0, total = 0) {
   } else {
     row.append(number, badge, info, actions);
   }
+  if (window.SRUI?.ready) window.SRUI.stationRow(row, station, compact, index, total);
   return row;
 }
 
@@ -1290,6 +1296,7 @@ function initLogoDropZone() {
 }
 
 function setOtaStatus(text, state = "") {
+  window.SRUI?.otaStatus(state);
   const status = $("otaStatus");
   if (!status) return;
   status.textContent = text;
@@ -1349,7 +1356,7 @@ function uploadOtaFile(kind, file) {
 
   const params = new URLSearchParams({ confirm: "1" });
   const endpoint = kind === "filesystem" ? `/api/ota/filesystem?${params}` : `/api/ota/firmware?${params}`;
-  const label = kind === "filesystem" ? "Data / LittleFS" : "Firmware";
+  const label = kind === "filesystem" ? t("ota.dataLabel", "Webfelület / LittleFS") : "Firmware";
   const xhr = new XMLHttpRequest();
 
   setOtaProgress(0);
@@ -1387,6 +1394,7 @@ function uploadOtaFile(kind, file) {
 }
 
 function initOtaUploads() {
+  if (window.SRUI) return; // The modern file picker stages a file before explicit upload.
   const firmwareInput = $("otaFirmwareInput");
   const fsInput = $("otaFilesystemInput");
   const firmwareDrop = $("otaFirmwareDrop");
@@ -1500,6 +1508,7 @@ function openStationSearch() {
   if (drawer) drawer.open = true;
   const input = $("searchName");
   if (input) setTimeout(() => input.focus(), 0);
+  window.SRUI?.stationDrawer("search");
 }
 
 function openStationEditor() {
@@ -1511,6 +1520,7 @@ function openStationEditor() {
   loadLogoChoices();
   const input = $("editName");
   if (input) setTimeout(() => input.focus(), 0);
+  window.SRUI?.stationDrawer("editor");
 }
 
 function initStationDrawers() {
@@ -2067,7 +2077,7 @@ function collectConfig() {
   inactiveIrActions.forEach(action => {
     data[irKey(action)] = "0";
   });
-  return data;
+  return window.SRUI?.ready ? window.SRUI.configData(data) : data;
 }
 
 async function postConfig(action = {}) {
@@ -2110,13 +2120,13 @@ async function postConfig(action = {}) {
     applyConfigToUI(savedConfig);
     const keyStatus = $("lastFmApiKeyStatus");
     if (submittedConfig.lastFmApiKey) {
-      setText("lastFmApiKeyStatus", "A Last.fm API-kulcs sikeresen elmentve.");
+      setText("lastFmApiKeyStatus", t("key.saved", "A Last.fm API-kulcs sikeresen elmentve."));
       keyStatus?.classList.add("is-saved");
       keyStatus?.classList.remove("is-error");
     } else if (submittedConfig.clearLastFmApiKey === "1") {
       setText("lastFmApiKeyStatus", savedConfig.hasLastFmApiKey
-        ? "A weben mentett kulcs törölve. Az előre megadott firmware-kulcs aktív."
-        : "A mentett Last.fm API-kulcs törölve.");
+        ? t("key.deletedOverride", "A weben mentett kulcs törölve. Az előre megadott firmware-kulcs aktív.")
+        : t("key.deleted", "A mentett Last.fm API-kulcs törölve."));
       keyStatus?.classList.toggle("is-saved", !!savedConfig.hasLastFmApiKey);
       keyStatus?.classList.remove("is-error");
     }
@@ -2124,7 +2134,7 @@ async function postConfig(action = {}) {
     return true;
   } catch (err) {
     console.warn("Config save failed", err);
-    setText("lastFmApiKeyStatus", "A mentés nem sikerült. Ellenőrizd a kapcsolatot, majd próbáld újra.");
+    setText("lastFmApiKeyStatus", t("key.saveFailed", "A mentés nem sikerült. Ellenőrizd a kapcsolatot, majd próbáld újra."));
     $("lastFmApiKeyStatus")?.classList.add("is-error");
     $("lastFmApiKeyStatus")?.classList.remove("is-saved");
     return false;
@@ -2211,7 +2221,7 @@ function deleteSavedLastFmKey() {
 function setLastFmKeyPending() {
   const status = $("lastFmApiKeyStatus");
   if (!status) return;
-  setText("lastFmApiKeyStatus", "A kulcs még nincs elmentve — kattints az API-kulcs mentése gombra.");
+  setText("lastFmApiKeyStatus", t("key.unsaved", "A kulcs még nincs elmentve — kattints az API-kulcs mentése gombra."));
   status.classList.remove("is-saved", "is-error");
 }
 
@@ -2321,12 +2331,12 @@ function applyConfigToUI(config) {
   setConfigValue("displayArtworkMode", config.displayArtworkMode || "logo");
   setConfigValue("lastFmApiKey", "");
   $("lastFmApiKey").placeholder = config.hasSavedLastFmApiKey
-    ? "Van mentett kulcs — üresen hagyva megmarad"
-    : config.hasLastFmApiKey ? "Előre megadott kulcs aktív — új kulcs beillesztése" : "API-kulcs beillesztése";
+    ? t("key.savedPlaceholder", "Van mentett kulcs — üresen hagyva megmarad")
+    : config.hasLastFmApiKey ? t("key.firmwarePlaceholder", "Előre megadott kulcs aktív — új kulcs beillesztése") : t("key.placeholder", "API-kulcs beillesztése");
   setText("lastFmApiKeyStatus", config.hasSavedLastFmApiKey
-    ? "API-kulcs elmentve. A mező biztonsági okból nem jeleníti meg."
-    : config.hasLastFmApiKey ? "A firmware-ben előre megadott API-kulcs aktív."
-      : "A kulcs nincs megadva.");
+    ? t("key.savedHidden", "API-kulcs elmentve. A mező biztonsági okból nem jeleníti meg.")
+    : config.hasLastFmApiKey ? t("key.firmwareActive", "A firmware-ben előre megadott API-kulcs aktív.")
+      : t("key.absent", "A kulcs nincs megadva."));
   updateLastFmDeleteButton();
   $("lastFmApiKeyStatus")?.classList.toggle("is-saved", !!config.hasLastFmApiKey);
   $("lastFmApiKeyStatus")?.classList.remove("is-error");
@@ -2389,6 +2399,7 @@ function applyConfigToUI(config) {
   setConfigValue("frontLedColor", ledColor);
   setConfigValue("frontLedColorText", ledColor);
   syncFrontLedControls();
+  window.SRUI?.configuration(config);
 }
 
 async function loadConfig() {
@@ -2462,9 +2473,9 @@ function updateCover(state) {
 }
 
 function updatePlayButtons() {
-  const text = playing ? t("player.stop", "Stop") : t("player.play", "Play");
+  const text = playing ? t("player.stop", "Megállítás") : t("player.play", "Lejátszás");
   const chip = $("playState");
-  setText("playState", playing ? "PLAY" : "STOP");
+  setText("playState", playing ? t("status.playing", "Lejátszás") : t("status.stopped", "Megállítva"));
   if (chip) chip.classList.toggle("is-playing", playing);
 
   ["playButton", "playButtonSmall"].forEach(id => {
@@ -2472,7 +2483,7 @@ function updatePlayButtons() {
     if (!button) return;
     button.setAttribute("aria-label", text);
     button.title = text;
-    if (id === "playButtonSmall") button.textContent = text;
+    if (id === "playButtonSmall" && !window.SRUI?.ready) button.textContent = text;
     button.classList.toggle("is-playing", playing);
   });
 }
@@ -2516,6 +2527,7 @@ function updateUI(state) {
   setText("current-station", state.station || t("state.chooseStation", "Állomás kiválasztása"));
   updateCover(state);
   if (stationSelectionChanged) renderStations();
+  window.SRUI?.state(state);
 }
 
 applyLanguage();

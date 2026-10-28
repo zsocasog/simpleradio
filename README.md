@@ -4,7 +4,7 @@
 
 **SimpleRadio** is an ESP32-S3 internet-radio firmware with a modern web interface and a dedicated LCD player view. It targets a self-built radio with I2S audio, physical controls and optional smart-home integration.
 
-> Current version: **1.0.27** · ESP32-S3 N16R8 · LittleFS · English and Hungarian UI
+> Current version: **1.1.28** · ESP32-S3 N16R8 · LittleFS · English and Hungarian UI
 
 ![SimpleRadio LCD player](.screenshots/lcd/player1.jpg)
 
@@ -54,7 +54,22 @@ The first installation requires both uploads. Re-upload the data image after cha
 
 After the first wired upload, firmware and data updates are available from the System page. A data OTA replaces LittleFS; WiFi, configuration, state and stations are backed up, while the artwork cache is regenerated.
 
-Firmware and WebUI/data have separate release versions plus a shared Web API compatibility level. Different release versions may run together when their API levels are compatible. If the WebUI manifest is missing or incompatible, the firmware serves a LittleFS-independent recovery OTA page instead of the normal interface, allowing the matching firmware or data image to be installed. `data/build-info.json` is generated automatically during builds from `src/config/version.h`.
+Firmware and WebUI/data have separate release versions plus a shared Web API compatibility level. Different release versions may run together when their API levels are compatible. If the WebUI manifest is missing or incompatible, the firmware serves a LittleFS-independent recovery OTA page instead of the normal interface, allowing the matching firmware or data image to be installed.
+
+Release versions are edited only in `src/config/version.h`: `APP_VERSION` is the
+firmware version and `WEB_UI_VERSION` is the WebUI/data version. They can be
+updated independently; the API compatibility settings remain in the same file.
+
+Every PlatformIO firmware or LittleFS build generates `data/build-info.json` and
+refreshes versioned HTML asset links automatically. The icon sprite inherits the
+WebUI script's cache key. A content fingerprint also refreshes cached assets when
+the UI changes without a release-version bump; no manual `design` counter is
+needed. The README's current firmware version is synchronized during builds.
+
+The running radio still reports the firmware actually installed and the WebUI
+manifest actually present in LittleFS, so uploading only one component does not
+hide an older version of the other. Firmware-only changes require a firmware
+upload; WebUI-only changes require a data upload; updating both requires both.
 
 While playback is requested, an interrupted stream is retried indefinitely when stream retry is enabled; the delay increases up to 60 seconds. After WiFi loss, the firmware explicitly attempts reconnection every five seconds and resumes stream recovery when the saved network returns. The LCD distinguishes WiFi loss, station connection and stream retry states.
 

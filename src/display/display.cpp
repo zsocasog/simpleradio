@@ -19,6 +19,7 @@
 #include <math.h>
 #include <string.h>
 #include <time.h>
+#include <esp_heap_caps.h>
 
 static constexpr bool PANEL_REQUIRES_INVERT = DISPLAY_INVERT_PANEL;
 
@@ -142,11 +143,13 @@ static constexpr int PICKER_ROW_H = sy(48);
 static constexpr int PICKER_VISIBLE_ROWS = 5;
 static constexpr int PICKER_ROW_X = sx(26);
 static constexpr int PICKER_ROW_W = SCREEN_W - sx(52);
-static constexpr int PICKER_ROW_Y = sy(64);
+static constexpr int PICKER_ROW_Y = sy(54);
 static constexpr int PICKER_NUMBER_X = PICKER_ROW_X + sx(10);
 static constexpr int PICKER_NUMBER_W = sx(48);
-static constexpr int PICKER_TEXT_X = PICKER_ROW_X + PICKER_NUMBER_W + sx(20);
-static constexpr int PICKER_TEXT_W = PICKER_ROW_X + PICKER_ROW_W - PICKER_TEXT_X - sx(10);
+static constexpr int PICKER_LOGO_SIZE = ss(32);
+static constexpr int PICKER_LOGO_X = PICKER_ROW_X + sx(8);
+static constexpr int PICKER_TEXT_X = PICKER_LOGO_X + PICKER_LOGO_SIZE + sx(14);
+static constexpr int PICKER_TEXT_W = PICKER_ROW_X + PICKER_ROW_W - PICKER_TEXT_X - sx(40);
 static constexpr int PICKER_TEXT_H = PICKER_ROW_H - sy(6);
 static constexpr unsigned long PICKER_MARQUEE_MS = 110;
 static constexpr unsigned long PICKER_MARQUEE_HOLD_MS = 650;
@@ -1760,9 +1763,54 @@ static void drawInfoRegion(const DisplayModel& m) {
   String artist;
   displayTitleArtist(m, title, artist);
 
-  const int32_t infoCenterX = INFO_X + INFO_W / 2;
-  drawCenteredWrappedTextWithFont(title, infoCenterX, TITLE_CENTER_Y, INFO_W, titleFont(), cText, 3, cBg);
-  drawCenteredWrappedTextWithFont(artist, infoCenterX, ARTIST_CENTER_Y, INFO_W, artistFont(), cAccent, 2, cBg);
+  const bool showStation = m.playing && m.title.length() && title == m.title;
+  const LcdFont* heading = &titleFont();
+  const LcdFont* byline = &artistFont();
+  String titleLines[3], artistLines[2];
+  auto wrap = [](String text, const LcdFont& font, String* lines, int limit) {
+    text = lcdSafeText(text); text.trim();
+    int count = 0;
+    while (text.length() && count < limit) {
+      String line, rest = text;
+      while (rest.length()) {
+        int space = rest.indexOf(' ');
+        String word = space < 0 ? rest : rest.substring(0, space);
+        String next = line.length() ? line + " " + word : word;
+        if (uiTextWidth(next, font) > INFO_W) break;
+        line = next;
+        rest = space < 0 ? "" : rest.substring(space + 1);
+        rest.trim();
+      }
+      if (!line.length() || (count == limit - 1 && rest.length())) {
+        line = fitTextForFont(text, INFO_W, font); rest = "";
+      }
+      lines[count++] = line; text = rest;
+    }
+    return count;
+  };
+  int titleCount = 0, artistCount = 0, blockHeight = 0;
+  const int stationHeight = showStation ? fontLineHeight(kLcdFontSmall) + sy(6) : 0;
+  for (int pass = 0; pass < 3; ++pass) {
+    titleCount = wrap(title, *heading, titleLines, COMPACT_LCD ? 2 : 3);
+    artistCount = wrap(artist, *byline, artistLines, 2);
+    blockHeight = titleCount * (fontLineHeight(*heading) + sy(3)) - sy(3);
+    if (artistCount) blockHeight += sy(8) + artistCount * (fontLineHeight(*byline) + sy(3)) - sy(3);
+    if (blockHeight + stationHeight <= INFO_REGION_H - sy(8)) break;
+    heading = COMPACT_LCD ? &kLcdFontMedium : &kLcdFontArtist;
+    byline = pass == 0 && !COMPACT_LCD ? &kLcdFontMedium : &kLcdFontSmall;
+  }
+  if (showStation) drawUiText(fitTextForFont(lcdSafeText(m.station), INFO_W, kLcdFontSmall),
+      INFO_X, INFO_REGION_Y + sy(3), kLcdFontSmall, cMuted, cBg);
+  int y = INFO_REGION_Y + stationHeight + max(0, (INFO_REGION_H - stationHeight - blockHeight) / 2);
+  for (int i = 0; i < titleCount; ++i) {
+    drawUiText(titleLines[i], INFO_X, y, *heading, cText, cBg);
+    y += fontLineHeight(*heading) + sy(3);
+  }
+  if (artistCount) y += sy(5);
+  for (int i = 0; i < artistCount; ++i) {
+    drawUiText(artistLines[i], INFO_X, y, *byline, cAccent, cBg);
+    y += fontLineHeight(*byline) + sy(3);
+  }
 }
 
 static void drawStationFooter(const DisplayModel& m) {
@@ -1940,6 +1988,64 @@ static int pickerPageStartForIndex(int selectedIndex, int stationCount) {
   return clampPickerWindowStart(start, stationCount);
 }
 
+struct PickerLogo {
+  uint16_t* pixels = nullptr;
+  String path;
+  int station = -1;
+  uint32_t revision = 0;
+  time_t modified = 0;
+  bool ready = false;
+};
+static PickerLogo pickerLogos[PICKER_VISIBLE_ROWS];
+
+// Reuse the existing prepared station bitmap. No downloads, flash writes or
+// JPEG/PNG decoding in the picker; at most five small PSRAM images are retained.
+static bool loadPickerLogo(int row, const Station& station) {
+  PickerLogo& entry = pickerLogos[row];
+  String source;
+  const uint32_t revision = StationManager::instance().revision();
+  if (!ArtworkCache::instance().stationArtworkReady(station.id, &source) || !source.length()) {
+    entry.ready = false; return false;
+  }
+  const String path = ArtworkCache::instance().lcdThumbnailPath(source);
+  File file = LittleFS.open(path, "r");
+  if (!file) { entry.ready = false; return false; }
+  const time_t modified = file.getLastWrite();
+  if (entry.ready && entry.station == station.id && entry.path == path &&
+      entry.revision == revision && entry.modified == modified) return true;
+  entry.ready = false;
+  uint8_t header[8];
+  if (file.read(header, 8) != 8 || memcmp(header, "SR56", 4) ||
+      (header[4] | (header[5] << 8)) != ART_SIZE ||
+      (header[6] | (header[7] << 8)) != ART_SIZE ||
+      file.size() != 8 + ART_SIZE * ART_SIZE * sizeof(uint16_t)) return false;
+  if (!entry.pixels) entry.pixels = static_cast<uint16_t*>(heap_caps_malloc(
+      PICKER_LOGO_SIZE * PICKER_LOGO_SIZE * sizeof(uint16_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+  if (!entry.pixels) return false;
+  uint16_t sourceRow[ART_SIZE];
+  for (int y = 0; y < PICKER_LOGO_SIZE; ++y) {
+    uint32_t red[PICKER_LOGO_SIZE] = {}, green[PICKER_LOGO_SIZE] = {}, blue[PICKER_LOGO_SIZE] = {};
+    const int y0 = y * ART_SIZE / PICKER_LOGO_SIZE;
+    const int y1 = (y + 1) * ART_SIZE / PICKER_LOGO_SIZE;
+    for (int sourceY = y0; sourceY < y1; ++sourceY) {
+      if (file.read(reinterpret_cast<uint8_t*>(sourceRow), sizeof(sourceRow)) != sizeof(sourceRow)) return false;
+      for (int x = 0; x < PICKER_LOGO_SIZE; ++x) {
+        for (int sourceX = x * ART_SIZE / PICKER_LOGO_SIZE; sourceX < (x + 1) * ART_SIZE / PICKER_LOGO_SIZE; ++sourceX) {
+          uint16_t pixel = sourceRow[sourceX];
+          red[x] += pixel >> 11; green[x] += (pixel >> 5) & 63; blue[x] += pixel & 31;
+        }
+      }
+    }
+    for (int x = 0; x < PICKER_LOGO_SIZE; ++x) {
+      const unsigned count = (y1 - y0) * ((x + 1) * ART_SIZE / PICKER_LOGO_SIZE - x * ART_SIZE / PICKER_LOGO_SIZE);
+      entry.pixels[y * PICKER_LOGO_SIZE + x] = ((red[x] / count) << 11) | ((green[x] / count) << 5) | (blue[x] / count);
+    }
+  }
+  entry.path = path; entry.station = station.id; entry.revision = revision;
+  entry.modified = modified; entry.ready = true;
+  return true;
+}
+
 static void drawStationPickerPagedRow(int row, int stationIndex, int selectedId, int scrollOffset = 0) {
   StationManager& manager = StationManager::instance();
   int y = PICKER_ROW_Y + row * PICKER_ROW_H;
@@ -1950,24 +2056,32 @@ static void drawStationPickerPagedRow(int row, int stationIndex, int selectedId,
   bool selected = station.id == selectedId;
   String stationName = lcdSafeText(station.name);
   const int rowH = PICKER_ROW_H - sy(6);
-  const uint16_t rowBg = selected ? cAccent : blend565(cPanel, cBg, 222);
-  const uint16_t rowBorder = selected ? blend565(cText, cAccent, 110) : blend565(cLine, cBg, 160);
-  const uint16_t numberBg = selected ? blend565(cOnAccent, cAccent, 48) : blend565(cAccent, cBg, 70);
-  const uint16_t numberFg = selected ? cOnAccent : cAccent;
-  const uint16_t textFg = selected ? cOnAccent : cText;
-
-  lcd.fillRoundRect(PICKER_ROW_X, y, PICKER_ROW_W, rowH, ss(7), rowBg);
-  lcd.drawRoundRect(PICKER_ROW_X, y, PICKER_ROW_W, rowH, ss(7), rowBorder);
-  lcd.fillRoundRect(PICKER_NUMBER_X, y + sy(7), PICKER_NUMBER_W, rowH - sy(14), ss(6), numberBg);
+  const uint16_t rowBg = selected ? blend565(cAccent, cBg, 28) : cBg;
+  const uint16_t textFg = cText;
+  lcd.fillRect(PICKER_ROW_X, y, PICKER_ROW_W, rowH, rowBg);
+  if (selected) lcd.fillRoundRect(PICKER_ROW_X, y, max(2, ss(3)), rowH, ss(1), cAccent);
+  lcd.drawFastHLine(PICKER_ROW_X + sx(8), y + rowH, PICKER_ROW_W - sx(16), blend565(cLine, cBg, 150));
+  const int logoY = y + (rowH - PICKER_LOGO_SIZE) / 2;
+  if (loadPickerLogo(row, station)) {
+    lcd.startWrite();
+    lcd.setAddrWindow(PICKER_LOGO_X, logoY, PICKER_LOGO_SIZE, PICKER_LOGO_SIZE);
+    lcd.writePixels(pickerLogos[row].pixels, PICKER_LOGO_SIZE * PICKER_LOGO_SIZE, false);
+    lcd.endWrite();
+  } else {
+    const uint16_t mat = blend565(cAccent, cBg, 35);
+    lcd.fillRoundRect(PICKER_LOGO_X, logoY, PICKER_LOGO_SIZE, PICKER_LOGO_SIZE, ss(4), mat);
+    drawUiText(String(stationIndex + 1), PICKER_LOGO_X + PICKER_LOGO_SIZE / 2,
+               y + rowH / 2, kLcdFontSmall, cAccent, mat, middle_center);
+  }
+  drawUiText(String(stationIndex + 1), PICKER_ROW_X + PICKER_ROW_W - sx(5),
+             y + rowH / 2, kLcdFontSmall, cMuted, rowBg, middle_right);
+  const auto playback = PlayerState::instance().snapshot();
+  if (playback.playing && playback.stationId == station.id) {
+    int playingX = PICKER_ROW_X + PICKER_ROW_W - sx(33);
+    for (int i = 0; i < 3; ++i) lcd.fillRect(playingX + i * ss(3), y + rowH / 2 - sy(3 + i * 2),
+        max(1, ss(2)), sy(6 + i * 2), cAccent);
+  }
   setUiFont(2);
-  drawUiText(String(stationIndex + 1),
-             PICKER_NUMBER_X + PICKER_NUMBER_W / 2,
-             y + rowH / 2,
-             *currentUiFont,
-             numberFg,
-             numberBg,
-             middle_center);
-  setUiFont(3);
   const int textY = y + (rowH - fontLineHeight(*currentUiFont)) / 2;
 
   if (selected) {
@@ -2000,9 +2114,9 @@ static void drawStationPickerMarqueeText(int row, const String& stationName, int
   }
 
   const int y = PICKER_ROW_Y + row * PICKER_ROW_H;
-  setUiFont(3);
-  const uint16_t rowBg = cAccent;
-  const uint16_t textFg = cOnAccent;
+  setUiFont(2);
+  const uint16_t rowBg = blend565(cAccent, cBg, 28);
+  const uint16_t textFg = cText;
   const int rowH = PICKER_ROW_H - sy(6);
   const int textY = y + (rowH - fontLineHeight(*currentUiFont)) / 2;
   const int spriteTextY = (rowH - fontLineHeight(*currentUiFont)) / 2;
@@ -2060,20 +2174,20 @@ static void drawStationPickerPagedPage(int selectedId, int windowStart) {
 
   drawPlayerSurface();
 
-  setUiFont(3);
+  setUiFont(2);
   drawUiText(I18n::STATIONS_TITLE, sx(28), sy(18), *currentUiFont, cText, cBg);
 
   setUiFont(1);
   drawUiText(I18n::STATION_PICKER_HINT_FULL,
-             SCREEN_W - sx(28),
-             sy(22),
+             SCREEN_W / 2,
+             SCREEN_H - sy(20),
              *currentUiFont,
              cMuted,
              cBg,
-             top_right);
+             top_center);
   drawUiText(String(stationCount) + I18n::STATIONS_SAVED_SUFFIX,
              SCREEN_W - sx(28),
-             sy(40),
+             sy(24),
              *currentUiFont,
              blend565(cMuted, cBg, 180),
              cBg,
@@ -3340,6 +3454,22 @@ void Display::renderStationPickerMarqueeFrame() {
   }
 
   unsigned long now = millis();
+  static unsigned long lastLogoCheck = 0;
+  static int nextLogoRow = 0;
+  if (now - lastLogoCheck >= 250) {
+    lastLogoCheck = now;
+    const int row = nextLogoRow++ % PICKER_VISIBLE_ROWS;
+    Station visible;
+    if (StationManager::instance().stationAtIndex(stationPickerWindowStart + row, visible)) {
+      const bool wasReady = pickerLogos[row].ready;
+      const String previousPath = pickerLogos[row].path;
+      const time_t previousModified = pickerLogos[row].modified;
+      const bool ready = loadPickerLogo(row, visible);
+      if (wasReady != ready || (ready && (previousPath != pickerLogos[row].path || previousModified != pickerLogos[row].modified))) {
+        drawStationPickerPagedRow(row, stationPickerWindowStart + row, stationPickerSelectedId);
+      }
+    }
+  }
   if (stationPickerMarqueeSelectedId != stationPickerSelectedId) {
     resetStationPickerMarqueeNow(stationPickerSelectedId);
   }
@@ -3356,7 +3486,7 @@ void Display::renderStationPickerMarqueeFrame() {
   Station station;
   if (!manager.stationAtIndex(selectedIndex, station)) return;
 
-  setUiFont(3);
+  setUiFont(2);
   String stationName = lcdSafeText(station.name);
   int32_t textWidth = uiTextWidth(stationName);
   if (textWidth <= PICKER_TEXT_W) {

@@ -4,7 +4,8 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>SimpleRadio</title>
-  <link rel="stylesheet" href="style.css?v=1.0.27">
+  <link rel="stylesheet" href="style.css?v=1.1.28&amp;ui=1718f927eadd">
+  <link rel="stylesheet" href="ui.css?v=1.1.28&amp;ui=1718f927eadd">
 </head>
 <body>
   <div class="app-shell">
@@ -29,7 +30,11 @@
 
       <div class="top-actions">
         <span id="playState" class="state-chip">STOP</span>
-        <button id="playButtonSmall" class="top-play-btn" type="button" onclick="togglePlay()">Play</button>
+        <div id="headerTransport" class="transport header-transport" role="group" aria-label="Lejátszásvezérlés">
+          <button class="transport-icon" type="button" onclick="prevStation()" aria-label="Előző állomás" title="Előző állomás"><span class="transport-glyph icon-prev"></span></button>
+          <button id="playButtonSmall" class="play-main transport-icon" type="button" onclick="togglePlay()" aria-label="Play" title="Play"><span class="transport-glyph icon-play"></span></button>
+          <button class="transport-icon" type="button" onclick="nextStation()" aria-label="Következő állomás" title="Következő állomás"><span class="transport-glyph icon-next"></span></button>
+        </div>
       </div>
     </header>
 
@@ -213,7 +218,7 @@
                   <span class="setting-range"><input id="soundEqLow" type="range" min="-12" max="6" value="0" oninput="mirrorEq('low', this.value, true)"><strong id="soundEqLowValue">0 dB</strong></span>
                 </label>
                 <label class="setting-row">
-                  <span>Közép</span>
+                  <span data-i18n="sound.midrange">Közép</span>
                   <span class="setting-range"><input id="soundEqMid" type="range" min="-12" max="6" value="0" oninput="mirrorEq('mid', this.value, true)"><strong id="soundEqMidValue">0 dB</strong></span>
                 </label>
                 <label class="setting-row">
@@ -545,7 +550,7 @@
             <button class="primary" type="button" data-config-save onclick="saveConfigNow()">API-kulcs mentése</button>
             <button id="deleteLastFmApiKey" class="danger" type="button" onclick="deleteSavedLastFmKey()" disabled>Mentett kulcs törlése</button>
           </div>
-          <small class="form-note">A törlés gomb a weben elmentett kulcsot távolítja el. Az előre megadott firmware-kulcs ettől aktív marad.</small>
+          <small id="lastFmKeyDeleteHelp" class="form-note">A törlés gomb a weben elmentett kulcsot távolítja el. Az előre megadott firmware-kulcs ettől aktív marad.</small>
           <ol class="lastfm-key-help">
             <li>Jelentkezz be a Last.fm-fiókodba, majd nyisd meg a <a href="https://www.last.fm/api/account/create" target="_blank" rel="noopener noreferrer">Last.fm API-fiók létrehozása</a> oldalt.</li>
             <li>Adj nevet az alkalmazásnak (például SimpleRadio), töltsd ki a kért adatokat, majd hozd létre az API-fiókot.</li>
@@ -640,12 +645,12 @@
     <footer class="app-footer" aria-label="SimpleRadio">
       <a href="https://github.com/zsocasog/simpleradio" target="_blank" rel="noopener noreferrer">SimpleRadio</a>
       <span aria-hidden="true">·</span>
-      <span data-i18n="about.tagline">ESP32 internetes rádió</span>
-      <span aria-hidden="true">·</span>
       <span id="footerVersion">v-</span>
     </footer>
   </div>
-  <script src="i18n.js?v=1.0.27&amp;ui=logos2"></script>
-  <script src="app.js?v=1.0.27&amp;ui=logos2"></script>
+  <script src="i18n-catalog.js?v=1.1.28&amp;ui=1718f927eadd"></script>
+  <script src="i18n.js?v=1.1.28&amp;ui=1718f927eadd"></script>
+  <script src="ui.js?v=1.1.28&amp;ui=1718f927eadd"></script>
+  <script src="app.js?v=1.1.28&amp;ui=1718f927eadd"></script>
 </body>
 </html>

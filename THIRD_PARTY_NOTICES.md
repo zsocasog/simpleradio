@@ -54,6 +54,14 @@ SimpleRadio is distributed under GPLv3.
 
 ## Attribution and source availability
 
+### Tabler Icons (web interface)
+
+- Source: [tabler/tabler-icons](https://github.com/tabler/tabler-icons)
+- Bundled revision: `ed177a085b652fe04ec4f37ced867c94621e7840`
+- License: MIT, Copyright (c) 2020–2026 Paweł Kuna
+- Selected outline symbols are bundled in `data/icons.svg`; the full license is
+  included in `data/licenses/tabler-icons.txt` and distributed with the web UI.
+
 The project was inspired by [e2002/yoRadio](https://github.com/e2002/yoradio),
 which is GPL-3.0 licensed. Any code copied from an upstream project must keep
 the upstream copyright and license notices.

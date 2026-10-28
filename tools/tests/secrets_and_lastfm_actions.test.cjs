@@ -60,6 +60,7 @@ function frontend(savedKey = true) {
     configSaveDeferred: false, sliderGestures: new Map(), sliderDirty: new Map(),
     acknowledgeConfigSliders() {},
     configSavePending: false, configSaveTimer: 0, URLSearchParams, console, clearTimeout() {},
+    t: (_key, fallback) => fallback,
     $: () => ({ ...node, classList: { add() {}, remove() {}, toggle() {} } }),
     collectConfig: () => ({ lastFmApiKey: "unsaved-typed-key" }),
     setConfigSaveState() {}, setText: (id, value) => labels.set(id, value),

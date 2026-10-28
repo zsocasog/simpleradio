@@ -24,7 +24,7 @@ static constexpr const char* STREAM_FAILED = "Az adó nem érhető el";
 static constexpr const char* STATIONS_TITLE = "Állomások";
 static constexpr const char* STATIONS_SAVED_SUFFIX = " mentett";
 static constexpr const char* STATION_PICKER_HINT_SHORT = "teker: választ  nyom: indít";
-static constexpr const char* STATION_PICKER_HINT_FULL = "teker/fel-le: választ  play/nyom: indít";
+static constexpr const char* STATION_PICKER_HINT_FULL = "teker/fel-le: választ  nyom: indít";
 static constexpr const char* TIME_SYNC = "Idő szinkronizálás...";
 
 static constexpr const char* OTA_FAILED = "OTA frissítés sikertelen";
@@ -40,16 +40,16 @@ static constexpr const char* OTA_WRITE_FAILED = "OTA írási hiba";
 static constexpr const char* OTA_UPLOAD_INCOMPLETE = "OTA feltöltés nem fejeződött be";
 
 static constexpr const char* RESET_POWERON = "Bekapcsolás";
-static constexpr const char* RESET_EXTERNAL = "Külső reset";
-static constexpr const char* RESET_SOFTWARE = "Szoftveres reset";
-static constexpr const char* RESET_PANIC = "Panic / kivétel";
-static constexpr const char* RESET_INT_WDT = "Interrupt watchdog";
-static constexpr const char* RESET_TASK_WDT = "Task watchdog";
-static constexpr const char* RESET_WDT = "Watchdog";
-static constexpr const char* RESET_DEEP_SLEEP = "Deep sleep ébresztés";
-static constexpr const char* RESET_BROWNOUT = "Brownout";
-static constexpr const char* RESET_SDIO = "SDIO reset";
-static constexpr const char* RESET_USB = "USB reset";
+static constexpr const char* RESET_EXTERNAL = "Külső újraindítás";
+static constexpr const char* RESET_SOFTWARE = "Szoftveres újraindítás";
+static constexpr const char* RESET_PANIC = "Végzetes hiba / kivétel";
+static constexpr const char* RESET_INT_WDT = "Megszakítás időtúllépése";
+static constexpr const char* RESET_TASK_WDT = "Feladat időtúllépése";
+static constexpr const char* RESET_WDT = "Felügyeleti időtúllépés";
+static constexpr const char* RESET_DEEP_SLEEP = "Ébredés mélyalvásból";
+static constexpr const char* RESET_BROWNOUT = "Tápfeszültség-esés";
+static constexpr const char* RESET_SDIO = "SDIO újraindítás";
+static constexpr const char* RESET_USB = "USB újraindítás";
 static constexpr const char* RESET_UNKNOWN = "Ismeretlen";
 
 static constexpr const char* MQTT_CONNECTION_TIMEOUT_TEXT = "Kapcsolódási időtúllépés";

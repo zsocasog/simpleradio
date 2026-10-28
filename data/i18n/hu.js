@@ -1,50 +1,14 @@
+/* Translate dictionary values only; keep keys and {placeholders}. */
 (function () {
-  function formatText(text, vars) {
-    return String(text).replace(/\{([a-zA-Z0-9_]+)\}/g, (_, key) =>
-      vars && Object.prototype.hasOwnProperty.call(vars, key) ? vars[key] : `{${key}}`
-    );
-  }
-
-  function installSimpleRadioI18n() {
-    const bundle = window.SR_I18N || {};
-    const dict = bundle.dict || {};
-    window.srT = (key, fallback, vars) =>
-      formatText(Object.prototype.hasOwnProperty.call(dict, key) ? dict[key] : fallback || key, vars);
-    window.srApplyI18n = (root = document) => {
-      if (root === document && bundle.lang) document.documentElement.lang = bundle.lang;
-      (bundle.staticText || []).forEach(([selector, text]) => {
-        root.querySelectorAll(selector).forEach((node) => {
-          node.textContent = text;
-        });
-      });
-      (bundle.attrs || []).forEach(([selector, attr, value]) => {
-        root.querySelectorAll(selector).forEach((node) => {
-          node.setAttribute(attr, value);
-        });
-      });
-      root.querySelectorAll("[data-i18n]").forEach((node) => {
-        const key = node.dataset.i18n;
-        if (key) node.textContent = window.srT(key, node.textContent);
-      });
-      const replaceText = bundle.replaceText || {};
-      const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
-      while (walker.nextNode()) {
-        const node = walker.currentNode;
-        const trimmed = node.nodeValue.trim();
-        if (trimmed && Object.prototype.hasOwnProperty.call(replaceText, trimmed)) {
-          node.nodeValue = node.nodeValue.replace(trimmed, replaceText[trimmed]);
-        }
-      }
-    };
-    const apply = () => window.srApplyI18n(document);
-    if (document.readyState === "loading") {
-      document.addEventListener("DOMContentLoaded", apply, { once: true });
-    } else {
-      apply();
-    }
-  }
-
   const dict = {
+    "ui.playbackControls": "Lejátszásvezérlés",
+    "ui.systemInfo": "Rendszerinformációk",
+    "ui.mute": "Némítás",
+    "ui.unmute": "Némítás feloldása",
+    "ui.muted": "Némítva",
+    "ui.changeFile": "Másik fájl választása",
+    "ui.mobileNavigation": "Mobilnavigáció",
+    "ui.more": "Több",
     "save.idle": "Mentés",
     "save.busy": "Mentés...",
     "save.done": "Mentve",
@@ -57,7 +21,7 @@
     "status.stopped": "Megállítva",
     "status.playbackDetail": "{station} · hangerő {volume}% · {clients} web kliens",
     "status.version": "Verzió {version}",
-    "status.versionPair": "Firmware {firmware} · WebUI {webui}",
+    "status.versionPair": "Firmware {firmware} · Webfelület {webui}",
     "about.label": "Névjegy",
     "about.tagline": "ESP32 internetes rádió",
     "stream.waitingForNetwork": "Nincs WiFi kapcsolat · újracsatlakozás...",
@@ -67,7 +31,7 @@
     "stream.failed": "Az adó nem érhető el, az automatikus újrapróbálkozás ki van kapcsolva.",
     "status.storage": "Tárhely",
     "status.free": "szabad",
-    "status.filesystemDetail": "LittleFS: {used} / {total} használatban · logócache: {cache} / {limit} küszöbérték · takarítási cél: {target}",
+    "status.filesystemDetail": "LittleFS: {used} / {total} használatban · logótár: {cache} / {limit} küszöbérték · takarítási cél: {target}",
     "status.withAuth": "hitelesítéssel",
     "hardware.none": "Nincs",
     "hardware.encoderCount": "{count} enkóder",
@@ -77,7 +41,7 @@
     "hardware.irUnavailable": "Az IR-vevő nincs engedélyezve a firmware hardverprofiljában.",
     "state.noStation": "Nincs állomás",
     "state.noStationSelected": "Nincs kiválasztott állomás",
-    "state.noMetadata": "Nincs metadata",
+    "state.noMetadata": "Nincs számadat",
     "state.playbackPaused": "Lejátszás szünetel",
     "state.chooseStation": "Állomás kiválasztása",
     "status.connected": "Csatlakozva",
@@ -126,8 +90,8 @@
     "player.volumeDownTitle": "Hangerő -5%",
     "player.volumeUp": "Hangerő növelése 5 százalékkal",
     "player.volumeUpTitle": "Hangerő +5%",
-    "player.play": "Play",
-    "player.stop": "Stop",
+    "player.play": "Lejátszás",
+    "player.stop": "Megállítás",
     "display.footer.datetime": "Dátum és idő",
     "display.footer.spectrum": "Spektrum (24 sáv, FFT)",
     "display.vuSensitivity": "VU / spektrum érzékenység",
@@ -150,18 +114,18 @@
     "ir.ready": "Készenlét",
     "ir.notLearned": "Nincs kód",
     "action.cancel": "Mégse",
-    "ir.action.power": "Power / stop",
-    "ir.action.volUp": "VOL+",
-    "ir.action.hash": "FUNC / STOP",
+    "ir.action.power": "Készenlét / leállítás",
+    "ir.action.volUp": "Hangerő növelése",
+    "ir.action.hash": "Leállítás",
     "ir.action.prev": "Előző állomás",
-    "ir.action.toggle": "Play / pause",
+    "ir.action.toggle": "Lejátszás / megállítás",
     "ir.action.next": "Következő állomás",
     "ir.action.down": "Le / előző állomás",
-    "ir.action.volDown": "VOL-",
+    "ir.action.volDown": "Hangerő csökkentése",
     "ir.action.up": "Fel / következő állomás",
     "ir.action.digit0": "0",
-    "ir.action.mute": "EQ / kijelzésváltás",
-    "ir.action.list": "ST / REPT / állomáslista",
+    "ir.action.mute": "Kijelzésváltás",
+    "ir.action.list": "Állomáslista",
     "ir.action.digit1": "1",
     "ir.action.digit2": "2",
     "ir.action.digit3": "3",
@@ -194,9 +158,347 @@
     "wifi.saving": "Mentés...",
     "wifi.saved": "Mentve. Újraindítás...",
     "wifi.savedMayReboot": "Mentve, a rádió újraindulhat",
-    "wifi.saveFailed": "Mentés sikertelen"
-  };
-
+    "wifi.saveFailed": "Mentés sikertelen",
+    "text.2dfd57f6af51": "/logos/radio.png",
+    "text.cda6d76a2b8f": "0 mentve",
+    "text.3460cb87a6ba": "0 állomás",
+    "text.32fdcc7f1ec6": "A bal és jobb csatorna aránya",
+    "text.024e9d132502": "A firmware frissítés után az ESP újraindul. A data frissítés teljes LittleFS cserét végez; a WiFi, config,\n            állapot és állomáslista mentésre kerül. A cache újragenerálódik, a kézzel feltöltött logók akkor maradnak\n            meg, ha benne vannak a feltöltött data image-ben.",
+    "text.dec15b5dffab": "A fájlok a /logos mappába kerülnek.",
+    "text.778473d517a6": "A főképernyőn és a webes lejátszón megjelenő kép",
+    "text.d7634fbd68c7": "A hangerőszabályzás érzetének beállítása",
+    "text.7e209bf903c5": "A kijelző színei és nappali fényereje",
+    "text.ca37a4d0e914": "A kulcs nincs megadva.",
+    "text.1d5543a90184": "A lejátszóképernyő alsó információs területe",
+    "text.40a9545cb29f": "A megszakadt lejátszás automatikus helyreállítása",
+    "text.36416b27d69a": "A mély, közép és magas tartomány finomhangolása",
+    "text.631e740d8d7a": "A rádió viselkedése bekapcsoláskor",
+    "text.3072a7efb047": "A törlés gomb a weben elmentett kulcsot távolítja el. Az előre megadott firmware-kulcs ettől aktív marad.",
+    "text.1a34b1567009": "API-kulcs beillesztése",
+    "text.744443b6c41b": "API-kulcs mentése",
+    "text.eeee6067ebfe": "AT - Ausztria",
+    "text.1c10ee66041e": "AU - Ausztrália",
+    "text.2c930baca5b5": "Adj nevet az alkalmazásnak (például SimpleRadio), töltsd ki a kért adatokat, majd hozd létre az API-fiókot.",
+    "text.e73019be338a": "Aktuális kód",
+    "text.8638e6655b9a": "Alap működés és érzékenység",
+    "text.62d5b502fd38": "Albumborító, ha elérhető",
+    "text.4af778f73d8b": "Alsó kijelzősáv",
+    "text.2723981dd48a": "Analóg",
+    "text.0f601637094b": "Animáció",
+    "text.f0e0943022d4": "Animáció típusa",
+    "text.55a2ede41201": "Automatikus indítás késleltetése",
+    "text.766b0740450b": "Automatikus indítás választás után",
+    "text.e41490b1fc55": "Automatikus lejátszás indításkor",
+    "text.a29f66e5bbc1": "Automatikus nappal / éjszaka mód",
+    "text.5e4a713eff60": "Az inaktív kijelző megjelenése",
+    "text.f1e016bad7cc": "Az ott megjelenő",
+    "text.12228ae5fecb": "BE - Belgium",
+    "text.d1f8db0a0512": "Bal / jobb",
+    "text.6d1064028eb7": "Balansz",
+    "text.ca445e86d63f": "Mély",
+    "text.3af6a9bcfcb6": "Betöltés...",
+    "text.42ada3cfe6b0": "Borostyán",
+    "text.c17156c8f8cb": "Budapest / Közép-Európa (automatikus óraátállítás)",
+    "text.f080eb75c8f7": "CA - Kanada",
+    "text.f04dade220c3": "CH - Svájc",
+    "text.185862d3253d": "CZ - Csehország",
+    "text.1a9f35e6c7d8": "Cián",
+    "text.fd94c471c379": "Csatornalista",
+    "text.8fe3e2aadb7a": "DE - Németország",
+    "text.337e3d3ed685": "DK - Dánia",
+    "text.5b7a95704723": "Data / LittleFS feltöltése",
+    "text.05bf1afc399b": "Digitális",
+    "text.2a5c4af52797": "Dátum és idő",
+    "text.426b33c138bf": "ES - Spanyolország",
+    "text.aabd591e9525": "ESP32 internetes rádió",
+    "text.e51ebead6cb5": "Egyedi szín",
+    "text.5b9f080149e0": "Egyéni",
+    "text.975609c591fb": "Egyéni témaszín",
+    "text.da01e8bc1035": "Előlapi RGB LED",
+    "text.75b6629bf118": "Előző állomás",
+    "text.f667431fe657": "Enkóder",
+    "text.62e6c62e52ca": "Enkóder használata",
+    "text.10ac996271ef": "Enkóderes hangerőállítás",
+    "text.71255f2b6855": "Hangszínszabályzó",
+    "text.6dd113448421": "FI - Finnország",
+    "text.37c066572f87": "FR - Franciaország",
+    "text.521939cc706c": "Felhasználónév",
+    "text.2ee27b7d4ee5": "Feltöltött logók",
+    "text.86de2e63a074": "Firmware - · WebUI -",
+    "text.f44b63930d09": "Firmware feltöltése",
+    "text.c04d75ebe56c": "Firmware és LittleFS/data feltöltés WiFi-n keresztül",
+    "text.6c83021ef028": "Frissítés",
+    "text.a17e1e58754a": "Fényerő",
+    "text.b469251c27b0": "Fényerő és téma",
+    "text.74165d32a5ac": "Fő nézetek",
+    "text.f3f80862a10c": "GB - Egyesült Királyság",
+    "text.36459bc9bc70": "GR - Görögország",
+    "text.041ebc7928fb": "GitHub ↗",
+    "text.42fca8f709ea": "Gombok tanítása",
+    "text.2c72725b4eeb": "Görbe",
+    "text.329333e892ed": "HR - Horvátország",
+    "text.587e64e774e8": "HU - Magyarország",
+    "text.64be17559b88": "Halványított lejátszóképernyő",
+    "text.a25e0d0cec87": "Hang",
+    "text.7fdd7872834f": "Hangerő",
+    "text.7b109ecec1bc": "Hangerő +5%",
+    "text.54d1772634c5": "Hangerő -5%",
+    "text.7ad8665bcdc8": "Hangerő csökkentése 5 százalékkal",
+    "text.5414537e943a": "Hangerő karakterisztika",
+    "text.2d17846e9f52": "Hangerő lépés (%)",
+    "text.845971a63947": "Hangerő növelése 5 százalékkal",
+    "text.1f099f1ad09a": "Hangerősáv",
+    "text.e92f847e3918": "Hosszú nyomás",
+    "text.4a823118b9ba": "Kiszolgáló címe",
+    "text.9d65d4bad3fa": "Hálózat",
+    "text.5097cee47400": "Hálózatok keresése...",
+    "text.8a90a035bdcf": "IE - Írország",
+    "text.ab0b46b3352a": "IR",
+    "text.faf1615e7a5e": "IR érzékenység",
+    "text.2814dbe2956b": "IT - Olaszország",
+    "text.cd421863124e": "Időzóna",
+    "text.09bd52ce3ddb": "Inaktivitás után",
+    "text.36ed6553004b": "Indítás",
+    "text.d5b77a1f17b8": "Inverz kijelző",
+    "text.ad3ee19c4a91": "Jelentkezz be a Last.fm-fiókodba, majd nyisd meg a",
+    "text.0e57cbdca0d2": "Jelszó",
+    "text.60f6c7c4de01": "Kapcsolódás az otthonautomatizálási rendszerhez",
+    "text.f20a7c1c8bd0": "Kapcsolódás...",
+    "text.2b1386ec4edd": "Kelet-Európa (automatikus óraátállítás)",
+    "text.f7cd9ac86a65": "Keresés",
+    "text.c31468c3b45b": "Keresés törlése",
+    "text.7c527e441aeb": "Kezelés",
+    "text.3c1a5ece8010": "Kijelző",
+    "text.d8008ebf61ca": "Kikapcsolva",
+    "text.cc6cee58f74e": "Kék",
+    "text.c7c25316250d": "Képforrás",
+    "text.a1a7d661784a": "Készenlét",
+    "text.9c3e1699c4f2": "Készenlét és óra",
+    "text.f097ffbce147": "Készenléti fényerő",
+    "text.5432d5a826a9": "Készenléti idő (másodperc)",
+    "text.b30e41ec80cf": "Készenléti mód",
+    "text.b42609e3cec7": "Kód törlése",
+    "text.5f19a3d731ef": "Következő állomás",
+    "text.682efcb763be": "Közép",
+    "text.d9eac53dbe17": "Középről induló VU",
+    "text.b871b1b20060": "LED fényerő",
+    "text.fc9054e8c7c4": "LED használata",
+    "text.ec038e60e1bd": "LED készenléti fényerő",
+    "text.cea2c9cf0b94": "Last.fm API-kulcs",
+    "text.a2812e5463a3": "Last.fm API-fiók létrehozása",
+    "text.27dcbd9b243c": "Last.fm albumborító-keresés",
+    "text.e3d88cab00cb": "Lejátszó",
+    "text.7bd52cf506d6": "Lejátszó képe",
+    "text.11816638e6d8": "Lejátszó megnyitása",
+    "text.7bf7730cbd56": "Lineáris",
+    "text.216d40f34584": "Lista megnyitása és automatikus indítás",
+    "text.fd84a7eb281e": "Logaritmikus",
+    "text.f0244994b9c5": "Logó útvonal vagy URL",
+    "text.38407dcc8fb5": "Logók",
+    "text.a3003653a8e4": "Logók feltöltése",
+    "text.9d2f71510dea": "London (automatikus óraátállítás)",
+    "text.f80bb44d35f6": "Lágy",
+    "text.51b197a50837": "MQTT",
+    "text.db1b4ef3daa3": "MQTT használata",
+    "text.cab6cf1f9ab4": "Megértettem, frissíteni szeretnék",
+    "text.4112a5ff0394": "Mentett kulcs törlése",
+    "text.758fca17fee7": "Mentett állomás...",
+    "text.679d1278f046": "Mentett állomások",
+    "text.6fea8b079d85": "Mentett állomások keresés törlése",
+    "text.887f19d38669": "Mentés",
+    "text.995cbba9ecad": "Mezők törlése",
+    "text.e5b642e8013a": "Második enkóder",
+    "text.f161fbb5a36e": "Másodlagos forrásként segíthet olyan számoknál, amelyekhez a többi adatbázis nem ad borítót.",
+    "text.626b32485a17": "Mégse",
+    "text.6e0fd8307844": "NL - Hollandia",
+    "text.39b09bec96c8": "NO - Norvégia",
+    "text.4c5ace70af0b": "Nappali",
+    "text.e0ce455c7ca3": "Nappali mód kezdete",
+    "text.9bb355a4fe24": "New York (automatikus óraátállítás)",
+    "text.536908ed3acc": "Nincs kiválasztva",
+    "text.466ca5fa8414": "Nincs kód",
+    "text.2d15210c1c98": "Nincs számadat",
+    "text.467b5745e79e": "Név",
+    "text.c56d98e231a0": "Név, adáscím, logó",
+    "text.6c46732ec1b4": "Névjegy",
+    "text.fca82a0ddde6": "OTA frissítés",
+    "text.59ac50e9d91a": "OTA jelszó",
+    "text.57c0f29f7d25": "Online kereső",
+    "text.4b103e5f145b": "Ország",
+    "text.a125d8d736fe": "PL - Lengyelország",
+    "text.6357e929479b": "PT - Portugália",
+    "text.436e61016e26": "Lejátszás",
+    "text.72e9a59f5a1d": "Port",
+    "text.34de51bec4ee": "RO - Románia",
+    "text.7e1469cdb1a5": "RS - Szerbia",
+    "text.a9774e7ec93c": "Rendszer",
+    "text.daee7606b339": "Alaphelyzet",
+    "text.004faaa863bc": "Alaptéma",
+    "text.20c47e5cfeae": "Rádió neve...",
+    "text.1894b4e29044": "SE - Svédország",
+    "text.e2939be13dc4": "SI - Szlovénia",
+    "text.58b13bfc629f": "SK - Szlovákia",
+    "text.04dedf8afeb8": "Megállítva",
+    "text.3744fed42a60": "Spektrum (24 sáv, FFT)",
+    "text.e176b7688670": "Adás webcíme",
+    "text.0e913de1391d": "Adáskapcsolat",
+    "text.112c29d70bec": "Szimmetrikus oszlopok",
+    "text.7fcc9371c8c6": "Sötét kijelző",
+    "text.c5d285851dff": "TR - Törökország",
+    "text.7891c4a9319b": "Magas",
+    "text.5e465970972f": "Tárhely",
+    "text.68cb6456310b": "Távirányító",
+    "text.c3efea369f75": "Téma",
+    "text.8191e5c1b1cb": "Téma színének követése",
+    "text.98c8024be4d0": "Több PNG, JPG vagy BMP fájl is mehet egyszerre.",
+    "text.3f8cd2aa925b": "Törlés",
+    "text.0aa4594c11a8": "US - Egyesült Államok",
+    "text.47147f3ebdb2": "VU / spektrum érzékenység",
+    "text.70be90111460": "Vezérlés",
+    "text.c893c4d90564": "Válassz egy gombot, majd tanítsd be.",
+    "text.a81188ef764d": "Válaszd ki a hálózatot, add meg a jelszót, majd mentsd a rádióra.",
+    "text.e7536a40a158": "Válaszd ki a megfelelő .bin fájlt.",
+    "text.3b243a0da161": "Vörös",
+    "text.dec41221f421": "WiFi beállítás",
+    "text.49e158888dd2": "WiFi jelszó",
+    "text.bcdb96246dc7": "Zöld",
+    "text.93de57c9f132": "oldalt.",
+    "text.73c5c2ddcdc3": "simpleradio",
+    "text.5b128c47d450": "v-",
+    "text.befc2abf6db1": "Állapot",
+    "text.ad51ebb7cd1b": "Állapotjelzés és hangulatfény",
+    "text.81b1fdb61c3b": "Állomás",
+    "text.166290b111b9": "Állomás kiválasztása",
+    "text.8d1c2940a927": "Állomás szerkesztése",
+    "text.3c48f4321273": "Állomáslogó",
+    "text.8ec29ee5b6f6": "Állomások",
+    "text.00471aa4fdba": "Állomásválasztás",
+    "text.8fa5d198655a": "Álló oszlopok",
+    "text.ba9916650ecc": "Éjszakai",
+    "text.c4714c860582": "Éjszakai mód kezdete",
+    "text.c5967e06d5f5": "Érzékenység",
+    "text.b4d3d98003c4": "Óra",
+    "text.300d3eee4c6f": "Óra típusa",
+    "text.6cde9ba241f2": "Összes",
+    "text.de55cdaa3241": "Új állomás",
+    "text.5fd74a58d2bf": "Újracsatlakozás késleltetése",
+    "text.0fc25c180421": "Újracsatlakozás az adás megszakadásakor",
+    "text.f0977cc3cc2a": "Újraindítás",
+    "text.dbecf904eead": "értéket másold a fenti mezőbe, és mentsd a beállításokat. A megosztott titok (shared secret) nem szükséges.",
+    "ui.playerView": "Lejátszónézet",
+    "ui.preview": "Elrendezési előnézet",
+    "ui.day": "Nappali",
+    "ui.night": "Éjszakai",
+    "ui.sharedTheme": "Az LCD és a webfelület közös színei.",
+    "ui.close": "Bezárás",
+    "ui.waitingSignal": "Várakozás a jelre…",
+    "ui.orderDone": "Rendezés kész",
+    "ui.reorder": "Sorrend módosítása",
+    "ui.moreActions": "További műveletek",
+    "ui.edit": "Szerkesztés",
+    "ui.delete": "Törlés",
+    "ui.move": "Áthelyezés",
+    "ui.addStation": "Állomás hozzáadása",
+    "ui.onlineSearch": "Online kereső",
+    "ui.manualStation": "Kézi hozzáadás",
+    "ui.logos": "Logók",
+    "ui.systemSections": "Rendszer nézetei",
+    "ui.overview": "Áttekintés",
+    "ui.connections": "Kapcsolatok",
+    "ui.update": "Frissítés",
+    "ui.advanced": "Haladó",
+    "ui.technical": "Technikai részletek",
+    "ui.webInterface": "Webfelület",
+    "ui.device": "Eszköz",
+    "ui.uptime": "Futásidő",
+    "ui.integrations": "Integrációk",
+    "ui.settings": "Beállítások",
+    "ui.modify": "Módosítás",
+    "ui.restartDevice": "Eszköz újraindítása",
+    "ui.restartHelp": "A mentett beállítások megmaradnak.",
+    "ui.saveConnection": "Kapcsolat mentése",
+    "ui.keyHelp": "Hogyan készíthetek API-kulcsot?",
+    "ui.services": "Kapcsolatok és szolgáltatások",
+    "ui.connectionsHelp": "A szolgáltatás beállításai a sor végén nyithatók meg.",
+    "ui.mqttSettings": "MQTT beállításai",
+    "ui.lastfmSettings": "Last.fm API-kulcs",
+    "ui.updateHelp": "Tudnivalók a frissítésről",
+    "ui.updateConfirm": "Megértettem, hogy a frissítés után a rádió újraindul.",
+    "ui.updateTarget": "Mit szeretnél frissíteni?",
+    "ui.firmware": "Firmware",
+    "ui.data": "Webfelület (data / LittleFS)",
+    "ui.chooseFile": "Válassz .bin fájlt vagy húzd ide",
+    "ui.uploadFirmware": "Firmware feltöltése",
+    "ui.binOnly": "Válassz .bin fájlt.",
+    "ui.removeFile": "Fájl eltávolítása",
+    "ui.fileChosen": "Fájl kiválasztva.",
+    "ui.dataHelp": "A teljes webfelület és a LittleFS cseréje. A kézzel feltöltött logókra külön korlátozás vonatkozik; lásd a tudnivalókat.",
+    "ui.firmwareHelp": "A rádió működtetőprogramjának frissítése.",
+    "ui.uploadData": "Webfelület feltöltése",
+    "ui.saveFailed": "A mentés nem sikerült. Próbáld újra.",
+    "ui.allSaved": "Minden módosítás mentve",
+    "ui.showPassword": "Jelszó megjelenítése",
+    "ui.hidePassword": "Jelszó elrejtése",
+    "ui.brightness": "Fényerő",
+    "ui.brightnessMode": "Fényerő módja",
+    "ui.manual": "Kézi",
+    "ui.scheduled": "Időzített",
+    "ui.appearance": "Megjelenés",
+    "ui.seconds": "másodperc",
+    "ui.allMappings": "Összes hozzárendelés",
+    "ui.irAdvanced": "Érzékenység és további beállítások",
+    "ui.webKeyActive": "Weben mentett kulcs aktív",
+    "ui.firmwareKeyActive": "Firmware-kulcs aktív",
+    "ui.notConfigured": "Nincs megadva",
+    "ui.mappingCount": "Összes hozzárendelés ({count}/{total})",
+    "ui.keyLearned": "A gomb elmentve. Válassz másikat a folytatáshoz.",
+    "sound.midrange": "Közép",
+    "status.title": "Állapot",
+    "key.saved": "A Last.fm API-kulcs sikeresen elmentve.",
+    "key.deletedOverride": "A weben mentett kulcs törölve. Az előre megadott firmware-kulcs aktív.",
+    "key.deleted": "A mentett Last.fm API-kulcs törölve.",
+    "key.saveFailed": "A mentés nem sikerült. Ellenőrizd a kapcsolatot, majd próbáld újra.",
+    "key.unsaved": "A kulcs még nincs elmentve — kattints az API-kulcs mentése gombra.",
+    "key.savedPlaceholder": "Üresen hagyva megmarad",
+    "key.firmwarePlaceholder": "Új API-kulcs beillesztése",
+    "key.placeholder": "API-kulcs beillesztése",
+    "key.savedHidden": "API-kulcs elmentve. A mező biztonsági okból nem jeleníti meg.",
+    "key.firmwareActive": "A firmware-ben előre megadott API-kulcs aktív.",
+    "key.absent": "A kulcs nincs megadva.",
+    "status.technicalDetail": "Futásidő: {uptime} · újraindulás oka: {reset} · flash: {flash} · SDK: {sdk}",
+    "ota.dataLabel": "Webfelület / LittleFS"
+};
   window.SR_I18N = { lang: "hu", dict };
-  installSimpleRadioI18n();
+  function formatText(text, vars) {
+    return String(text).replace(/\{([a-zA-Z0-9_]+)\}/g, (_, key) =>
+      vars && Object.prototype.hasOwnProperty.call(vars, key) ? vars[key] : `{${key}}`);
+  }
+  const has = (obj, key) => Object.prototype.hasOwnProperty.call(obj, key);
+  window.srT = (key, fallback, vars) => formatText(has(dict, key) ? dict[key] : fallback || key, vars);
+  window.srApplyI18n = (root = document) => {
+    if (root === document) document.documentElement.lang = window.SR_I18N.lang;
+    root.querySelectorAll('[data-i18n]').forEach(node => {
+      const key = node.dataset.i18n;
+      if (key) node.textContent = window.srT(key, node.textContent);
+    });
+    const catalog = window.SR_TEXT_KEYS || {};
+    const translate = value => has(catalog, value) ? window.srT(catalog[value], value) : value;
+    root.querySelectorAll('[title],[aria-label],[placeholder]').forEach(node => {
+      if (node.closest?.('[data-user-content]')) return;
+      for (const attr of ['title', 'aria-label', 'placeholder']) {
+        if (node.hasAttribute(attr)) node.setAttribute(attr, translate(node.getAttribute(attr)));
+      }
+    });
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+    while (walker.nextNode()) {
+      const node = walker.currentNode;
+      // Never translate executable source, user station names, or live track data.
+      if (node.parentElement?.closest('script,style,[data-user-content]')) continue;
+      const text = node.nodeValue.trim();
+      if (text && has(catalog, text)) node.nodeValue = node.nodeValue.replace(text, translate(text));
+    }
+  };
+  const apply = () => window.srApplyI18n(document);
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', apply, { once: true });
+  else apply();
 })();

@@ -4,7 +4,7 @@
 
 **SimpleRadio** egy ESP32-S3 alapú internet-rádió firmware modern webes felülettel és külön LCD-lejátszóképernyővel. Saját építésű, I2S hangkimenetes, fizikai vezérlős és opcionális otthonautomatizálási integrációjú rádióhoz készült.
 
-> Jelenlegi verzió: **1.0.27** · ESP32-S3 N16R8 · LittleFS · magyar és angol felület
+> Jelenlegi verzió: **1.1.28** · ESP32-S3 N16R8 · LittleFS · magyar és angol felület
 
 ![SimpleRadio LCD lejátszó](.screenshots/lcd/player1.jpg)
 
@@ -54,7 +54,9 @@ Első telepítésnél mindkét feltöltés szükséges. A `data/` mappa módosí
 
 Az első vezetékes feltöltés után a Rendszer oldalon firmware- és data-OTA frissítés is elérhető. A data OTA lecseréli a LittleFS-t; a WiFi, konfiguráció, állapot és állomáslista mentésre kerül, a logócache újragenerálódik.
 
-A firmware és a WebUI/data külön verzióval, valamint közös Web API-kompatibilitási szinttel rendelkezik. Az eltérő kiadási verziók használhatók együtt, ha az API-szint kompatibilis. Inkompatibilis vagy hiányzó WebUI-manifest esetén a firmware a normál felület helyett egy LittleFS-től független helyreállítási OTA-oldalt indít, ahonnan a megfelelő firmware vagy data image feltölthető. A `data/build-info.json` fájlt a build automatikusan generálja a `src/config/version.h` értékeiből.
+A firmware és a WebUI/data külön verzióval, valamint közös Web API-kompatibilitási szinttel rendelkezik. Az eltérő kiadási verziók használhatók együtt, ha az API-szint kompatibilis. Inkompatibilis vagy hiányzó WebUI-manifest esetén a firmware a normál felület helyett egy LittleFS-től független helyreállítási OTA-oldalt indít, ahonnan a megfelelő firmware vagy data image feltölthető.
+
+A kiadási verziókat csak a `src/config/version.h` fájlban kell szerkeszteni: az `APP_VERSION` a firmware, a `WEB_UI_VERSION` a webfelület/data verziója. A fordítás automatikusan elkészíti a `data/build-info.json` fájlt, a HTML-hivatkozások verzióit és a gyorsítótár tartalomfüggő azonosítóját. Az angol és magyar README aktuális verziójelzése is innen frissül. A futó rádió továbbra is a ténylegesen telepített firmware és webfelület verzióját mutatja.
 
 Lejátszás közben a firmware korlátlanul újrapróbálja a megszakadt streamet, ha a stream-retry be van kapcsolva; a késleltetés fokozatosan nő, legfeljebb 60 másodpercig. WiFi-szakadáskor ötmásodpercenként explicit újracsatlakozási kísérlet történik, a hálózat visszatérése után pedig a stream újraindítása automatikusan folytatódik. Az LCD külön jelzi a WiFi-hiányt, a kapcsolódást és a stream újrapróbálkozását.
 

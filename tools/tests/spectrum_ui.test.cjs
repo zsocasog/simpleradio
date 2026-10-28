@@ -48,14 +48,14 @@ test("all shipped language bundles contain the spectrum label", () => {
   }
 });
 
-test("web asset cache keys and manifest match the firmware version", () => {
+test("web asset cache keys and manifest match the central WebUI version", () => {
   const html = fs.readFileSync(path.join(root, "data/index.html"), "utf8");
   const header = fs.readFileSync(path.join(root, "src/config/version.h"), "utf8");
-  const version = header.match(/#define APP_VERSION "([^"]+)"/)[1];
+  const version = header.match(/#define WEB_UI_VERSION "([^"]+)"/)[1];
   const manifest = JSON.parse(fs.readFileSync(path.join(root, "data/build-info.json"), "utf8"));
   assert.equal(manifest.webuiVersion, version);
   for (const asset of ["style.css", "i18n.js", "app.js"]) {
-    assert.ok(html.includes(`${asset}?v=${version}`), `${asset} cache key must match firmware`);
+    assert.ok(html.includes(`${asset}?v=${encodeURIComponent(version)}`), `${asset} cache key must match WebUI`);
   }
 });
 

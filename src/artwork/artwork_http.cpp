@@ -1,5 +1,6 @@
 #include "artwork_http.h"
 #include "artwork_http_policy.h"
+#include "../config/version.h"
 
 #include <HTTPClient.h>
 #include <NetworkClient.h>
@@ -218,7 +219,7 @@ template<class Client> bool request(Client& client, const String& url, size_t li
   http.setConnectTimeout(remaining(transfer.options.deadlineMs, CONNECT_MS));
   http.setTimeout(remaining(transfer.options.deadlineMs, READ_MS));
   http.setFollowRedirects(HTTPC_DISABLE_FOLLOW_REDIRECTS);
-  http.setUserAgent("SimpleRadio/1.0.27 (https://github.com/zsocasog/simpleradio)");
+  http.setUserAgent("SimpleRadio/" APP_VERSION " (https://github.com/zsocasog/simpleradio)");
   const char* headers[] = {"Content-Type", "Transfer-Encoding"};
   http.collectHeaders(headers, 2);
   auto finish = [&]() {
