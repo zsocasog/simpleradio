@@ -16,6 +16,8 @@
 #include "../stations/station_manager.h"
 #include "../web/web_server.h"
 #include "lcd_font_data.h"
+#include "station_picker_policy.h"
+#include <atomic>
 #include <math.h>
 #include <string.h>
 #include <time.h>
@@ -93,7 +95,6 @@ static constexpr int INFO_X = sx(214);
 static constexpr int INFO_W = SCREEN_W - INFO_X - sx(22);
 static constexpr int TITLE_CENTER_Y = sy(98);
 static constexpr int ARTIST_CENTER_Y = sy(202);
-static constexpr int BAR_Y = sy(290);
 static constexpr int ART_REGION_X = ART_X - ss(6);
 static constexpr int ART_REGION_Y = ART_Y - ss(6);
 static constexpr int ART_REGION_W = ART_SIZE + ss(12);
@@ -144,16 +145,29 @@ static constexpr int PICKER_VISIBLE_ROWS = 5;
 static constexpr int PICKER_ROW_X = sx(26);
 static constexpr int PICKER_ROW_W = SCREEN_W - sx(52);
 static constexpr int PICKER_ROW_Y = sy(54);
-static constexpr int PICKER_NUMBER_X = PICKER_ROW_X + sx(10);
-static constexpr int PICKER_NUMBER_W = sx(48);
 static constexpr int PICKER_LOGO_SIZE = ss(32);
 static constexpr int PICKER_LOGO_X = PICKER_ROW_X + sx(8);
 static constexpr int PICKER_TEXT_X = PICKER_LOGO_X + PICKER_LOGO_SIZE + sx(14);
-static constexpr int PICKER_TEXT_W = PICKER_ROW_X + PICKER_ROW_W - PICKER_TEXT_X - sx(40);
+static constexpr int PICKER_TEXT_W = PICKER_ROW_X + PICKER_ROW_W - PICKER_TEXT_X - sx(76);
 static constexpr int PICKER_TEXT_H = PICKER_ROW_H - sy(6);
 static constexpr unsigned long PICKER_MARQUEE_MS = 110;
 static constexpr unsigned long PICKER_MARQUEE_HOLD_MS = 650;
 static constexpr int PICKER_MARQUEE_STEP = sx(4) > 2 ? sx(4) : 2;
+static std::atomic<uint32_t> pickerRequestSerial{0};
+static std::atomic<uint32_t> pickerPresentedSerial{0};
+static std::atomic<uint32_t> pickerPresentedAt{0};
+static uint32_t pickerActiveSerial = 0;
+static unsigned long pickerLastInputMs = 0;
+
+static uint32_t nextPickerRequest() {
+  uint32_t serial = ++pickerRequestSerial;
+  if (!serial) serial = ++pickerRequestSerial;
+  return serial;
+}
+
+static bool pickerSelectionPending() {
+  return pickerRequestSerial.load(std::memory_order_acquire) != pickerActiveSerial;
+}
 static constexpr float CLOCK_PI = 3.14159265358979323846f;
 static constexpr uint32_t DISPLAY_TASK_STACK = 12288;
 
@@ -1204,67 +1218,7 @@ static bool readyArtKey(const String& key) {
   return key.startsWith("memory:") || key.startsWith("thumb:") || key.startsWith("source:");
 }
 
-static String formatFooterBitrate(String bitrate) {
-  bitrate.trim();
-  if (!bitrate.length()) return "";
-
-  bool numeric = true;
-  for (size_t i = 0; i < bitrate.length(); ++i) {
-    char c = bitrate[i];
-    if (!isDigit(c) && c != ' ') {
-      numeric = false;
-      break;
-    }
-  }
-
-  if (numeric) {
-    uint32_t value = static_cast<uint32_t>(bitrate.toInt());
-    if (!value) return "";
-    if (value >= 1000) value = (value + 500) / 1000;
-    return String(value) + " kbps";
-  }
-
-  String lowered = bitrate;
-  lowered.toLowerCase();
-  if (lowered.indexOf("kb") >= 0 || lowered.indexOf("bit") >= 0) return bitrate;
-  return bitrate;
-}
-
-static String footerStreamInfo(const DisplayModel& m) {
-  String codec = m.codec;
-  codec.trim();
-  codec.toUpperCase();
-
-  String bitrate = formatFooterBitrate(m.bitrate);
-  if (codec.length() && bitrate.length()) return codec + " " + bitrate;
-  if (codec.length()) return codec;
-  return bitrate;
-}
-
-static void drawProgressBar(const DisplayModel& m, int32_t barY) {
-  const int32_t barX = sx(22);
-  const int32_t barW = SCREEN_W - sx(44);
-  const int32_t barH = sy(10);
-  uint16_t track = blend565(cLine, cBg, 190);
-  uint16_t knobEdge = blend565(cPanelAlt, cBg, 230);
-
-  lcd.fillRoundRect(barX, barY, barW, barH, ss(5), track);
-  int32_t fillW = map(m.volume, 0, 100, 0, barW);
-  lcd.fillRoundRect(barX, barY, fillW, barH, ss(5), cAccent);
-  lcd.fillCircle(barX + fillW, barY + barH / 2, ss(7), cAccent);
-  lcd.drawCircle(barX + fillW, barY + barH / 2, ss(8), knobEdge);
-
-  setUiFont(1);
-  drawUiText(m.ip, ART_X, SCREEN_H - sy(14), *currentUiFont, cMuted, cBg);
-
-  String streamInfo = lcdSafeText(footerStreamInfo(m));
-  if (streamInfo.length()) {
-    drawUiText(fitText(streamInfo, sx(156)), SCREEN_W / 2, SCREEN_H - sy(14), *currentUiFont, cMuted, cBg, top_center);
-  }
-
-  String volume = lcdSafeText(String(I18n::VOLUME_LOWER_PREFIX) + String(m.volume) + "%");
-  drawUiText(volume, SCREEN_W - sx(22), SCREEN_H - sy(14), *currentUiFont, cMuted, cBg, top_right);
-}
+static void drawVolumeFooter(const DisplayModel& m);
 
 static DisplayFooterMode footerMode() {
   return AppConfig::instance().displayFooterModeId;
@@ -1763,7 +1717,6 @@ static void drawInfoRegion(const DisplayModel& m) {
   String artist;
   displayTitleArtist(m, title, artist);
 
-  const bool showStation = m.playing && m.title.length() && title == m.title;
   const LcdFont* heading = &titleFont();
   const LcdFont* byline = &artistFont();
   String titleLines[3], artistLines[2];
@@ -1789,19 +1742,16 @@ static void drawInfoRegion(const DisplayModel& m) {
     return count;
   };
   int titleCount = 0, artistCount = 0, blockHeight = 0;
-  const int stationHeight = showStation ? fontLineHeight(kLcdFontSmall) + sy(6) : 0;
   for (int pass = 0; pass < 3; ++pass) {
     titleCount = wrap(title, *heading, titleLines, COMPACT_LCD ? 2 : 3);
     artistCount = wrap(artist, *byline, artistLines, 2);
     blockHeight = titleCount * (fontLineHeight(*heading) + sy(3)) - sy(3);
     if (artistCount) blockHeight += sy(8) + artistCount * (fontLineHeight(*byline) + sy(3)) - sy(3);
-    if (blockHeight + stationHeight <= INFO_REGION_H - sy(8)) break;
+    if (blockHeight <= INFO_REGION_H - sy(8)) break;
     heading = COMPACT_LCD ? &kLcdFontMedium : &kLcdFontArtist;
     byline = pass == 0 && !COMPACT_LCD ? &kLcdFontMedium : &kLcdFontSmall;
   }
-  if (showStation) drawUiText(fitTextForFont(lcdSafeText(m.station), INFO_W, kLcdFontSmall),
-      INFO_X, INFO_REGION_Y + sy(3), kLcdFontSmall, cMuted, cBg);
-  int y = INFO_REGION_Y + stationHeight + max(0, (INFO_REGION_H - stationHeight - blockHeight) / 2);
+  int y = INFO_REGION_Y + max(0, (INFO_REGION_H - blockHeight) / 2);
   for (int i = 0; i < titleCount; ++i) {
     drawUiText(titleLines[i], INFO_X, y, *heading, cText, cBg);
     y += fontLineHeight(*heading) + sy(3);
@@ -1892,7 +1842,7 @@ static void drawFooterRegion(const DisplayModel& m) {
     resetDateTimeFooter();
     drawPlayerSurfaceRegion(FOOTER_REGION_X, FOOTER_REGION_Y, FOOTER_REGION_W, FOOTER_REGION_H);
     resetRenderedVuMeter();
-    drawProgressBar(m, BAR_Y);
+    drawVolumeFooter(m);
   } else if (mode == DisplayFooterMode::Vu || mode == DisplayFooterMode::Spectrum) {
     resetDateTimeFooter();
     if (volumeRestoreInProgress) {
@@ -1991,29 +1941,70 @@ static int pickerPageStartForIndex(int selectedIndex, int stationCount) {
 struct PickerLogo {
   uint16_t* pixels = nullptr;
   String path;
+  String source;
   int station = -1;
-  uint32_t revision = 0;
   time_t modified = 0;
   bool ready = false;
+  bool probed = false;
+  unsigned long checkedMs = 0;
 };
 static PickerLogo pickerLogos[PICKER_VISIBLE_ROWS];
 
-// Reuse the existing prepared station bitmap. No downloads, flash writes or
-// JPEG/PNG decoding in the picker; at most five small PSRAM images are retained.
-static bool loadPickerLogo(int row, const Station& station) {
-  PickerLogo& entry = pickerLogos[row];
+struct PickerLogoJob {
+  File file;
+  String path;
   String source;
-  const uint32_t revision = StationManager::instance().revision();
+  int row = -1;
+  int station = -1;
+  int nextY = 0;
+  time_t modified = 0;
+};
+static PickerLogoJob pickerLogoJob;
+
+static void cancelPickerLogoJob() {
+  pickerLogoJob.file.close();
+  pickerLogoJob.row = -1;
+  pickerLogoJob.nextY = 0;
+}
+
+// Hot drawing path: no file opens, cache probes, or thumbnail preparation.
+static bool pickerLogoReady(int row, const Station& station) {
+  PickerLogo& entry = pickerLogos[row];
+  if (entry.station != station.id || entry.source != station.logo) {
+    entry.station = station.id;
+    entry.source = station.logo;
+    entry.ready = false;
+    entry.probed = false;
+    entry.path = "";
+  }
+  return entry.ready && entry.pixels;
+}
+
+static uint16_t thumbnailRgb565(const uint8_t* row, int column) {
+  // SR56 contains LovyanGFX sprite bytes (high byte first), not native uint16_t.
+  return (static_cast<uint16_t>(row[column * 2]) << 8) | row[column * 2 + 1];
+}
+
+// Reuse the prepared station bitmap, only after the encoder has settled.
+// Reading/conversion then advances in short slices between display requests.
+static bool beginPickerLogo(int row, const Station& station, unsigned long now) {
+  pickerLogoReady(row, station);
+  PickerLogo& entry = pickerLogos[row];
+  const unsigned long retryMs = entry.ready ? StationPickerPolicy::READY_LOGO_RECHECK_MS
+                                           : StationPickerPolicy::MISSING_LOGO_RECHECK_MS;
+  if (entry.probed && !StationPickerPolicy::elapsedAtLeast(now, entry.checkedMs, retryMs)) return false;
+  entry.probed = true;
+  entry.checkedMs = now;
+  if (!station.logo.length()) return false;
+  String source;
   if (!ArtworkCache::instance().stationArtworkReady(station.id, &source) || !source.length()) {
-    entry.ready = false; return false;
+    return false;
   }
   const String path = ArtworkCache::instance().lcdThumbnailPath(source);
   File file = LittleFS.open(path, "r");
-  if (!file) { entry.ready = false; return false; }
+  if (!file) return false;
   const time_t modified = file.getLastWrite();
-  if (entry.ready && entry.station == station.id && entry.path == path &&
-      entry.revision == revision && entry.modified == modified) return true;
-  entry.ready = false;
+  if (entry.ready && entry.path == path && entry.modified == modified) return false;
   uint8_t header[8];
   if (file.read(header, 8) != 8 || memcmp(header, "SR56", 4) ||
       (header[4] | (header[5] << 8)) != ART_SIZE ||
@@ -2022,28 +2013,96 @@ static bool loadPickerLogo(int row, const Station& station) {
   if (!entry.pixels) entry.pixels = static_cast<uint16_t*>(heap_caps_malloc(
       PICKER_LOGO_SIZE * PICKER_LOGO_SIZE * sizeof(uint16_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
   if (!entry.pixels) return false;
-  uint16_t sourceRow[ART_SIZE];
-  for (int y = 0; y < PICKER_LOGO_SIZE; ++y) {
+  entry.ready = false;
+  pickerLogoJob.file = file;
+  pickerLogoJob.path = path;
+  pickerLogoJob.source = station.logo;
+  pickerLogoJob.station = station.id;
+  pickerLogoJob.modified = modified;
+  pickerLogoJob.nextY = 0;
+  pickerLogoJob.row = row;
+  return true;
+}
+
+static bool readPickerLogoRow(File& file, uint16_t* pixels, int y) {
+  uint8_t sourceRow[ART_SIZE * sizeof(uint16_t)];
     uint32_t red[PICKER_LOGO_SIZE] = {}, green[PICKER_LOGO_SIZE] = {}, blue[PICKER_LOGO_SIZE] = {};
     const int y0 = y * ART_SIZE / PICKER_LOGO_SIZE;
     const int y1 = (y + 1) * ART_SIZE / PICKER_LOGO_SIZE;
     for (int sourceY = y0; sourceY < y1; ++sourceY) {
-      if (file.read(reinterpret_cast<uint8_t*>(sourceRow), sizeof(sourceRow)) != sizeof(sourceRow)) return false;
+      if (file.read(sourceRow, sizeof(sourceRow)) != sizeof(sourceRow)) return false;
       for (int x = 0; x < PICKER_LOGO_SIZE; ++x) {
         for (int sourceX = x * ART_SIZE / PICKER_LOGO_SIZE; sourceX < (x + 1) * ART_SIZE / PICKER_LOGO_SIZE; ++sourceX) {
-          uint16_t pixel = sourceRow[sourceX];
+          uint16_t pixel = thumbnailRgb565(sourceRow, sourceX);
           red[x] += pixel >> 11; green[x] += (pixel >> 5) & 63; blue[x] += pixel & 31;
         }
       }
     }
     for (int x = 0; x < PICKER_LOGO_SIZE; ++x) {
       const unsigned count = (y1 - y0) * ((x + 1) * ART_SIZE / PICKER_LOGO_SIZE - x * ART_SIZE / PICKER_LOGO_SIZE);
-      entry.pixels[y * PICKER_LOGO_SIZE + x] = ((red[x] / count) << 11) | ((green[x] / count) << 5) | (blue[x] / count);
+      pixels[y * PICKER_LOGO_SIZE + x] = ((red[x] / count) << 11) | ((green[x] / count) << 5) | (blue[x] / count);
     }
-  }
-  entry.path = path; entry.station = station.id; entry.revision = revision;
-  entry.modified = modified; entry.ready = true;
   return true;
+}
+
+static int advancePickerLogo() {
+  if (pickerLogoJob.row < 0 || pickerSelectionPending()) return -1;
+  PickerLogo& entry = pickerLogos[pickerLogoJob.row];
+  if (entry.station != pickerLogoJob.station || entry.source != pickerLogoJob.source) {
+    cancelPickerLogoJob(); return -1;
+  }
+  const unsigned long started = micros();
+  int rows = 0;
+  do {
+    if (!readPickerLogoRow(pickerLogoJob.file, entry.pixels, pickerLogoJob.nextY)) {
+      cancelPickerLogoJob(); return -1;
+    }
+    ++pickerLogoJob.nextY;
+    ++rows;
+  } while (pickerLogoJob.nextY < PICKER_LOGO_SIZE &&
+           rows < StationPickerPolicy::LOGO_ROWS_PER_STEP &&
+           micros() - started < StationPickerPolicy::LOGO_STEP_US && !pickerSelectionPending());
+  if (pickerLogoJob.nextY < PICKER_LOGO_SIZE) return -1;
+  const int row = pickerLogoJob.row;
+  entry.path = pickerLogoJob.path;
+  entry.modified = pickerLogoJob.modified;
+  entry.ready = true;
+  entry.checkedMs = millis();
+  cancelPickerLogoJob();
+  return row;
+}
+
+static lgfx::LGFX_Sprite* pickerCanvas() {
+  static lgfx::LGFX_Sprite frame(&lcd);
+  static bool ready = false;
+  static bool attempted = false;
+  static unsigned long lastAttempt = 0;
+  if (!ready && (!attempted || millis() - lastAttempt >= 5000)) {
+    attempted = true;
+    lastAttempt = millis();
+    frame.setPsram(true);
+    frame.setColorDepth(16);
+    ready = frame.createSprite(SCREEN_W, max(PICKER_ROW_Y, PICKER_ROW_H)) != nullptr;
+  }
+  return ready ? &frame : nullptr;
+}
+
+static void presentPickerCanvas(lgfx::LGFX_Sprite& frame, int y, int height) {
+  // Sprite storage is wire-order RGB565. Send the entire band in one transfer.
+  lcd.startWrite();
+  lcd.setAddrWindow(0, y, SCREEN_W, height);
+  lcd.writePixels(static_cast<const uint16_t*>(frame.getBuffer()), SCREEN_W * height, false);
+  lcd.endWrite();
+}
+
+static void pickerText(lgfx::LGFX_Sprite* frame, const String& text, int x, int y,
+                       const LcdFont& font, uint16_t color, uint16_t bg,
+                       textdatum_t datum = top_left) {
+  if (!frame) { drawUiText(text, x, y, font, color, bg, datum); return; }
+  if (datum == top_center || datum == middle_center) x -= uiTextWidth(text, font) / 2;
+  if (datum == top_right || datum == middle_right) x -= uiTextWidth(text, font);
+  if (datum == middle_center || datum == middle_right) y -= fontLineHeight(font) / 2;
+  drawUiTextOnSprite(*frame, text, x, y, font, color, bg, SCREEN_W, max(PICKER_ROW_Y, PICKER_ROW_H));
 }
 
 static void drawStationPickerPagedRow(int row, int stationIndex, int selectedId, int scrollOffset = 0) {
@@ -2058,33 +2117,46 @@ static void drawStationPickerPagedRow(int row, int stationIndex, int selectedId,
   const int rowH = PICKER_ROW_H - sy(6);
   const uint16_t rowBg = selected ? blend565(cAccent, cBg, 28) : cBg;
   const uint16_t textFg = cText;
-  lcd.fillRect(PICKER_ROW_X, y, PICKER_ROW_W, rowH, rowBg);
-  if (selected) lcd.fillRoundRect(PICKER_ROW_X, y, max(2, ss(3)), rowH, ss(1), cAccent);
-  lcd.drawFastHLine(PICKER_ROW_X + sx(8), y + rowH, PICKER_ROW_W - sx(16), blend565(cLine, cBg, 150));
-  const int logoY = y + (rowH - PICKER_LOGO_SIZE) / 2;
-  if (loadPickerLogo(row, station)) {
-    lcd.startWrite();
-    lcd.setAddrWindow(PICKER_LOGO_X, logoY, PICKER_LOGO_SIZE, PICKER_LOGO_SIZE);
-    lcd.writePixels(pickerLogos[row].pixels, PICKER_LOGO_SIZE * PICKER_LOGO_SIZE, false);
-    lcd.endWrite();
+  lgfx::LGFX_Sprite* frame = pickerCanvas();
+  lgfx::LovyanGFX& canvas = frame ? static_cast<lgfx::LovyanGFX&>(*frame) : static_cast<lgfx::LovyanGFX&>(lcd);
+  const int originY = frame ? y : 0;
+  const int localY = y - originY;
+  if (frame) frame->fillSprite(cBg);
+  canvas.startWrite();
+  canvas.fillRect(PICKER_ROW_X, localY, PICKER_ROW_W, rowH, rowBg);
+  if (selected) canvas.fillRoundRect(PICKER_ROW_X, localY, max(2, ss(3)), rowH, ss(1), cAccent);
+  canvas.drawFastHLine(PICKER_ROW_X + sx(8), localY + rowH, PICKER_ROW_W - sx(16), blend565(cLine, cBg, 150));
+  const int logoY = localY + (rowH - PICKER_LOGO_SIZE) / 2;
+  const LcdFont& numberFont = COMPACT_LCD ? kLcdFontSmall : kLcdFontMedium;
+  if (pickerLogoReady(row, station)) {
+    canvas.setAddrWindow(PICKER_LOGO_X, logoY, PICKER_LOGO_SIZE, PICKER_LOGO_SIZE);
+    // Averaged pixels are native RGB565; the prepared SR56 source is wire-order.
+    canvas.writePixels(pickerLogos[row].pixels, PICKER_LOGO_SIZE * PICKER_LOGO_SIZE, true);
   } else {
     const uint16_t mat = blend565(cAccent, cBg, 35);
-    lcd.fillRoundRect(PICKER_LOGO_X, logoY, PICKER_LOGO_SIZE, PICKER_LOGO_SIZE, ss(4), mat);
-    drawUiText(String(stationIndex + 1), PICKER_LOGO_X + PICKER_LOGO_SIZE / 2,
-               y + rowH / 2, kLcdFontSmall, cAccent, mat, middle_center);
+    canvas.fillRoundRect(PICKER_LOGO_X, logoY, PICKER_LOGO_SIZE, PICKER_LOGO_SIZE, ss(4), mat);
+    pickerText(frame, String(stationIndex + 1), PICKER_LOGO_X + PICKER_LOGO_SIZE / 2,
+               localY + rowH / 2, numberFont, cAccent, mat, middle_center);
   }
-  drawUiText(String(stationIndex + 1), PICKER_ROW_X + PICKER_ROW_W - sx(5),
-             y + rowH / 2, kLcdFontSmall, cMuted, rowBg, middle_right);
+  pickerText(frame, String(stationIndex + 1), PICKER_ROW_X + PICKER_ROW_W - sx(5),
+             localY + rowH / 2, numberFont, cMuted, rowBg, middle_right);
   const auto playback = PlayerState::instance().snapshot();
   if (playback.playing && playback.stationId == station.id) {
-    int playingX = PICKER_ROW_X + PICKER_ROW_W - sx(33);
-    for (int i = 0; i < 3; ++i) lcd.fillRect(playingX + i * ss(3), y + rowH / 2 - sy(3 + i * 2),
-        max(1, ss(2)), sy(6 + i * 2), cAccent);
+    const int playingX = PICKER_ROW_X + PICKER_ROW_W - sx(66);
+    const int playingY = localY + rowH / 2;
+    canvas.fillTriangle(playingX, playingY - sy(9), playingX, playingY + sy(9),
+                     playingX + sx(14), playingY, cAccent);
   }
   setUiFont(2);
-  const int textY = y + (rowH - fontLineHeight(*currentUiFont)) / 2;
+  const int textY = localY + (rowH - fontLineHeight(*currentUiFont)) / 2;
 
-  if (selected) {
+  if (frame) {
+    frame->setClipRect(PICKER_TEXT_X, 0, PICKER_TEXT_W, rowH);
+    drawUiTextOnSprite(*frame, selected && scrollOffset > 0 ? stationName : fitText(stationName, PICKER_TEXT_W),
+                       PICKER_TEXT_X - (selected ? scrollOffset : 0), textY,
+                       *currentUiFont, textFg, rowBg, SCREEN_W, rowH);
+    frame->clearClipRect();
+  } else if (selected) {
     if (scrollOffset > 0 && uiTextWidth(stationName) > PICKER_TEXT_W) {
       drawUiTextClipped(stationName,
                         PICKER_TEXT_X - scrollOffset,
@@ -2102,6 +2174,8 @@ static void drawStationPickerPagedRow(int row, int stationIndex, int selectedId,
   } else {
     drawUiText(fitText(stationName, PICKER_TEXT_W), PICKER_TEXT_X, textY, *currentUiFont, textFg, rowBg);
   }
+  canvas.endWrite();
+  if (frame) presentPickerCanvas(*frame, y, rowH + 1);
 }
 
 static void drawStationPickerMarqueeText(int row, const String& stationName, int scrollOffset) {
@@ -2172,26 +2246,18 @@ static void drawStationPickerPagedPage(int selectedId, int windowStart) {
 
   int start = clampPickerWindowStart(windowStart, stationCount);
 
-  drawPlayerSurface();
-
-  setUiFont(2);
-  drawUiText(I18n::STATIONS_TITLE, sx(28), sy(18), *currentUiFont, cText, cBg);
-
-  setUiFont(1);
-  drawUiText(I18n::STATION_PICKER_HINT_FULL,
-             SCREEN_W / 2,
-             SCREEN_H - sy(20),
-             *currentUiFont,
-             cMuted,
-             cBg,
-             top_center);
-  drawUiText(String(stationCount) + I18n::STATIONS_SAVED_SUFFIX,
-             SCREEN_W - sx(28),
-             sy(24),
-             *currentUiFont,
-             blend565(cMuted, cBg, 180),
-             cBg,
-             top_right);
+  lcd.fillScreen(cBg);
+  lgfx::LGFX_Sprite* frame = pickerCanvas();
+  if (frame) frame->fillSprite(cBg);
+  pickerText(frame, I18n::STATIONS_TITLE, sx(28), sy(18), *uiFontForSize(2), cText, cBg);
+  pickerText(frame, String(stationCount) + I18n::STATIONS_SAVED_SUFFIX, SCREEN_W - sx(28), sy(24),
+             *uiFontForSize(1), blend565(cMuted, cBg, 180), cBg, top_right);
+  if (frame) presentPickerCanvas(*frame, 0, PICKER_ROW_Y);
+  const int hintY = SCREEN_H - sy(32);
+  if (frame) frame->fillSprite(cBg);
+  pickerText(frame, I18n::STATION_PICKER_HINT_FULL, SCREEN_W / 2,
+             SCREEN_H - sy(20) - (frame ? hintY : 0), *uiFontForSize(1), cMuted, cBg, top_center);
+  if (frame) presentPickerCanvas(*frame, hintY, SCREEN_H - hintY);
 
   for (int row = 0; row < PICKER_VISIBLE_ROWS; ++row) {
     int index = start + row;
@@ -2218,6 +2284,7 @@ static void drawStationPickerPaged(int selectedId, int& windowStart, int& render
   }
 
   int previousIndex = manager.indexOfStation(renderedSelectedId);
+  if (renderedSelectedId == selectedId) return;
   if (previousIndex >= windowStart && previousIndex < windowStart + PICKER_VISIBLE_ROWS) {
     drawStationPickerPagedRow(previousIndex - windowStart, previousIndex, selectedId);
   }
@@ -2437,6 +2504,30 @@ static void drawVolumeMeterBar(lgfx::LGFX_Sprite* sprite,
 
 static uint32_t volumeMeterFillUnits(uint8_t volume) {
   return (static_cast<uint32_t>(constrain(volume, 0, 100)) * VU_BAR_COUNT * 256U + 50U) / 100U;
+}
+
+static void drawVolumeFooter(const DisplayModel& m) {
+  VuLayout layout = volumeMeterLayout();
+  layout.axisY = VU_SYMMETRIC_CENTER_Y;
+  layout.clearY = FOOTER_REGION_Y;
+  layout.clearH = FOOTER_REGION_H;
+  const uint32_t fillUnits = volumeMeterFillUnits(m.volume);
+  const uint16_t ghost = blend565(cLine, cBg, 118);
+
+  // Same geometry and fill as the volume screen, redrawn only on volume/layout
+  // changes. It indicates volume rather than sampling or simulating audio.
+  lcd.startWrite();
+  for (int i = 0; i < VU_BAR_COUNT; ++i) {
+    drawVolumeMeterBar(nullptr, layout, i, 0, volumeMeterGhostHeight(i, layout.maxH), ghost);
+    const int32_t rawFill = static_cast<int32_t>(fillUnits) - i * 256;
+    if (rawFill <= 0) continue;
+    const uint16_t barFill = static_cast<uint16_t>(min<int32_t>(256, rawFill));
+    const uint8_t target = volumeMeterTargetHeight(i, layout.maxH, 0, false);
+    const uint8_t height = static_cast<uint8_t>(max<uint16_t>(VU_MIN_H,
+        (static_cast<uint16_t>(target) * barFill) / 256U));
+    drawVolumeMeterBar(nullptr, layout, i, 0, height, cAccent);
+  }
+  lcd.endWrite();
 }
 
 static void startVolumeMeterSweep(uint8_t volume) {
@@ -3027,6 +3118,7 @@ void Display::taskLoop() {
   bool bootFinishRequest = false;
   int pickerAction = 0;
   int pickerStationId = -1;
+  uint32_t pickerRequest = 0;
 
   if (pendingMutex && xSemaphoreTake(pendingMutex, pdMS_TO_TICKS(2)) == pdTRUE) {
     if (hasPendingModel) {
@@ -3046,20 +3138,22 @@ void Display::taskLoop() {
     pendingBootFinish = false;
     pickerAction = pendingPickerAction;
     pickerStationId = pendingPickerStationId;
+    pickerRequest = pendingPickerRequest;
     pendingPickerAction = 0;
     pendingPickerStationId = -1;
+    pendingPickerRequest = 0;
     xSemaphoreGive(pendingMutex);
   }
 
-  if (activityRequest) notifyActivityNow();
+  // Open the list before an unrelated model update can paint the player again.
+  if (pickerAction == 1) showStationPickerNow(pickerStationId, pickerRequest);
+  if (activityRequest && pickerAction != 1) notifyActivityNow();
   if (applyConfigRequest) applyConfigNow();
   if (bootProgressRequest >= 0) showBootProgressNow(static_cast<uint8_t>(bootProgressRequest));
   if (bootFinishRequest) finishBootNow();
   if (hasModel) renderNow(model);
   if (artworkRefreshRequest) refreshArtworkNow();
-  if (pickerAction == 1) {
-    showStationPickerNow(pickerStationId);
-  } else if (pickerAction == 2) {
+  if (pickerAction == 2) {
     hideStationPickerNow();
   }
   tickNow();
@@ -3350,6 +3444,7 @@ void Display::renderCurrent() {
 
   if (stationPickerActive) {
     drawStationPickerPaged(stationPickerSelectedId, stationPickerWindowStart, stationPickerRenderedSelectedId, true);
+    publishStationPickerPresentation();
     return;
   }
 
@@ -3405,9 +3500,6 @@ void Display::renderPartial(const DisplayModel& previous, bool footerModeChanged
   DisplayFooterMode currentFooterMode = footerMode();
   bool footerChanged = footerModeChanged ||
                        (audioFooterMode() && previous.playing != m.playing) ||
-                       previous.ip != m.ip ||
-                       previous.bitrate != m.bitrate ||
-                       previous.codec != m.codec ||
                        (currentFooterMode == DisplayFooterMode::Station && previous.station != m.station) ||
                        (currentFooterMode == DisplayFooterMode::Volume && volumeChanged && !popupActive);
 
@@ -3454,20 +3546,21 @@ void Display::renderStationPickerMarqueeFrame() {
   }
 
   unsigned long now = millis();
+  if (pickerSelectionPending()) return;
   static unsigned long lastLogoCheck = 0;
   static int nextLogoRow = 0;
-  if (now - lastLogoCheck >= 250) {
-    lastLogoCheck = now;
-    const int row = nextLogoRow++ % PICKER_VISIBLE_ROWS;
-    Station visible;
-    if (StationManager::instance().stationAtIndex(stationPickerWindowStart + row, visible)) {
-      const bool wasReady = pickerLogos[row].ready;
-      const String previousPath = pickerLogos[row].path;
-      const time_t previousModified = pickerLogos[row].modified;
-      const bool ready = loadPickerLogo(row, visible);
-      if (wasReady != ready || (ready && (previousPath != pickerLogos[row].path || previousModified != pickerLogos[row].modified))) {
-        drawStationPickerPagedRow(row, stationPickerWindowStart + row, stationPickerSelectedId);
-      }
+  if (StationPickerPolicy::elapsedAtLeast(now, pickerLastInputMs, StationPickerPolicy::INPUT_SETTLE_MS)) {
+    const int readyRow = advancePickerLogo();
+    if (readyRow >= 0) {
+      drawStationPickerPagedRow(readyRow, stationPickerWindowStart + readyRow,
+                               stationPickerSelectedId, stationPickerMarqueeOffset);
+    }
+    if (pickerLogoJob.row < 0 && now - lastLogoCheck >= 250) {
+      lastLogoCheck = now;
+      const int row = nextLogoRow++ % PICKER_VISIBLE_ROWS;
+      Station visible;
+      if (StationManager::instance().stationAtIndex(stationPickerWindowStart + row, visible))
+        beginPickerLogo(row, visible, now);
     }
   }
   if (stationPickerMarqueeSelectedId != stationPickerSelectedId) {
@@ -3630,26 +3723,50 @@ void Display::renderAudioMeterFrame(bool force) {
   drawVuMeter(lastModel, force);
 }
 
-void Display::showStationPicker(int selectedStationId) {
+uint32_t Display::showStationPicker(int selectedStationId) {
   if (!taskStarted || !pendingMutex) {
-    showStationPickerNow(selectedStationId);
-    return;
+    const uint32_t request = nextPickerRequest();
+    showStationPickerNow(selectedStationId, request);
+    return request;
   }
 
   if (xSemaphoreTake(pendingMutex, pdMS_TO_TICKS(20)) == pdTRUE) {
+    const uint32_t request = nextPickerRequest();
     pendingActivity = true;
     pendingPickerAction = 1;
     pendingPickerStationId = selectedStationId;
+    pendingPickerRequest = request;
     xSemaphoreGive(pendingMutex);
+    return request;
   }
+  return 0;
 }
 
-void Display::showStationPickerNow(int selectedStationId) {
+bool Display::stationPickerPresented(uint32_t request, uint32_t& presentedMs) const {
+  if (!request || pickerRequestSerial.load(std::memory_order_acquire) != request ||
+      pickerPresentedSerial.load(std::memory_order_acquire) != request) return false;
+  presentedMs = pickerPresentedAt.load(std::memory_order_relaxed);
+  return pickerPresentedSerial.load(std::memory_order_acquire) == request;
+}
+
+void Display::publishStationPickerPresentation() {
+  if (!hasRenderedModel || !stationPickerActive || stationPickerWindowStart < 0 ||
+      stationPickerRenderedSelectedId != stationPickerSelectedId || pickerSelectionPending()) return;
+  if (pickerPresentedSerial.load(std::memory_order_acquire) == pickerActiveSerial) return;
+  pickerPresentedAt.store(millis(), std::memory_order_relaxed);
+  pickerPresentedSerial.store(pickerActiveSerial, std::memory_order_release);
+}
+
+void Display::showStationPickerNow(int selectedStationId, uint32_t request) {
+  if (pickerRequestSerial.load(std::memory_order_acquire) != request) return;
   bool wasActive = stationPickerActive;
   bool selectionChanged = !stationPickerActive || stationPickerSelectedId != selectedStationId;
-  notifyActivityNow();
+  pickerActiveSerial = request;
+  pickerLastInputMs = millis();
   stationPickerActive = true;
   stationPickerSelectedId = selectedStationId;
+  notifyActivityNow();
+  if (pickerPresentedSerial.load(std::memory_order_acquire) == request) return;
   if (selectionChanged) {
     resetStationPickerMarqueeNow(selectedStationId);
   }
@@ -3663,15 +3780,18 @@ void Display::showStationPickerNow(int selectedStationId) {
 
   if (wasActive && hasRenderedModel && !idleBlanked && !idleClockActive && !lastModel.apMode) {
     drawStationPickerPaged(stationPickerSelectedId, stationPickerWindowStart, stationPickerRenderedSelectedId, false);
+    publishStationPickerPresentation();
     return;
   }
 
   stationPickerWindowStart = -1;
   stationPickerRenderedSelectedId = -1;
   drawStationPickerPaged(stationPickerSelectedId, stationPickerWindowStart, stationPickerRenderedSelectedId, true);
+  publishStationPickerPresentation();
 }
 
 void Display::hideStationPicker() {
+  nextPickerRequest();
   if (!taskStarted || !pendingMutex) {
     hideStationPickerNow();
     return;
@@ -3689,6 +3809,7 @@ void Display::hideStationPickerNow() {
   notifyActivityNow();
   if (!stationPickerActive) return;
   stationPickerActive = false;
+  cancelPickerLogoJob();
   stationPickerWindowStart = -1;
   stationPickerRenderedSelectedId = -1;
   stationPickerMarqueeSelectedId = -1;

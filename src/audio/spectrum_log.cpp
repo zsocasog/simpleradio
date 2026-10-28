@@ -13,6 +13,11 @@
 namespace SpectrumLog {
 namespace {
 QueueHandle_t mailbox = nullptr;
+struct Event { char text[256] = {}; };
+constexpr size_t EVENT_COUNT = 8;
+QueueHandle_t events = nullptr;
+StaticQueue_t eventControl;
+alignas(4) uint8_t eventStorage[EVENT_COUNT * sizeof(Event)];
 StaticQueue_t mailboxControl;
 alignas(4) uint8_t mailboxStorage[sizeof(Message)];
 TaskHandle_t writerTask = nullptr;
@@ -54,8 +59,18 @@ void writeMessage(const Message& message) {
 
 void writerEntry(void*) {
   Message message;
+  static_assert(sizeof(Event) <= sizeof(Message), "Event must fit the shared writer buffer");
   for (;;) {
-    if (xQueueReceive(mailbox, &message, portMAX_DELAY) == pdTRUE) writeMessage(message);
+    bool received = false;
+    for (int i = 0; i < 4 && xQueueReceive(events, &message, 0) == pdTRUE; ++i) {
+      received = true;
+      writeMessage(message);
+    }
+    if (xQueueReceive(mailbox, &message, 0) == pdTRUE) {
+      received = true;
+      writeMessage(message);
+    }
+    if (!received) ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
   }
 }
 } // namespace
@@ -66,10 +81,12 @@ bool begin() {
   // locks instead of letting its small task stack consume the last heap.
   if (heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT) < 16 * 1024) return false;
   mailbox = xQueueCreateStatic(1, sizeof(Message), mailboxStorage, &mailboxControl);
-  if (!mailbox) return false;
+  events = xQueueCreateStatic(EVENT_COUNT, sizeof(Event), eventStorage, &eventControl);
+  if (!mailbox || !events) return false;
   if (xTaskCreatePinnedToCore(writerEntry, "spectrum-log", 3072, nullptr,
                               tskIDLE_PRIORITY, &writerTask, 1) != pdPASS) {
     mailbox = nullptr;
+    events = nullptr;
     writerTask = nullptr;
     return false; // No synchronous Serial fallback if logging cannot start.
   }
@@ -79,7 +96,18 @@ bool begin() {
 bool post(const Message& message) {
   // A one-element overwrite mailbox has no timeout or backpressure. If USB is
   // stalled, old pending reports are replaced instead of accumulating.
-  return mailbox && xQueueOverwrite(mailbox, &message) == pdPASS;
+  const bool sent = mailbox && xQueueOverwrite(mailbox, &message) == pdPASS;
+  if (sent && writerTask) xTaskNotifyGive(writerTask);
+  return sent;
+}
+
+bool postEvent(const char* text) {
+  if (!events || !text) return false;
+  Event event;
+  snprintf(event.text, sizeof(event.text), "%s", text);
+  if (xQueueSend(events, &event, 0) != pdPASS) { noteSkip(); return false; }
+  if (writerTask) xTaskNotifyGive(writerTask);
+  return true;
 }
 
 void printf(const char* format, ...) {

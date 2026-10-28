@@ -9,7 +9,7 @@
 #include "artwork_json.h"
 
 #include <Arduino.h>
-static auto& artworkTraceSerial = Serial;
+#include "../audio/spectrum_log.h"
 #include <ArduinoJson.h>
 #include <LittleFS.h>
 #include <LovyanGFX.hpp>
@@ -29,6 +29,22 @@ static auto& artworkTraceSerial = Serial;
 #include "../stations/station_manager.h"
 #include "../config/app_config.h"
 #include "../config/hardware_config.h"
+// Preserve unconditional artwork diagnostics without letting USB stall main,
+// image preparation or networking. Serial initialization is setup-only.
+class ArtworkTraceSerial {
+public:
+  void begin(unsigned long baud) { Serial.begin(baud); SpectrumLog::begin(); }
+  int printf(const char* format, ...) {
+    char message[256];
+    va_list args;
+    va_start(args, format);
+    const int length = vsnprintf(message, sizeof(message), format, args);
+    va_end(args);
+    SpectrumLog::postEvent(message);
+    return length;
+  }
+};
+static ArtworkTraceSerial artworkTraceSerial;
 #include "../config/logging.h"
 #include "../web/web_server.h"
 
@@ -48,6 +64,7 @@ static constexpr unsigned long CURRENT_ARTWORK_TLS_GRACE_MS = 5000;
 static constexpr unsigned long ALBUM_ART_LOOKUP_BUDGET_MS = 35000;
 static constexpr unsigned long ALBUM_ART_IMAGE_BUDGET_MS = 12000;
 static constexpr unsigned long ALBUM_ART_MISSING_RETRY_MS = 120000;
+static constexpr unsigned long ALBUM_ART_START_RETRY_MS = 3000;
 static constexpr const char* ALBUM_ART_CACHE_PREFIX = "album:v5:";
 static constexpr size_t PREWARM_QUEUE_LIMIT = 160;
 static constexpr uint32_t MIN_BUDGETED_HTTP_MS = 500;
@@ -239,6 +256,7 @@ static uint32_t boundedTimeoutMs(uint32_t normalMs, uint32_t deadlineMs) {
 static bool isRemoteArtworkSource(const String& source);
 
 void ArtworkCache::loop() {
+  lastServiceMs = millis();
   PlayerStateSnapshot state = PlayerState::instance().snapshot();
 
   if (albumLookupRetryRequested && !isDownloadActive()) {
@@ -257,8 +275,8 @@ void ArtworkCache::loop() {
     if (!state.playing) {
       lastIdlePrewarmStationId = -1;
       lastAttemptMs = 0;
-      audioConnectionReady = false;
-      audioConnectionReadyMs = 0;
+      // The audio pump owns this flag. A stopped snapshot can already be stale
+      // after a successful connection on the other task; never erase it here.
     }
     lastArtworkPlaying = state.playing;
   }
@@ -518,10 +536,12 @@ void ArtworkCache::loop() {
     } else if (audioConnectionReady && audioConnectionReadyMs > 0 &&
                millis() - audioConnectionReadyMs >= 1500 &&
                !(lastAlbumLookupKey == requestedAlbumKey &&
-                 millis() - lastAlbumLookupMs < ALBUM_ART_MISSING_RETRY_MS)) {
+                 millis() - lastAlbumLookupMs < (lastAlbumStartFailed
+                     ? ALBUM_ART_START_RETRY_MS : ALBUM_ART_MISSING_RETRY_MS))) {
       lastAlbumLookupKey = requestedAlbumKey;
       lastAlbumLookupMs = millis();
-      if (startAlbumArtworkTask(state.artist, state.title, requestedAlbumKey)) return;
+      lastAlbumStartFailed = !startAlbumArtworkTask(state.artist, state.title, requestedAlbumKey);
+      if (!lastAlbumStartFailed) return;
     }
   }
 
@@ -772,6 +792,7 @@ bool ArtworkCache::startAlbumArtworkTask(const String& artist, const String& tit
   ArtworkDownloadJob* job = new (std::nothrow) ArtworkDownloadJob();
   if (!job) {
     markDownloadFinished();
+    albumArtTrace("search start deferred: job memory unavailable; retry in 3s");
     return false;
   }
   job->cache = this;
@@ -785,6 +806,9 @@ bool ArtworkCache::startAlbumArtworkTask(const String& artist, const String& tit
   if (ok != pdPASS) {
     markDownloadFinished();
     delete job;
+    albumArtTrace("search start deferred: task stack unavailable; internal=%u largest=%u; retry in 3s",
+        static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)),
+        static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)));
     return false;
   }
   setDownloadTaskHandle(handle);

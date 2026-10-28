@@ -57,3 +57,61 @@ paraméter csak az előnézet része. A program nem olvassa a secrets.ini-t és 
 vezérli a valódi rádiót; a módosításokat csak a saját memóriájában tárolja.
 
 Az ellenőrzés részletei a projekt gyökerében lévő `design-qa.md` fájlban vannak.
+
+## LCD-előnézet és mezőkiemelések
+
+A Kijelző oldal előnézete a jobb oszlop tetején, a Képforrás beállítás fölött
+található, külön magyarázó szöveg nélkül. A 480×320-as LCD lejátszójának arányait
+követi: borító, számcím, előadó és alsó kijelzősáv. Mindhárom VU-stílus,
+a 24 sávos spektrum, a hangerő, az állomás és a dátum/idő saját mintát kap;
+kikapcsolt alsó sávnál ez a terület üres. A téma és az inverz beállítás is látható.
+Az oszlopok szemléltető állóképek; az előnézet nem kér hangmintákat a rádiótól.
+
+A mezők fókuszkiemelése a kereten belül marad, így a lenyíló menük nyilánál és
+az oldalsó keresőben sem vágódik le. A nagyobb hangerőhullám körül nincs keret;
+billentyűzetes kezeléskor az oszlopok kapnak jelzést. Az 50%-os pont továbbra is
+a lejátszásgomb közepére, a hullám alja a borító aljához igazodik asztali nézetben.
+Ezek a módosítások csak a data csomagot érintik.
+
+## LCD-lista és oszlopos hangerőjelző
+
+A lejátszón nincs külön felső állomásnév; a számcím és az előadó közös blokkja
+középre kerül a borító melletti területen. A megállított lejátszó és a hiányzó
+számadatok továbbra is az állomásnévvel azonosíthatók.
+
+A csatornalista a meglévő SR56 képeket kicsinyíti 32×32-es méretre. A színcsatornák
+átlagolása előtt kezeli a tárolt bájtsorrendet, majd natív RGB565 képként adja át
+az eredményt a kijelzőnek. A sorszámok nagyobbak, a lejátszó állomást play háromszög
+jelöli; a szövegsáv a jelölés és a számok előtt ér véget.
+
+Az alsó hangerőjelző a hangerőképernyő 24 oszlopos mintáját, méretezését és
+hangerő szerinti kitöltését használja a VU helyén. Nincs IP-cím, kodekadat vagy
+hangerőfelirat. Ez egy hangerőállást mutató minta, nem hangszintmérő; csak a
+szükséges változásokkor rajzolódik újra. A webes előnézet ezt is követi.
+
+Ehhez a körhöz firmware és data/LittleFS feltöltése is szükséges.
+
+## Csatornaválasztó válaszideje és borítókeresés
+
+A csatornaválasztó a fejlécet és az egyes sorokat egy újrahasznált, PSRAM-ban
+levő rajzfelületen készíti el, majd blokkonként küldi az LCD-re. Az enkóder
+tekerésekor a már elkészült 32×32-es logókat használja; a rajzolás nem nyit
+képfájlokat. A hiányzó kis képek előkészítése rövid részletekben, a tekerés
+megállása után folytatódik. Az automatikus lejátszás késleltetése csak akkor
+telhet le, ha az aktuális kiválasztás már megjelent a kijelzőn.
+
+A képfeldolgozó naplósorai is a külön naplózó feladaton keresztül mennek az
+USB-re. A várakozó naplók száma korlátozott: megtelt puffer esetén kimaradhat
+egy naplósor, de a képfeldolgozás nem vár a soros monitorra. A hangkapcsolat
+kész állapotát az audiofeladat kezeli, így egy korábbi megállított állapot
+feldolgozása nem tilthatja le az új kapcsolat albumborító-keresését. Sikertelen
+keresőfeladat-indítás három másodperc után újrapróbálható; a találat nélküli
+keresések korábbi visszavárása és a források sorrendje változatlan.
+
+A `/api/system/status` válaszában az `artwork` rész mutatja a képfeldolgozó
+utolsó kiszolgálása óta eltelt időt, a hangkapcsolat kész állapotát és az aktív
+képfeladatot. A `system` memóriaadatai segítenek elkülöníteni a memóriahiányt
+a megállt feladattól akkor is, ha a soros monitor nem ad új sorokat.
+
+Ez az optimalizálás firmware-feltöltést igényel. A korábbi webes előnézet
+módosításaihoz a data/LittleFS csomag is kell, ha azt még nem töltötted fel.

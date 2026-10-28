@@ -11,6 +11,7 @@
 #include "../artwork/artwork_cache.h"
 #include "../display/display.h"
 #include "../display/display_presenter.h"
+#include "../display/station_picker_policy.h"
 #include "../state/player_state.h"
 #include "../stations/station_manager.h"
 #include "../web/web_server.h"
@@ -64,6 +65,7 @@ static bool stationPickerActive = false;
 static int stationPickerIndex = -1;
 static unsigned long stationPickerChangedMs = 0;
 static unsigned long stationPickerOpenedMs = 0;
+static uint32_t stationPickerRequest = 0;
 static int pendingVolumeTarget = -1;
 static unsigned long pendingVolumeTargetMs = 0;
 static uint16_t irStationNumberBuffer = 0;
@@ -309,11 +311,12 @@ static void openStationPicker() {
 
   int stationId = -1;
   StationManager::instance().stationIdAtIndex(stationPickerIndex, stationId);
-  Display::instance().showStationPicker(stationId);
+  stationPickerRequest = Display::instance().showStationPicker(stationId);
 }
 
 static void closeStationPicker() {
   stationPickerActive = false;
+  stationPickerRequest = 0;
   Display::instance().hideStationPicker();
 }
 
@@ -329,7 +332,7 @@ static void moveStationPicker(int direction) {
 
   int stationId = -1;
   StationManager::instance().stationIdAtIndex(stationPickerIndex, stationId);
-  Display::instance().showStationPicker(stationId);
+  stationPickerRequest = Display::instance().showStationPicker(stationId);
 }
 
 static void playPickedStation() {
@@ -501,9 +504,15 @@ static void loopEncoderOne() {
 
   if (singleEncoderMode && stationPickerActive && config.encoderAutoPlayStation) {
     unsigned long now = millis();
-    if (stationPickerChangedMs &&
-        now - stationPickerOpenedMs >= config.encoderLongPressMs &&
-        now - stationPickerChangedMs >= config.encoderAutoPlayMs) {
+    if (!stationPickerRequest) {
+      int stationId = -1;
+      if (StationManager::instance().stationIdAtIndex(stationPickerIndex, stationId))
+        stationPickerRequest = Display::instance().showStationPicker(stationId);
+    }
+    uint32_t presentedMs = 0;
+    if (Display::instance().stationPickerPresented(stationPickerRequest, presentedMs) &&
+        StationPickerPolicy::autoPlayReady(now, stationPickerOpenedMs, stationPickerChangedMs,
+            presentedMs, config.encoderLongPressMs, config.encoderAutoPlayMs)) {
       playPickedStation();
     }
   }

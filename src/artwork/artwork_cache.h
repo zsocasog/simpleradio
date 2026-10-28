@@ -45,6 +45,8 @@ public:
   void retryCurrentAlbumLookup();
   String lastDownloadStatus();
   unsigned long lastDownloadStatusAgeMs();
+  bool audioReady() const { return audioConnectionReady; }
+  unsigned long serviceAgeMs() const { return millis() - lastServiceMs; }
 
 private:
   ArtworkCache() = default;
@@ -175,6 +177,8 @@ private:
   String previousAlbumArtworkPath;
   String lastAlbumLookupKey;
   unsigned long lastAlbumLookupMs = 0;
+  bool lastAlbumStartFailed = false;
+  volatile unsigned long lastServiceMs = 0;
   volatile bool albumLookupRetryRequested = false;
   String deferredArtworkUrl;
   int deferredArtworkStationId = -1;

@@ -326,3 +326,109 @@ UI task. The 50% two-line-title fixture screenshots are separately labelled QA
 evidence and are not presented as real-device captures.
 
 final result: passed
+
+## LCD preview, field focus and volume spacing — 2026-10-28
+
+Validated against the local in-memory fixture, not the live radio:
+
+- All six footer modes and all three VU styles render distinct static samples.
+  Spectrum and ordinary VU use 24 columns; classic VU fills outward from the
+  centre using the existing signature shape. The off mode has an empty footer.
+- Artwork and metadata use the LCD's 480×320 layout coordinates. Theme and
+  inversion updates follow the existing settings. HU/EN/template include the
+  static-preview explanation; the English text was checked in the browser.
+- Red theme, select focus and the drawer search field show an inset focus border,
+  including the select arrow area. Keyboard volume focus highlights the bars
+  without drawing a surrounding rectangle.
+- Desktop geometry at 1440 px: wave centre = play centre = 731 px; wave bottom =
+  cover bottom = 441 px. Checked tablet 768 px and phone 390/320 px layouts.
+  At 320 px all volume controls fit inside the 305 px scrollbar-adjusted width.
+- 178 JavaScript regression checks and five version-generator checks passed;
+  every data JavaScript file passed syntax validation. LittleFS build succeeded.
+
+Screenshots are in `.pio/artifacts/ui-polish-20261028/`. Only data assets and
+documentation changed; no firmware source, hardware upload or GitHub push was
+performed in this follow-up. Uploading the data/LittleFS image is sufficient.
+
+final result: passed
+
+## LCD player, station picker colors and volume footer — 2026-10-28
+
+- Removed the separate top station label from the LCD song layout and its web
+  preview. The title/artist block remains centred beside the artwork. Station
+  fallback text for stopped playback or absent metadata is retained.
+- Picker downsampling now reads SR56's big-endian sprite bytes before averaging
+  RGB565 channels. The resulting native RGB565 buffer is transferred with the
+  corresponding LovyanGFX conversion flag. Cached 176×176 files are unchanged;
+  the picker still keeps only five 32×32 PSRAM buffers and adds no downloads.
+- Three color regression checks execute the production conversion/averaging
+  logic with known red/green/blue/white pixels and mixed-color edges, and verify
+  the native RGB565 display handoff. The list uses larger numbers and a 14×18
+  play triangle, reserving space before both in the marquee area.
+- The volume footer reuses the existing 24-column volume-screen geometry and
+  fill helpers at the symmetric VU position, without IP/codec/percentage text.
+  It redraws on relevant state changes without an audio sampling or animation
+  worker. The existing popup, VU and spectrum paths remain separate.
+- Local browser checks: 0% has 24 ghost bars and no active bars; 50% has 12 active
+  bars; 100% has 24 active bars. No footer text or separate station heading.
+  Checked desktop and 390 px phone preview; no JavaScript console errors.
+- Firmware build passed (77.44 s), LittleFS build passed (5.69 s), 181 JavaScript
+  checks and five version-generator tests passed; all data JS syntax and diff
+  whitespace checks passed. No artwork-network or audio source files changed.
+
+Evidence: `.pio/artifacts/lcd-refinements-20261028/lcd-volume-preview.jpg` is the
+local web preview, not a photograph of the physical LCD. No device upload or
+GitHub push was performed. Firmware and data/LittleFS are both required.
+
+final result: passed
+
+### Preview placement follow-up
+
+Moved the layout preview immediately below the player-view section heading,
+above the artwork-source control. Removed the explanatory caption, its unused
+translations and the dangling accessibility description reference; the preview
+keeps its accessible name. The 27 relevant UI checks, JS syntax check and
+LittleFS build (4.78 s) passed. This additional change requires data only; the
+preceding physical-LCD changes still require the firmware built above.
+
+## Station picker responsiveness and stalled artwork scheduling — 2026-10-28
+
+- List text, number, play marker and cached logo are composed in a reusable
+  PSRAM band, then transferred to the LCD together. Moving within a page paints
+  only the old and new selected rows. The per-paint path has no file opens.
+- Thumbnail conversion is deferred until 120 ms after the latest processed
+  selection. Each step handles at most two output rows with a 2 ms target, and
+  yields to pending selection requests; individual filesystem calls are not
+  hard realtime. Five 32×32 buffers and one approximately 51 KiB band are kept
+  in PSRAM. No network requests or flash writes were added to the list renderer.
+- Input waits for an acknowledgement of the exact displayed selection request
+  before its configured autoplay interval can expire. Tests cover delayed
+  rendering, repeated station IDs, pending input, and millis rollover.
+- Read-only checks of the live radio confirmed album mode, available Last.fm
+  credentials, artist/title metadata and a connected audio stream, with no
+  current album artwork. The supplied trace contains successful station-logo
+  work but no album search starts; USB writes reach 567972 us. These observations
+  do not prove a single runtime cause.
+- Removed a source-level race where the artwork loop could clear audio-ready
+  using an already stale stopped snapshot. Actual audio stops/disconnections
+  now clear readiness in the audio pump. A simulated interleaving regression
+  test preserves a successful connection until a real stop occurs.
+- Unconditional artwork logs now join a bounded eight-event FIFO serviced by
+  the existing isolated idle-priority logger. Producers never wait for USB or
+  queue space; overflow drops diagnostics. Tests exercise full queues and a
+  blocked USB consumer. No FFT band, smoothing or audio-processing changes.
+- Failed artwork task creation reports its cause and retries after 3 s instead
+  of silently suppressing another start for 120 s. Completed no-cover searches
+  retain the previous backoff. Provider ranking and transport are unchanged.
+- System status exposes artwork service age, audio readiness, active job and
+  elapsed time, plus free heap/largest block/PSRAM for non-serial diagnosis.
+- Firmware build passed (324.87 s, full library rebuild). All 191 JavaScript
+  checks and five version-generator tests passed, as did data JS syntax and
+  whitespace checks. LittleFS build passed (4.44 s). Physical encoder response,
+  playback and serial-monitor
+  behaviour still require device validation; no upload or GitHub push occurred.
+
+Evidence: `.pio/artifacts/lcd-refinements-20261028/firmware-responsiveness.log`,
+`all-tests-responsiveness.log`, `responsiveness-tests.log`, and
+`picker-tests-final.log` in that directory. These fixes require firmware; the
+preceding web preview changes additionally require data if not yet uploaded.

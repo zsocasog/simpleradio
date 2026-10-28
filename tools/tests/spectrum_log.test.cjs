@@ -17,6 +17,7 @@ function body(text,name){
 }
 function translate(text){
   return text.replace(/const (?:size_t|uint32_t) /g,'const ').replace(/\bsize_t /g,'let ')
+    .replace(/const bool /g,'const ')
     .replace(/std::min<size_t>\(/g,'Math.min(').replace(/std::max\(/g,'Math.max(')
     .replace(/static_cast<int>\(/g,'Math.trunc(')
     .replace(/&statsMux/g,'statsMux').replace(/&message/g,'message')
@@ -28,7 +29,7 @@ const postBody=translate(body(source,'bool post('));
 const writerBody=translate(body(source,'void writeMessage('));
 function harness({connected=true,space=1024,write,initialized=true}={}){
   const context=vm.createContext({now:0,Math,sent:[],overwrites:0,mailbox:initialized?{}:null,
-    statsMux:0,writeMaxUs:0,skipped:0,pdPASS:1});
+    statsMux:0,writeMaxUs:0,skipped:0,pdPASS:1,writerTask:null});
   context.Serial={connected,availableForWrite:()=>space,write:(text,count)=>{
     if(write)return write(context,text,count);
     context.sent.push(text.slice(0,count));context.now+=10;return count;
@@ -48,6 +49,27 @@ test('producer never touches USB, and a stopped consumer keeps only the latest r
   h.Serial.availableForWrite=h.Serial.write=()=>{throw new Error('producer reached USB');};
   for(let i=0;i<10000;++i)assert.equal(h.post({text:`report ${i}`}),true);
   assert.equal(h.mailbox.latest.text,'report 9999');assert.equal(h.overwrites,10000);
+  assert.equal(h.now,0);
+});
+
+test('artwork events use a bounded FIFO and never touch a blocked USB driver',()=>{
+  const queued=[];
+  const h=harness({connected:false});
+  h.events={};
+  h.Serial.write=h.Serial.availableForWrite=()=>{throw new Error('event producer reached USB');};
+  h.xQueueSend=(_queue,event,timeout)=>{
+    assert.equal(timeout,0);
+    if(queued.length===8)return 0;
+    queued.push(event.text);return 1;
+  };
+  const eventBody=translate(body(source,'bool postEvent('))
+    .replace('Event event;','const event={text:""};')
+    .replace('snprintf(event.text, sizeof(event.text), "%s", text);','event.text=text.slice(0,255);')
+    .replace('&event','event');
+  vm.runInContext('function event(text) '+eventBody,h);
+  for(let i=0;i<1000;i++)h.event('album event '+i);
+  assert.deepEqual(queued,Array.from({length:8},(_,i)=>'album event '+i));
+  assert.equal(h.skipped,992);
   assert.equal(h.now,0);
 });
 
@@ -97,6 +119,7 @@ test('unavailable logger disables logging without preventing spectrum startup',(
 test('low internal memory skips the optional writer before allocating a task',()=>{
   const code=body(source,'bool begin(')
     .replace(/sizeof\(Message\)/g,'512').replace(/&mailboxControl/g,'mailboxControl')
+    .replace(/&eventControl/g,'eventControl')
     .replace(/&writerTask/g,'writerTask').replace('tskIDLE_PRIORITY','0').replace(/nullptr/g,'null');
   let allocations=0;
   const start=new Function('writerTask','heap_caps_get_free_size','MALLOC_CAP_INTERNAL','MALLOC_CAP_8BIT',

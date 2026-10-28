@@ -16,7 +16,8 @@ public:
   void render(const DisplayModel& model);
   void tick();
   void applyConfig();
-  void showStationPicker(int selectedStationId);
+  uint32_t showStationPicker(int selectedStationId);
+  bool stationPickerPresented(uint32_t request, uint32_t& presentedMs) const;
   void hideStationPicker();
   void notifyActivity();
   void refreshArtwork();
@@ -32,7 +33,8 @@ private:
   void renderNow(const DisplayModel& model);
   void tickNow();
   void applyConfigNow();
-  void showStationPickerNow(int selectedStationId);
+  void showStationPickerNow(int selectedStationId, uint32_t request);
+  void publishStationPickerPresentation();
   void hideStationPickerNow();
   void notifyActivityNow();
   void refreshArtworkNow();
@@ -61,6 +63,7 @@ private:
   bool pendingBootFinish = false;
   int pendingPickerAction = 0;
   int pendingPickerStationId = -1;
+  uint32_t pendingPickerRequest = 0;
   DisplayModel lastModel;
   DisplayModel deferredBootModel;
   bool hasDeferredBootModel = false;

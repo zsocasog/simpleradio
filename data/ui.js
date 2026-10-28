@@ -10,6 +10,7 @@
   const addMarkup = (parent, html) => { const template = document.createElement("template"); template.innerHTML = html; parent.appendChild(template.content); };
   const scriptSource = document.currentScript?.getAttribute("src") || "";
   const assetQuery = scriptSource.includes("?") ? "?" + scriptSource.split("?")[1].split("#")[0] : "";
+  const signatureShape = [92,142,204,126,232,166,108,190,248,154,212,116,132,226,172,104,198,244,150,214,122,184,236,138];
   U.icon = name => '<svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><use href="' + esc("icons.svg" + assetQuery + "#" + name) + '"></use></svg>';
   const disclosureLabel = (node, label) => { node.innerHTML = U.icon("chevron-right") + '<span>' + esc(label) + '</span>'; };
   const button = (label, iconName, action, className = "quiet-button") => {
@@ -394,8 +395,17 @@
     [...footerSection.children].filter(n => n.tagName !== "HEADER").forEach(n => artworkSection.appendChild(n));
     footerSection.remove();
     const preview = make("div", "layout-preview");
-    preview.innerHTML = '<small>' + esc(tr("ui.preview", "Elrendezési előnézet")) + '</small><div class="preview-content"><div id="layoutPreviewArt" class="preview-art"></div><div data-user-content><strong id="layoutPreviewTitle"></strong><small id="layoutPreviewArtist"></small></div><small id="layoutPreviewMode"></small></div>';
-    artworkSection.appendChild(preview);
+    preview.innerHTML = '<small id="layoutPreviewLabel">' + esc(tr("ui.preview", "Elrendezési előnézet")) + '</small>' +
+      '<div id="layoutPreviewScreen" class="lcd-preview" role="img" aria-labelledby="layoutPreviewLabel layoutPreviewMode">' +
+      '<div id="layoutPreviewArt" class="preview-art" aria-hidden="true"></div>' +
+      '<div id="layoutPreviewInfo" class="preview-info" data-user-content><strong id="layoutPreviewTitle" class="preview-title"></strong><span id="layoutPreviewArtist" class="preview-artist"></span></div>' +
+      '<svg id="layoutPreviewFooter" class="preview-footer" viewBox="0 252 480 68" aria-hidden="true"></svg></div>' +
+      '<span id="layoutPreviewMode" class="visually-hidden"></span>';
+    artworkSection.querySelector("header").after(preview);
+    // Reuse displayed artwork; the static preview needs no audio samples or artwork search.
+    preview.setAttribute("data-user-content", "");
+    id("displayView").addEventListener("input", () => U.updateLayoutPreview());
+    id("displayView").addEventListener("change", () => U.updateLayoutPreview());
     const standby = id("displayIdleEnabled").closest(".settings-section");
     const standbyToggle = id("displayIdleEnabled").closest("label");
     standbyToggle.classList.add("section-enable"); standbyToggle.querySelector(".setting-copy").classList.add("visually-hidden");
@@ -425,8 +435,7 @@
     U.muteButton = button(tr("ui.mute", "Némítás"), "volume", () => U.toggleMute(), "mute-button");
     volume.replaceWith(U.muteButton);
     const range = id("volume"), pattern = make("span", "volume-pattern"); pattern.setAttribute("aria-hidden", "true");
-    const shape = [92,142,204,126,232,166,108,190,248,154,212,116,132,226,172,104,198,244,150,214,122,184,236,138];
-    U.volumePills = shape.map(height => { const bar = make("span", "volume-pill"); bar.style.height = Math.round(height / 248 * 100) + "%"; pattern.appendChild(bar); return bar; });
+    U.volumePills = signatureShape.map(height => { const bar = make("span", "volume-pill"); bar.style.height = Math.round(height / 248 * 100) + "%"; pattern.appendChild(bar); return bar; });
     const field = make("span", "signature-volume"); range.before(field); field.append(pattern, range);
     range.setAttribute("aria-label", tr("player.volume", "Hangerő"));
     U.restoreVolume = 15;
@@ -526,10 +535,67 @@
   U.updateLayoutPreview = () => {
     if (!U.ready) return;
     const state = U.lastPlayer || {};
-    id("layoutPreviewArt").style.backgroundImage = id("webCoverArt").style.backgroundImage;
-    id("layoutPreviewTitle").textContent = state.title || state.station || "SimpleRadio";
-    id("layoutPreviewArtist").textContent = state.artist || "";
-    id("layoutPreviewMode").textContent = id("displayFooterMode").selectedOptions[0]?.textContent || "";
+    const mode = id("displayFooterMode").value, style = id("displayVuStyle").value;
+    const source = id("displayArtworkMode").value, invert = id("displayInvert").checked;
+    const cover = id("webCoverArt");
+    const title = id("current-station").textContent || state.station || "SimpleRadio";
+    const artist = id("playerArtist").textContent || id("meta").textContent;
+    const volume = numberValue("volume", state.volume || 0);
+    const label = [id("displayFooterMode").selectedOptions[0]?.textContent,
+      mode === "vu" ? id("displayVuStyle").selectedOptions[0]?.textContent : ""].filter(Boolean).join(" · ");
+    const key = JSON.stringify([mode, style, source, invert, cover.style.backgroundImage, title, artist, volume, label]);
+    if (U.layoutPreviewKey === key) return;
+    U.layoutPreviewKey = key;
+    id("layoutPreviewScreen").classList.toggle("is-inverted", invert);
+    const art = id("layoutPreviewArt"); art.style.backgroundImage = cover.style.backgroundImage;
+    art.textContent = cover.style.backgroundImage ? "" : cover.textContent;
+    art.classList.toggle("is-album", source === "album" && !!(state.albumArtworkPath || state.hasStreamImage));
+    id("layoutPreviewTitle").textContent = title;
+    id("layoutPreviewArtist").textContent = artist;
+    visible(id("layoutPreviewArtist"), !!artist);
+    id("layoutPreviewMode").textContent = label;
+    // Coordinates mirror display.cpp's 480x320 player and 24-column meter grid.
+    const rect = (x, y, width, height, color = "currentColor", radius = 3) =>
+      `<rect x="${x}" y="${y}" width="${width}" height="${height}" rx="${radius}" fill="${color}"/>`;
+    const text = (value, x, y, size, color = "currentColor", anchor = "middle", maxWidth = 436) => {
+      const fitted = String(value).slice(0, Math.floor(maxWidth / (size * .57)));
+      const caption = fitted.length < String(value).length ? fitted.slice(0, -1) + "…" : fitted;
+      return `<text x="${x}" y="${y}" font-size="${size}" fill="${color}" text-anchor="${anchor}">${esc(caption)}</text>`;
+    };
+    let drawing = "";
+    if (mode === "vu" || mode === "spectrum") {
+      const spectrum = mode === "spectrum", symmetric = spectrum || style !== "bars";
+      const heights = spectrum ? [19,24,13,7,18,11,6,16,23,12,8,17,10,5,13,21,9,14,7,17,11,6,10,4] :
+        [10,17,26,14,34,21,12,29,40,24,36,17,20,32,27,13,31,38,22,35,15,28,37,19];
+      for (let i = 0; i < 24; i++) {
+        const classic = !spectrum && style === "classic";
+        const distance = i < 12 ? 11 - i : i - 12;
+        const shapeIndex = i < 12 ? 11 - i : i;
+        const height = classic ? 6 + Math.floor(signatureShape[shapeIndex] * 19 / 255) : Math.round(heights[i] * (symmetric && !spectrum ? 25 / 42 : 1));
+        const axis = symmetric ? 292 : 307;
+        if (classic && distance >= (i < 12 ? 8 : 9)) continue;
+        drawing += rect(51 + i * 16, axis - height, 9, symmetric ? height * 2 + 1 : height);
+      }
+    } else if (mode === "volume") {
+      const fillUnits = Math.floor((volume * 24 * 256 + 50) / 100);
+      signatureShape.forEach((shape, i) => {
+        const ghost = Math.max(2, Math.floor(shape * 25 / (255 * 3)));
+        drawing += rect(51 + i * 16, 292 - ghost, 9, ghost * 2 + 1, "var(--line)");
+        const fill = Math.min(256, fillUnits - i * 256);
+        if (fill <= 0) return;
+        const target = Math.max(2, Math.floor(Math.max(76, Math.min(246, shape)) * 25 / 255));
+        const height = Math.max(2, Math.floor(target * fill / 256));
+        drawing += rect(51 + i * 16, 292 - height, 9, height * 2 + 1);
+      });
+    } else if (mode === "station") {
+      drawing = text(state.station || "SimpleRadio", 240, 292, 20);
+    } else if (mode === "datetime") {
+      const now = new Date(), pad = n => String(n).padStart(2, "0");
+      const separator = document.documentElement.lang === "hu" ? "." : "-";
+      const date = [now.getFullYear(), pad(now.getMonth() + 1), pad(now.getDate())].join(separator) + (separator === "." ? "." : "");
+      drawing = text(date + "  " + pad(now.getHours()) + ":" + pad(now.getMinutes()), 240, 292, 20);
+    }
+    id("layoutPreviewFooter").innerHTML = drawing;
   };
   U.systemStatus = status => {
     U.lastStatus = status; if (!U.ready) return;

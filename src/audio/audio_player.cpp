@@ -502,6 +502,7 @@ void AudioPlayer::service() {
   if (wifiConnected != lastWifiConnected) {
     lastWifiConnected = wifiConnected;
     if (!wifiConnected && s.playing) {
+      ArtworkCache::instance().notifyAudioConnectResult(false);
       AudioSpectrum::instance().setEnabled(false, 0);
       audio.stopSong();
       lastRetryMs = millis();
@@ -527,6 +528,7 @@ void AudioPlayer::service() {
       }
     } else {
       streamControlOperation = true;
+      ArtworkCache::instance().notifyAudioConnectResult(false);
       audio.stopSong();
       resetQueuedAudioEventCache();
       lastStreamUrl = "";
@@ -539,6 +541,7 @@ void AudioPlayer::service() {
   }
 
   if (s.playing && s.streamUrl.length() && s.streamUrl != lastStreamUrl) {
+    ArtworkCache::instance().notifyAudioConnectResult(false);
     AudioSpectrum::instance().setEnabled(false, 0);
     streamControlOperation = true;
     audio.stopSong();
@@ -570,6 +573,7 @@ void AudioPlayer::service() {
       PlayerState::instance().setStreamConnectionState(StreamConnectionState::RetryWaiting, connectFailureCount);
       unsigned long now = millis();
       if (now - lastRetryMs >= retryDelayMs(config)) {
+        ArtworkCache::instance().notifyAudioConnectResult(false);
         lastRetryMs = now;
         streamControlOperation = true;
         audio.stopSong();

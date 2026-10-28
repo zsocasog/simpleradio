@@ -10,6 +10,8 @@ struct Message { char text[512] = {}; };
 
 bool begin();
 bool post(const Message& message);
+// Bounded ordered events share the isolated writer, never the calling task's USB.
+bool postEvent(const char* text);
 void printf(const char* format, ...) __attribute__((format(printf, 1, 2)));
 uint32_t maxWriteUs();
 uint32_t skippedWrites();

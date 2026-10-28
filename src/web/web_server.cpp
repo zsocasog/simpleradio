@@ -505,6 +505,15 @@ static String systemStatusJson() {
   system["sdk"] = ESP.getSdkVersion();
   system["resetReason"] = static_cast<int>(esp_reset_reason());
   system["resetReasonText"] = resetReasonText(esp_reset_reason());
+  system["heapFree"] = ESP.getFreeHeap();
+  system["heapLargest"] = ESP.getMaxAllocHeap();
+  system["psramFree"] = ESP.getFreePsram();
+  JsonObject artwork = doc["artwork"].to<JsonObject>();
+  artwork["audioReady"] = ArtworkCache::instance().audioReady();
+  artwork["serviceAgeMs"] = ArtworkCache::instance().serviceAgeMs();
+  artwork["active"] = ArtworkCache::instance().downloadActive();
+  artwork["elapsedMs"] = ArtworkCache::instance().downloadElapsedMs();
+  artwork["job"] = ArtworkCache::instance().activeDownloadLabel();
 
   const WebUiCompatibilityInfo& webuiInfo = WebUiCompatibility::info();
   JsonObject webui = doc["webui"].to<JsonObject>();
