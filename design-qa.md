@@ -432,3 +432,43 @@ Evidence: `.pio/artifacts/lcd-refinements-20261028/firmware-responsiveness.log`,
 `all-tests-responsiveness.log`, `responsiveness-tests.log`, and
 `picker-tests-final.log` in that directory. These fixes require firmware; the
 preceding web preview changes additionally require data if not yet uploaded.
+
+## LCD picker stationary logos and retained scrolling viewport — 2026-10-28
+
+- Ordinary selection changes paint and transmit four disjoint regions around
+  each logo tile. The tile background is independent of selection, so neither
+  its image nor its placeholder is repainted during an encoder selection move.
+- The window now follows an out-of-view selection by the smallest required
+  number of rows instead of jumping to another five-station page. Only opening,
+  theme/other full restoration, or an actual station-list revision redraws the
+  header and hint. Encoder scrolling does not clear the screen.
+- Overlapping rendered rows are retained in a 480×240 RGB565 PSRAM viewport.
+  The old selection/marquee is restored in memory, the rows move with memmove,
+  and only entering rows and the new selection are composed. The completed
+  viewport is transferred in one contiguous LCD write. Moving rows necessarily
+  change their physical LCD pixels; the renderer avoids rerasterizing their
+  text/logos or showing a cleared intermediate screen.
+- Ten bounded station-keyed 32×32 buffers retain recent logos across row/window
+  changes. Moving a cache entry also remaps any in-flight conversion to its
+  buffer. Cache replacement never evicts the active conversion. Existing local
+  thumbnail decoding remains sliced and paused for pending encoder input; the
+  immediate neighbour above/below the visible window may also be prepared.
+  Completing a logo updates only its 32×32 tile, retaining marquee text.
+- The viewport uses 225 KiB PSRAM, with at most 20 KiB of logo pixels. Its
+  allocation explicitly uses SPIRAM capabilities and leaves 512 KiB headroom.
+  This avoids LovyanGFX createSprite's internal/DMA fallback for the larger
+  optional buffer. Low/fragmented PSRAM retains direct rendering. The previous
+  row and marquee scratch sprites are replaced rather than kept alongside it.
+- Tests cover both scroll directions, wraparound/short lists, retained pixel
+  identity, late conversion ownership, exhausted caches, hole-free dirty-region
+  coverage excluding every logo pixel, full composition before a single list
+  transfer, cropped source stride, and PSRAM-only allocation/headroom. Native
+  RGB565 logo decoding/handoff checks are retained.
+- Final firmware build passed (68.51 s), all 202 JavaScript regression checks
+  passed, and the whitespace check passed. No data assets, artwork search/download
+  code, audio processing, spectrum computation or version markers changed.
+  Physical display response still requires an on-device trial; no device upload
+  or GitHub push was performed. This follow-up requires firmware only.
+
+Evidence: `.pio/artifacts/lcd-refinements-20261028/firmware-viewport-final.log`,
+`viewport-tests.log` and `viewport-integration-tests.log` in that directory.

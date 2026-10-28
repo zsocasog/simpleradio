@@ -41,14 +41,61 @@ test('input settling and autoplay timing survive millis rollover', () => {
 });
 
 test('selection paints reuse ready pixels without filesystem access and invalidate another station', () => {
-  const entries = [{ station: 2, source: 'saved-logo', ready: true, probed: true, pixels: [123], path: '/cached' }];
-  const context = vm.createContext({ pickerLogos: entries });
-  const fn = body(display, 'static bool pickerLogoReady(').replace('PickerLogo& entry', 'const entry');
-  vm.runInContext('function ready(row, station) ' + fn, context);
+  const context = logoCacheHarness();
+  const entries = context.pickerLogos;
+  entries[0] = { station: 2, source: 'saved-logo', ready: true, probed: true, pixels: [123], path: '/cached' };
   for (let i = 0; i < 30; i++) assert.ok(context.ready(0, { id: 2, logo: 'saved-logo' }));
   assert.equal(context.ready(0, { id: 3, logo: 'different-logo' }), false);
   assert.equal(entries[0].probed, false);
   assert.equal(entries[0].path, '');
+});
+
+function logoCacheHarness() {
+  const context = vm.createContext({ PICKER_VISIBLE_ROWS: 5, PICKER_LOGO_CACHE_SIZE: 10, nextSpare: 0,
+    pickerLogoJob: { row: -1 }, pickerLogos: Array.from({length: 10}, () => ({
+      station: -1, source: '', ready: false, probed: false, pixels: null, path: ''
+    }))
+  });
+  const translated = (signature) => body(display, signature)
+    .replace('std::swap(pickerLogos[a], pickerLogos[b]);', '[pickerLogos[a], pickerLogos[b]] = [pickerLogos[b], pickerLogos[a]];')
+    .replace('static unsigned nextSpare = 0;', '')
+    .replace('PickerLogo& entry', 'const entry')
+    .replace(/\bconst int /g, 'const ').replace(/\bint /g, 'let ');
+  vm.runInContext('function swapPickerLogos(a,b) '+translated('static void swapPickerLogos(')+
+    '\nfunction reservePickerLogo(station) '+translated('static int reservePickerLogo(')+
+    '\nfunction ready(row, station) '+translated('static bool pickerLogoReady('), context);
+  return context;
+}
+
+test('scrolling retains station image buffers and an in-flight conversion follows its station', () => {
+  const h = logoCacheHarness();
+  const station = i => ({ id: i, logo: 'logo-'+i });
+  for (let row = 0; row < 5; row++) {
+    h.ready(row, station(row));
+    h.pickerLogos[row].pixels = [row];
+    h.pickerLogos[row].ready = true;
+  }
+  const original = h.pickerLogos.slice(0,5).map(e => e.pixels);
+  h.pickerLogoJob.row = 2;
+  for (let row = 0; row < 5; row++) h.ready(row, station(row+1));
+  assert.equal(h.pickerLogoJob.row, 1);
+  for (let row = 0; row < 4; row++) assert.equal(h.pickerLogos[row].pixels, original[row+1]);
+  for (let row = 0; row < 5; row++) h.ready(row, station(row));
+  for (let row = 0; row < 5; row++) assert.equal(h.pickerLogos[row].pixels, original[row]);
+  assert.equal(h.pickerLogoJob.row, 2);
+});
+
+test('cache eviction preserves unique buffer ownership and never evicts an active conversion', () => {
+  const h = logoCacheHarness();
+  for (let i = 0; i < 10; i++) h.pickerLogos[i] = {
+    station: i, source: 'logo-'+i, pixels: [i], ready: true, probed: true, path: '/cached-'+i
+  };
+  h.pickerLogoJob.row = 5;
+  const leased = h.pickerLogos[5].pixels;
+  for (let i = 10; i < 60; i++) h.ready(i % 5, {id:i, logo:'logo-'+i});
+  assert.equal(h.pickerLogos[h.pickerLogoJob.row].pixels, leased);
+  assert.equal(h.pickerLogos[h.pickerLogoJob.row].station, 5);
+  assert.equal(new Set(h.pickerLogos.map(e => e.pixels)).size, 10);
 });
 
 function advanceHarness({ row = 0, nextY = 0, station = 2, pending = false } = {}) {

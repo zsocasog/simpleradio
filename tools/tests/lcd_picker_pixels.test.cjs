@@ -50,6 +50,6 @@ test('picker averages RGB565 channels without inventing colors at logo edges', (
 });
 
 test('the display consumes averaged picker pixels as native RGB565', () => {
-  const row = source.slice(source.indexOf('static void drawStationPickerPagedRow('), source.indexOf('static void drawStationPickerMarqueeText('));
+  const row = source.slice(source.indexOf('static void drawPickerLogoTile('), source.indexOf('static void drawStationPickerPagedRow('));
   assert.match(row, /canvas\.writePixels\(pickerLogos\[row\]\.pixels, PICKER_LOGO_SIZE \* PICKER_LOGO_SIZE, true\)/);
 });

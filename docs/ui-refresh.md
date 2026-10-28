@@ -93,12 +93,25 @@ Ehhez a körhöz firmware és data/LittleFS feltöltése is szükséges.
 
 ## Csatornaválasztó válaszideje és borítókeresés
 
-A csatornaválasztó a fejlécet és az egyes sorokat egy újrahasznált, PSRAM-ban
-levő rajzfelületen készíti el, majd blokkonként küldi az LCD-re. Az enkóder
-tekerésekor a már elkészült 32×32-es logókat használja; a rajzolás nem nyit
-képfájlokat. A hiányzó kis képek előkészítése rövid részletekben, a tekerés
-megállása után folytatódik. Az automatikus lejátszás késleltetése csak akkor
-telhet le, ha az aktuális kiválasztás már megjelent a kijelzőn.
+A csatornaválasztó öt látható sorának kész képe PSRAM-ban marad. A kijelölés
+mozgatásakor csak a régi és az új kijelölés változó részei kerülnek az LCD-re;
+a logók saját, állandó hátterű területét ez nem érinti. A lista szélén egy sorral
+gördül tovább az ablak, teljes képernyőtörlés nélkül. Az átfedő sorok képpontjait
+memóriában mozgatja, és csak az újonnan belépő sort állítja össze. A mozgó sorokat
+együtt küldi a kijelzőre, a fejléc és az alsó súgó helyén marad.
+
+A 32×32-es logók állomáshoz kötött, tízelemű gyorsítótárban maradnak; a közelmúltban
+látott állomás képe visszalépéskor is újrahasználható. Rövid nyugalmi időben a lista
+közvetlen szomszédainak kis képe is előkészülhet a meglévő helyi képfájlokból.
+A hiányzó kis képek előkészítése rövid részletekben folytatódik, a rajzolás nem
+nyit képfájlokat és nem indít letöltést. A később elkészülő logó csak a saját kis
+területét frissíti. Az automatikus lejátszás késleltetése csak akkor telhet le, ha
+az aktuális kiválasztás már megjelent a kijelzőn.
+
+A 480×320-as kijelzőn a listakép 225 KiB, a tíz logó legfeljebb további 20 KiB
+PSRAM-ot használ. A listakép számára nem foglal belső/DMA memóriát; az opcionális
+puffer létrehozásakor legalább 512 KiB PSRAM-tartalékot hagy. Ha nincs elég hely,
+a lista a közvetlen kirajzolást használja. Új képfájlok nem keletkeznek.
 
 A képfeldolgozó naplósorai is a külön naplózó feladaton keresztül mennek az
 USB-re. A várakozó naplók száma korlátozott: megtelt puffer esetén kimaradhat

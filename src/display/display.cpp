@@ -18,6 +18,7 @@
 #include "lcd_font_data.h"
 #include "station_picker_policy.h"
 #include <atomic>
+#include <utility>
 #include <math.h>
 #include <string.h>
 #include <time.h>
@@ -142,6 +143,8 @@ static constexpr int PICKER_BOX_W = SCREEN_W;
 static constexpr int PICKER_BOX_H = SCREEN_H;
 static constexpr int PICKER_ROW_H = sy(48);
 static constexpr int PICKER_VISIBLE_ROWS = 5;
+static constexpr int PICKER_LOGO_CACHE_SIZE = PICKER_VISIBLE_ROWS * 2;
+static constexpr int PICKER_VIEWPORT_H = PICKER_VISIBLE_ROWS * PICKER_ROW_H;
 static constexpr int PICKER_ROW_X = sx(26);
 static constexpr int PICKER_ROW_W = SCREEN_W - sx(52);
 static constexpr int PICKER_ROW_Y = sy(54);
@@ -149,7 +152,6 @@ static constexpr int PICKER_LOGO_SIZE = ss(32);
 static constexpr int PICKER_LOGO_X = PICKER_ROW_X + sx(8);
 static constexpr int PICKER_TEXT_X = PICKER_LOGO_X + PICKER_LOGO_SIZE + sx(14);
 static constexpr int PICKER_TEXT_W = PICKER_ROW_X + PICKER_ROW_W - PICKER_TEXT_X - sx(76);
-static constexpr int PICKER_TEXT_H = PICKER_ROW_H - sy(6);
 static constexpr unsigned long PICKER_MARQUEE_MS = 110;
 static constexpr unsigned long PICKER_MARQUEE_HOLD_MS = 650;
 static constexpr int PICKER_MARQUEE_STEP = sx(4) > 2 ? sx(4) : 2;
@@ -1948,7 +1950,9 @@ struct PickerLogo {
   bool probed = false;
   unsigned long checkedMs = 0;
 };
-static PickerLogo pickerLogos[PICKER_VISIBLE_ROWS];
+static PickerLogo pickerLogos[PICKER_LOGO_CACHE_SIZE];
+static bool pickerViewportValid = false;
+static uint32_t pickerRenderedRevision = 0;
 
 struct PickerLogoJob {
   File file;
@@ -1967,16 +1971,41 @@ static void cancelPickerLogoJob() {
   pickerLogoJob.nextY = 0;
 }
 
+static void swapPickerLogos(int a, int b) {
+  if (a == b) return;
+  std::swap(pickerLogos[a], pickerLogos[b]);
+  // A partially converted image follows its buffer when visible rows move.
+  if (pickerLogoJob.row == a) pickerLogoJob.row = b;
+  else if (pickerLogoJob.row == b) pickerLogoJob.row = a;
+}
+
+static int reservePickerLogo(const Station& station) {
+  for (int i = 0; i < PICKER_LOGO_CACHE_SIZE; ++i) {
+    if (pickerLogos[i].station == station.id && pickerLogos[i].source == station.logo) return i;
+  }
+  static unsigned nextSpare = 0;
+  int slot = -1;
+  for (int i = PICKER_VISIBLE_ROWS; i < PICKER_LOGO_CACHE_SIZE; ++i) {
+    if (pickerLogos[i].station < 0) { slot = i; break; }
+  }
+  if (slot < 0) slot = PICKER_VISIBLE_ROWS + nextSpare++ % PICKER_VISIBLE_ROWS;
+  // Do not close an in-flight file or evict its buffer on the drawing path.
+  if (pickerLogoJob.row == slot)
+    slot = PICKER_VISIBLE_ROWS + (slot - PICKER_VISIBLE_ROWS + 1) % PICKER_VISIBLE_ROWS;
+  PickerLogo& entry = pickerLogos[slot];
+  entry.station = station.id;
+  entry.source = station.logo;
+  entry.ready = false;
+  entry.probed = false;
+  entry.path = "";
+  return slot;
+}
+
 // Hot drawing path: no file opens, cache probes, or thumbnail preparation.
 static bool pickerLogoReady(int row, const Station& station) {
+  if (pickerLogos[row].station != station.id || pickerLogos[row].source != station.logo)
+    swapPickerLogos(row, reservePickerLogo(station));
   PickerLogo& entry = pickerLogos[row];
-  if (entry.station != station.id || entry.source != station.logo) {
-    entry.station = station.id;
-    entry.source = station.logo;
-    entry.ready = false;
-    entry.probed = false;
-    entry.path = "";
-  }
   return entry.ready && entry.pixels;
 }
 
@@ -2080,19 +2109,42 @@ static lgfx::LGFX_Sprite* pickerCanvas() {
   if (!ready && (!attempted || millis() - lastAttempt >= 5000)) {
     attempted = true;
     lastAttempt = millis();
-    frame.setPsram(true);
-    frame.setColorDepth(16);
-    ready = frame.createSprite(SCREEN_W, max(PICKER_ROW_Y, PICKER_ROW_H)) != nullptr;
+    const size_t bytes = SCREEN_W * PICKER_VIEWPORT_H * sizeof(uint16_t);
+    // LovyanGFX createSprite can fall back to internal/DMA RAM. Keep this
+    // optional larger cache strictly in PSRAM, leaving audio/TLS headroom.
+    const uint32_t caps = MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT;
+    if (heap_caps_get_free_size(caps) >= bytes + 512 * 1024 &&
+        heap_caps_get_largest_free_block(caps) >= bytes) {
+      void* buffer = heap_caps_malloc(bytes, caps);
+      if (buffer) {
+        frame.setBuffer(buffer, SCREEN_W, PICKER_VIEWPORT_H, 16);
+        ready = frame.getBuffer() == buffer;
+        if (!ready) heap_caps_free(buffer);
+      }
+    }
+    if (ready) pickerViewportValid = false;
   }
   return ready ? &frame : nullptr;
 }
 
-static void presentPickerCanvas(lgfx::LGFX_Sprite& frame, int y, int height) {
-  // Sprite storage is wire-order RGB565. Send the entire band in one transfer.
+static void presentPickerRect(lgfx::LGFX_Sprite& frame, int x, int sourceY,
+                              int width, int height, int screenY) {
+  if (width <= 0 || height <= 0) return;
+  // Sprite storage is wire-order RGB565. Cropped rows keep their full stride.
+  const uint16_t* pixels = static_cast<const uint16_t*>(frame.getBuffer());
   lcd.startWrite();
-  lcd.setAddrWindow(0, y, SCREEN_W, height);
-  lcd.writePixels(static_cast<const uint16_t*>(frame.getBuffer()), SCREEN_W * height, false);
+  lcd.setAddrWindow(x, screenY, width, height);
+  if (x == 0 && width == SCREEN_W) {
+    lcd.writePixels(pixels + sourceY * SCREEN_W, width * height, false);
+  } else {
+    for (int line = 0; line < height; ++line)
+      lcd.writePixels(pixels + (sourceY + line) * SCREEN_W + x, width, false);
+  }
   lcd.endWrite();
+}
+
+static void presentPickerCanvas(lgfx::LGFX_Sprite& frame, int y, int height, int sourceY = 0) {
+  presentPickerRect(frame, 0, sourceY, SCREEN_W, height, y);
 }
 
 static void pickerText(lgfx::LGFX_Sprite* frame, const String& text, int x, int y,
@@ -2102,10 +2154,34 @@ static void pickerText(lgfx::LGFX_Sprite* frame, const String& text, int x, int 
   if (datum == top_center || datum == middle_center) x -= uiTextWidth(text, font) / 2;
   if (datum == top_right || datum == middle_right) x -= uiTextWidth(text, font);
   if (datum == middle_center || datum == middle_right) y -= fontLineHeight(font) / 2;
-  drawUiTextOnSprite(*frame, text, x, y, font, color, bg, SCREEN_W, max(PICKER_ROW_Y, PICKER_ROW_H));
+  drawUiTextOnSprite(*frame, text, x, y, font, color, bg, SCREEN_W, PICKER_VIEWPORT_H);
 }
 
-static void drawStationPickerPagedRow(int row, int stationIndex, int selectedId, int scrollOffset = 0) {
+static void drawPickerLogoTile(int row, int stationIndex, const Station& station, bool present) {
+  lgfx::LGFX_Sprite* frame = pickerCanvas();
+  lgfx::LovyanGFX& canvas = frame ? static_cast<lgfx::LovyanGFX&>(*frame) : static_cast<lgfx::LovyanGFX&>(lcd);
+  const int rowH = PICKER_ROW_H - sy(6);
+  const int localY = (frame ? 0 : PICKER_ROW_Y) + row * PICKER_ROW_H + (rowH - PICKER_LOGO_SIZE) / 2;
+  canvas.startWrite();
+  canvas.fillRect(PICKER_LOGO_X, localY, PICKER_LOGO_SIZE, PICKER_LOGO_SIZE, cBg);
+  if (pickerLogoReady(row, station)) {
+    canvas.setAddrWindow(PICKER_LOGO_X, localY, PICKER_LOGO_SIZE, PICKER_LOGO_SIZE);
+    // Averaged pixels are native RGB565; SR56 and sprite storage are wire-order.
+    canvas.writePixels(pickerLogos[row].pixels, PICKER_LOGO_SIZE * PICKER_LOGO_SIZE, true);
+  } else {
+    const uint16_t mat = blend565(cAccent, cBg, 35);
+    canvas.fillRoundRect(PICKER_LOGO_X, localY, PICKER_LOGO_SIZE, PICKER_LOGO_SIZE, ss(4), mat);
+    pickerText(frame, String(stationIndex + 1), PICKER_LOGO_X + PICKER_LOGO_SIZE / 2,
+               localY + PICKER_LOGO_SIZE / 2, COMPACT_LCD ? kLcdFontSmall : kLcdFontMedium,
+               cAccent, mat, middle_center);
+  }
+  canvas.endWrite();
+  if (frame && present)
+    presentPickerRect(*frame, PICKER_LOGO_X, localY, PICKER_LOGO_SIZE, PICKER_LOGO_SIZE, PICKER_ROW_Y + localY);
+}
+
+static void drawStationPickerPagedRow(int row, int stationIndex, int selectedId,
+                                      int scrollOffset = 0, bool drawLogo = true, bool present = true) {
   StationManager& manager = StationManager::instance();
   int y = PICKER_ROW_Y + row * PICKER_ROW_H;
 
@@ -2119,25 +2195,18 @@ static void drawStationPickerPagedRow(int row, int stationIndex, int selectedId,
   const uint16_t textFg = cText;
   lgfx::LGFX_Sprite* frame = pickerCanvas();
   lgfx::LovyanGFX& canvas = frame ? static_cast<lgfx::LovyanGFX&>(*frame) : static_cast<lgfx::LovyanGFX&>(lcd);
-  const int originY = frame ? y : 0;
-  const int localY = y - originY;
-  if (frame) frame->fillSprite(cBg);
+  const int localY = frame ? row * PICKER_ROW_H : y;
+  StationPickerPolicy::Rect parts[4];
+  StationPickerPolicy::rowParts(PICKER_ROW_X, PICKER_ROW_W, rowH,
+      PICKER_LOGO_X, (rowH - PICKER_LOGO_SIZE) / 2, PICKER_LOGO_SIZE, parts);
   canvas.startWrite();
-  canvas.fillRect(PICKER_ROW_X, localY, PICKER_ROW_W, rowH, rowBg);
+  if (drawLogo) canvas.fillRect(0, localY, SCREEN_W, PICKER_ROW_H, cBg);
+  for (const auto& part : parts)
+    canvas.fillRect(part.x, localY + part.y, part.w, part.h, rowBg);
   if (selected) canvas.fillRoundRect(PICKER_ROW_X, localY, max(2, ss(3)), rowH, ss(1), cAccent);
   canvas.drawFastHLine(PICKER_ROW_X + sx(8), localY + rowH, PICKER_ROW_W - sx(16), blend565(cLine, cBg, 150));
-  const int logoY = localY + (rowH - PICKER_LOGO_SIZE) / 2;
   const LcdFont& numberFont = COMPACT_LCD ? kLcdFontSmall : kLcdFontMedium;
-  if (pickerLogoReady(row, station)) {
-    canvas.setAddrWindow(PICKER_LOGO_X, logoY, PICKER_LOGO_SIZE, PICKER_LOGO_SIZE);
-    // Averaged pixels are native RGB565; the prepared SR56 source is wire-order.
-    canvas.writePixels(pickerLogos[row].pixels, PICKER_LOGO_SIZE * PICKER_LOGO_SIZE, true);
-  } else {
-    const uint16_t mat = blend565(cAccent, cBg, 35);
-    canvas.fillRoundRect(PICKER_LOGO_X, logoY, PICKER_LOGO_SIZE, PICKER_LOGO_SIZE, ss(4), mat);
-    pickerText(frame, String(stationIndex + 1), PICKER_LOGO_X + PICKER_LOGO_SIZE / 2,
-               localY + rowH / 2, numberFont, cAccent, mat, middle_center);
-  }
+  if (drawLogo) drawPickerLogoTile(row, stationIndex, station, false);
   pickerText(frame, String(stationIndex + 1), PICKER_ROW_X + PICKER_ROW_W - sx(5),
              localY + rowH / 2, numberFont, cMuted, rowBg, middle_right);
   const auto playback = PlayerState::instance().snapshot();
@@ -2151,10 +2220,10 @@ static void drawStationPickerPagedRow(int row, int stationIndex, int selectedId,
   const int textY = localY + (rowH - fontLineHeight(*currentUiFont)) / 2;
 
   if (frame) {
-    frame->setClipRect(PICKER_TEXT_X, 0, PICKER_TEXT_W, rowH);
+    frame->setClipRect(PICKER_TEXT_X, localY, PICKER_TEXT_W, rowH);
     drawUiTextOnSprite(*frame, selected && scrollOffset > 0 ? stationName : fitText(stationName, PICKER_TEXT_W),
                        PICKER_TEXT_X - (selected ? scrollOffset : 0), textY,
-                       *currentUiFont, textFg, rowBg, SCREEN_W, rowH);
+                       *currentUiFont, textFg, rowBg, SCREEN_W, PICKER_VIEWPORT_H);
     frame->clearClipRect();
   } else if (selected) {
     if (scrollOffset > 0 && uiTextWidth(stationName) > PICKER_TEXT_W) {
@@ -2175,27 +2244,22 @@ static void drawStationPickerPagedRow(int row, int stationIndex, int selectedId,
     drawUiText(fitText(stationName, PICKER_TEXT_W), PICKER_TEXT_X, textY, *currentUiFont, textFg, rowBg);
   }
   canvas.endWrite();
-  if (frame) presentPickerCanvas(*frame, y, rowH + 1);
+  if (frame && present) {
+    if (drawLogo) presentPickerCanvas(*frame, y, PICKER_ROW_H, localY);
+    else for (const auto& part : parts)
+      presentPickerRect(*frame, part.x, localY + part.y, part.w, part.h, y + part.y);
+  }
 }
 
 static void drawStationPickerMarqueeText(int row, const String& stationName, int scrollOffset) {
-  static lgfx::LGFX_Sprite textSprite(&lcd);
-  static bool spriteReady = false;
-  if (!spriteReady) {
-    textSprite.setPsram(true);
-    textSprite.setColorDepth(16);
-    spriteReady = textSprite.createSprite(PICKER_TEXT_W, PICKER_TEXT_H) != nullptr;
-  }
-
+  lgfx::LGFX_Sprite* frame = pickerCanvas();
   const int y = PICKER_ROW_Y + row * PICKER_ROW_H;
   setUiFont(2);
   const uint16_t rowBg = blend565(cAccent, cBg, 28);
   const uint16_t textFg = cText;
   const int rowH = PICKER_ROW_H - sy(6);
   const int textY = y + (rowH - fontLineHeight(*currentUiFont)) / 2;
-  const int spriteTextY = (rowH - fontLineHeight(*currentUiFont)) / 2;
-
-  if (!spriteReady) {
+  if (!frame) {
     lcd.fillRect(PICKER_TEXT_X, y, PICKER_TEXT_W, rowH, rowBg);
     if (scrollOffset > 0) {
       drawUiTextClipped(stationName,
@@ -2214,29 +2278,49 @@ static void drawStationPickerMarqueeText(int row, const String& stationName, int
     return;
   }
 
-  textSprite.fillSprite(rowBg);
-  if (scrollOffset > 0) {
-    drawUiTextOnSprite(textSprite,
-                       stationName,
-                       -scrollOffset,
-                       spriteTextY,
-                       *currentUiFont,
-                       textFg,
-                       rowBg,
-                       PICKER_TEXT_W,
-                       PICKER_TEXT_H);
-  } else {
-    drawUiTextOnSprite(textSprite,
-                       fitText(stationName, PICKER_TEXT_W),
-                       0,
-                       spriteTextY,
-                       *currentUiFont,
-                       textFg,
-                       rowBg,
-                       PICKER_TEXT_W,
-                       PICKER_TEXT_H);
+  if (!pickerViewportValid) return;
+  const int localY = row * PICKER_ROW_H;
+  frame->fillRect(PICKER_TEXT_X, localY, PICKER_TEXT_W, rowH, rowBg);
+  frame->setClipRect(PICKER_TEXT_X, localY, PICKER_TEXT_W, rowH);
+  drawUiTextOnSprite(*frame, scrollOffset > 0 ? stationName : fitText(stationName, PICKER_TEXT_W),
+      PICKER_TEXT_X - scrollOffset, localY + (rowH - fontLineHeight(*currentUiFont)) / 2,
+      *currentUiFont, textFg, rowBg, SCREEN_W, PICKER_VIEWPORT_H);
+  frame->clearClipRect();
+  presentPickerRect(*frame, PICKER_TEXT_X, localY, PICKER_TEXT_W, rowH, y);
+}
+
+static void drawStationPickerViewport(int selectedId, int start, int previousStart, int previousSelected) {
+  StationManager& manager = StationManager::instance();
+  const int stationCount = static_cast<int>(manager.count());
+  lgfx::LGFX_Sprite* frame = pickerCanvas();
+  const int delta = start - previousStart;
+  // Remove the old highlight/marquee before moving already rasterized rows.
+  if (frame && pickerViewportValid && delta != 0) {
+    const int oldIndex = manager.indexOfStation(previousSelected);
+    if (oldIndex >= previousStart && oldIndex < previousStart + PICKER_VISIBLE_ROWS)
+      drawStationPickerPagedRow(oldIndex - previousStart, oldIndex, -1, 0, false, false);
   }
-  textSprite.pushSprite(PICKER_TEXT_X, y);
+  const bool shifted = frame && pickerViewportValid && StationPickerPolicy::shiftRows(
+      static_cast<uint16_t*>(frame->getBuffer()), SCREEN_W, PICKER_ROW_H, PICKER_VISIBLE_ROWS, delta);
+  if (frame && !shifted) frame->fillSprite(cBg);
+  // Bind by station identity, retaining recent and adjacent images in spare slots.
+  for (int row = 0; row < PICKER_VISIBLE_ROWS; ++row) {
+    Station station;
+    if (manager.stationAtIndex(start + row, station)) pickerLogoReady(row, station);
+  }
+  for (int row = 0; row < PICKER_VISIBLE_ROWS; ++row) {
+    const int index = start + row;
+    if (index >= stationCount) break;
+    const bool exposed = !shifted || row + delta < 0 || row + delta >= PICKER_VISIBLE_ROWS;
+    if (exposed) drawStationPickerPagedRow(row, index, selectedId, 0, true, false);
+    else {
+      int stationId = -1;
+      if (manager.stationIdAtIndex(index, stationId) && stationId == selectedId)
+        drawStationPickerPagedRow(row, index, selectedId, 0, false, false);
+    }
+  }
+  if (frame) presentPickerCanvas(*frame, PICKER_ROW_Y, PICKER_VIEWPORT_H);
+  pickerViewportValid = frame != nullptr;
 }
 
 static void drawStationPickerPagedPage(int selectedId, int windowStart) {
@@ -2246,6 +2330,8 @@ static void drawStationPickerPagedPage(int selectedId, int windowStart) {
 
   int start = clampPickerWindowStart(windowStart, stationCount);
 
+  pickerViewportValid = false;
+  pickerRenderedRevision = manager.revision();
   lcd.fillScreen(cBg);
   lgfx::LGFX_Sprite* frame = pickerCanvas();
   if (frame) frame->fillSprite(cBg);
@@ -2259,11 +2345,7 @@ static void drawStationPickerPagedPage(int selectedId, int windowStart) {
              SCREEN_H - sy(20) - (frame ? hintY : 0), *uiFontForSize(1), cMuted, cBg, top_center);
   if (frame) presentPickerCanvas(*frame, hintY, SCREEN_H - hintY);
 
-  for (int row = 0; row < PICKER_VISIBLE_ROWS; ++row) {
-    int index = start + row;
-    if (index >= stationCount) break;
-    drawStationPickerPagedRow(row, index, selectedId);
-  }
+  drawStationPickerViewport(selectedId, start, start, -1);
 }
 
 static void drawStationPickerPaged(int selectedId, int& windowStart, int& renderedSelectedId, bool forceFull) {
@@ -2274,11 +2356,17 @@ static void drawStationPickerPaged(int selectedId, int& windowStart, int& render
   int selectedIndex = manager.indexOfStation(selectedId);
   if (selectedIndex < 0) selectedIndex = 0;
 
-  windowStart = clampPickerWindowStart(windowStart, stationCount);
-  bool outsideWindow = selectedIndex < windowStart || selectedIndex >= windowStart + PICKER_VISIBLE_ROWS;
-  if (forceFull || windowStart < 0 || renderedSelectedId < 0 || outsideWindow) {
+  if (forceFull || windowStart < 0 || renderedSelectedId < 0) {
     windowStart = pickerPageStartForIndex(selectedIndex, stationCount);
     drawStationPickerPagedPage(selectedId, windowStart);
+    renderedSelectedId = selectedId;
+    return;
+  }
+
+  const int nextStart = StationPickerPolicy::windowStart(windowStart, selectedIndex, stationCount, PICKER_VISIBLE_ROWS);
+  if (nextStart != windowStart || (pickerCanvas() && !pickerViewportValid)) {
+    drawStationPickerViewport(selectedId, nextStart, windowStart, renderedSelectedId);
+    windowStart = nextStart;
     renderedSelectedId = selectedId;
     return;
   }
@@ -2286,9 +2374,9 @@ static void drawStationPickerPaged(int selectedId, int& windowStart, int& render
   int previousIndex = manager.indexOfStation(renderedSelectedId);
   if (renderedSelectedId == selectedId) return;
   if (previousIndex >= windowStart && previousIndex < windowStart + PICKER_VISIBLE_ROWS) {
-    drawStationPickerPagedRow(previousIndex - windowStart, previousIndex, selectedId);
+    drawStationPickerPagedRow(previousIndex - windowStart, previousIndex, selectedId, 0, false);
   }
-  drawStationPickerPagedRow(selectedIndex - windowStart, selectedIndex, selectedId);
+  drawStationPickerPagedRow(selectedIndex - windowStart, selectedIndex, selectedId, 0, false);
   renderedSelectedId = selectedId;
 }
 
@@ -3547,20 +3635,34 @@ void Display::renderStationPickerMarqueeFrame() {
 
   unsigned long now = millis();
   if (pickerSelectionPending()) return;
+  if (StationManager::instance().revision() != pickerRenderedRevision) {
+    drawStationPickerPaged(stationPickerSelectedId, stationPickerWindowStart, stationPickerRenderedSelectedId, true);
+  } else if (pickerCanvas() && !pickerViewportValid) {
+    drawStationPickerViewport(stationPickerSelectedId, stationPickerWindowStart,
+                             stationPickerWindowStart, stationPickerRenderedSelectedId);
+  }
   static unsigned long lastLogoCheck = 0;
-  static int nextLogoRow = 0;
+  static unsigned nextLogoRow = 0;
   if (StationPickerPolicy::elapsedAtLeast(now, pickerLastInputMs, StationPickerPolicy::INPUT_SETTLE_MS)) {
     const int readyRow = advancePickerLogo();
-    if (readyRow >= 0) {
-      drawStationPickerPagedRow(readyRow, stationPickerWindowStart + readyRow,
-                               stationPickerSelectedId, stationPickerMarqueeOffset);
+    if (readyRow >= 0 && readyRow < PICKER_VISIBLE_ROWS) {
+      Station visible;
+      if (StationManager::instance().stationAtIndex(stationPickerWindowStart + readyRow, visible))
+        drawPickerLogoTile(readyRow, stationPickerWindowStart + readyRow, visible, true);
     }
     if (pickerLogoJob.row < 0 && now - lastLogoCheck >= 250) {
       lastLogoCheck = now;
-      const int row = nextLogoRow++ % PICKER_VISIBLE_ROWS;
+      const int row = nextLogoRow++ % (PICKER_VISIBLE_ROWS + 2);
       Station visible;
-      if (StationManager::instance().stationAtIndex(stationPickerWindowStart + row, visible))
-        beginPickerLogo(row, visible, now);
+      if (row < PICKER_VISIBLE_ROWS) {
+        if (StationManager::instance().stationAtIndex(stationPickerWindowStart + row, visible))
+          beginPickerLogo(row, visible, now);
+      } else {
+        const int neighbour = row == PICKER_VISIBLE_ROWS ? stationPickerWindowStart - 1
+                                                       : stationPickerWindowStart + PICKER_VISIBLE_ROWS;
+        if (neighbour >= 0 && StationManager::instance().stationAtIndex(neighbour, visible))
+          beginPickerLogo(reservePickerLogo(visible), visible, now);
+      }
     }
   }
   if (stationPickerMarqueeSelectedId != stationPickerSelectedId) {
