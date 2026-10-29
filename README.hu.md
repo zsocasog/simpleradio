@@ -6,6 +6,8 @@
 
 <a href="https://ko-fi.com/zsoltsogorka" target="_blank" rel="noopener noreferrer"><img src="https://ko-fi.com/img/githubbutton_sm.svg" alt="Támogatás Ko-fi-n"></a>
 
+**Tartalom:** [Funkciók](#főbb-funkciók) · [Hardver](#hardver-és-beállítás) · [Feltöltés](#feltöltés-és-frissítés) · [Képernyőképek](#képernyőképek)
+
 ![SimpleRadio LCD lejátszó](.screenshots/lcd/player1.jpg)
 
 ## Főbb funkciók
@@ -18,6 +20,8 @@
 - Egy vagy két enkóder, opcionális IR-távirányító és RGB LED.
 - MQTT discovery és [Home Assistant-kártya](home-assistant/README.md).
 
+![A webes lejátszó előnézete](.screenshots/player.jpg)
+
 ## Hardver és beállítás
 
 - Tesztelt hardver: **ESP32-S3 N16R8**, **ILI9488 480×320 SPI LCD**, I2S DAC/erősítő, például MAX98357A.
@@ -26,6 +30,8 @@
 - Saját nyelv: [útmutató és sablonok](data/i18n/README.md).
 - Előre megadott WiFi-, Last.fm-, MQTT- és OTA-adatok: helyi `secrets.ini`, a [mintafájl](secrets.example.ini) alapján. Valódi kulcsokat és jelszavakat ne publikálj.
 - A Last.fm API-kulcs a webes **Rendszer** oldalon is megadható; a weben mentett kulcs elsőbbséget kap.
+
+![Kijelzőbeállítások és LCD-előnézet](.screenshots/display.jpg)
 
 ## Feltöltés és frissítés
 
@@ -47,18 +53,14 @@
 
 - Webes képek: a jelenlegi felület helyi előnézete mintaadatokkal; az LCD-képek valódi fotók.
 
-| LCD-lejátszó | LCD-lejátszó logóval |
+| LCD-lejátszó logóval | Állomásválasztó |
 | --- | --- |
-| ![LCD lejátszó](.screenshots/lcd/player1.jpg) | ![LCD lejátszó logóval](.screenshots/lcd/player2.jpg) |
-| Állomásválasztó | Hangerő |
-| ![LCD állomásválasztó](.screenshots/lcd/station_picker.jpg) | ![LCD hangerőnézet](.screenshots/lcd/volume.jpg) |
-| Webes lejátszó | Állomások |
-| ![Lejátszó oldal](.screenshots/player.jpg) | ![Állomások oldal](.screenshots/stations.jpg) |
-| Hang | Kijelző |
-| ![Hang oldal](.screenshots/sound.jpg) | ![Kijelző oldal](.screenshots/display.jpg) |
-| Vezérlés | Távirányító |
-| ![Vezérlés oldal](.screenshots/controls.jpg) | ![Távirányító oldal](.screenshots/ir.jpg) |
-| Rendszer – Áttekintés | Rendszer – Kapcsolatok |
-| ![Rendszer áttekintés](.screenshots/system.jpg) | ![Kapcsolatok](.screenshots/system-connections.jpg) |
-| Rendszer – Frissítés | |
-| ![Frissítés](.screenshots/system-update.jpg) | |
+| ![LCD lejátszó logóval](.screenshots/lcd/player2.jpg) | ![LCD állomásválasztó](.screenshots/lcd/station_picker.jpg) |
+| Hangerő | Webes állomáslista |
+| ![LCD hangerőnézet](.screenshots/lcd/volume.jpg) | ![Állomások oldal](.screenshots/stations.jpg) |
+| Hang | Vezérlés |
+| ![Hang oldal](.screenshots/sound.jpg) | ![Vezérlés oldal](.screenshots/controls.jpg) |
+| Távirányító | Rendszer – Áttekintés |
+| ![Távirányító oldal](.screenshots/ir.jpg) | ![Rendszer áttekintés](.screenshots/system.jpg) |
+| Rendszer – Kapcsolatok | Rendszer – Frissítés |
+| ![Kapcsolatok](.screenshots/system-connections.jpg) | ![Frissítés](.screenshots/system-update.jpg) |

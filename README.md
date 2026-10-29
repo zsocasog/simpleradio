@@ -6,6 +6,8 @@
 
 <a href="https://ko-fi.com/zsoltsogorka" target="_blank" rel="noopener noreferrer"><img src="https://ko-fi.com/img/githubbutton_sm.svg" alt="Support me on Ko-fi"></a>
 
+**Contents:** [Features](#features) · [Hardware](#hardware-and-configuration) · [Installation](#installation-and-updates) · [Screenshots](#screenshots)
+
 ![SimpleRadio LCD player](.screenshots/lcd/player1.jpg)
 
 ## Features
@@ -18,6 +20,8 @@
 - One or two rotary encoders, optional IR remote and RGB LED.
 - MQTT discovery and a [Home Assistant card](home-assistant/README.md).
 
+![Web player preview](.screenshots/en/player.jpg)
+
 ## Hardware and configuration
 
 - Tested hardware: **ESP32-S3 N16R8**, **ILI9488 480×320 SPI LCD**, I2S DAC/amplifier such as MAX98357A.
@@ -26,6 +30,8 @@
 - Custom languages: [guide and templates](data/i18n/README.md).
 - WiFi, Last.fm, MQTT and OTA defaults: local `secrets.ini`, based on the [example](secrets.example.ini). Keep real keys and passwords private.
 - The Last.fm API key can also be set on the web **System** page; a web-saved key takes priority.
+
+![Display settings and LCD preview](.screenshots/en/display.jpg)
 
 ## Installation and updates
 
@@ -47,18 +53,14 @@
 
 - Web screenshots: the current UI's local preview with sample data; LCD images are actual photographs.
 
-| LCD player | LCD player with artwork |
+| LCD player with artwork | Station picker |
 | --- | --- |
-| ![LCD player](.screenshots/lcd/player1.jpg) | ![LCD player with artwork](.screenshots/lcd/player2.jpg) |
-| Station picker | Volume |
-| ![LCD station picker](.screenshots/lcd/station_picker.jpg) | ![LCD volume screen](.screenshots/lcd/volume.jpg) |
-| Web player | Stations |
-| ![Player page](.screenshots/en/player.jpg) | ![Stations page](.screenshots/en/stations.jpg) |
-| Sound | Display |
-| ![Sound page](.screenshots/en/sound.jpg) | ![Display page](.screenshots/en/display.jpg) |
-| Controls | Remote control |
-| ![Controls page](.screenshots/en/controls.jpg) | ![Remote control page](.screenshots/en/ir.jpg) |
-| System – Overview | System – Connections |
-| ![System overview](.screenshots/en/system.jpg) | ![Connections](.screenshots/en/system-connections.jpg) |
-| System – Update | |
-| ![Update](.screenshots/en/system-update.jpg) | |
+| ![LCD player with artwork](.screenshots/lcd/player2.jpg) | ![LCD station picker](.screenshots/lcd/station_picker.jpg) |
+| Volume | Web station list |
+| ![LCD volume screen](.screenshots/lcd/volume.jpg) | ![Stations page](.screenshots/en/stations.jpg) |
+| Sound | Controls |
+| ![Sound page](.screenshots/en/sound.jpg) | ![Controls page](.screenshots/en/controls.jpg) |
+| Remote control | System – Overview |
+| ![Remote control page](.screenshots/en/ir.jpg) | ![System overview](.screenshots/en/system.jpg) |
+| System – Connections | System – Update |
+| ![Connections](.screenshots/en/system-connections.jpg) | ![Update](.screenshots/en/system-update.jpg) |
