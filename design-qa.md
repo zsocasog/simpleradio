@@ -472,3 +472,19 @@ preceding web preview changes additionally require data if not yet uploaded.
 
 Evidence: `.pio/artifacts/lcd-refinements-20261028/firmware-viewport-final.log`,
 `viewport-tests.log` and `viewport-integration-tests.log` in that directory.
+
+## Documentation screenshot refresh — 2026-10-29
+
+- Replaced the older WebUI PNGs with 18 current browser captures: nine Hungarian
+  and nine English views, including System Overview, Connections and Update.
+  Both README galleries link to the corresponding language's JPEG files.
+- Captured the actual current 1.1.28 frontend from tools/ui_preview.py on a
+  loopback-only server with sample state. These are browser viewport captures,
+  not generated designs or live-device acceptance evidence. The README galleries
+  explicitly identify the preview data; no private device configuration was used.
+- The screenshots show the shared amber theme, grouped transport, waveform
+  volume, compact station list, current LCD layout preview above artwork source,
+  updated controls arrangement, inline IR sensitivity and three System tabs.
+- Existing physical LCD photographs are retained. No firmware, data assets or
+  device settings changed. The replaced PNGs have no remaining Markdown
+  references; all image/local documentation links were checked.
