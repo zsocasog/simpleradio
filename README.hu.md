@@ -4,6 +4,8 @@
 
 > Jelenlegi verzió: **1.1.28** · ESP32-S3 N16R8 · magyar és angol felület
 
+<a href="https://ko-fi.com/zsoltsogorka" target="_blank" rel="noopener noreferrer"><img src="https://ko-fi.com/img/githubbutton_sm.svg" alt="Támogatás Ko-fi-n"></a>
+
 ![SimpleRadio LCD lejátszó](.screenshots/lcd/player1.jpg)
 
 ## Főbb funkciók
@@ -39,11 +41,9 @@
 ## Hivatkozások
 
 - [Webfelület és LCD működése](docs/ui-refresh.md)
-- [Támogatás: Ko-fi](https://ko-fi.com/zsoltsogorka)
 - [GNU GPL v3 licenc](LICENSE) · [Külső függőségek és licencek](THIRD_PARTY_NOTICES.md)
 
-<details>
-<summary>Képernyőképek</summary>
+## Képernyőképek
 
 - Webes képek: a jelenlegi felület helyi előnézete mintaadatokkal; az LCD-képek valódi fotók.
 
@@ -62,5 +62,3 @@
 | ![Rendszer áttekintés](.screenshots/system.jpg) | ![Kapcsolatok](.screenshots/system-connections.jpg) |
 | Rendszer – Frissítés | |
 | ![Frissítés](.screenshots/system-update.jpg) | |
-
-</details>

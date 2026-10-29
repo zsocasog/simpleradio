@@ -4,6 +4,8 @@
 
 > Current version: **1.1.28** · ESP32-S3 N16R8 · English and Hungarian UI
 
+<a href="https://ko-fi.com/zsoltsogorka" target="_blank" rel="noopener noreferrer"><img src="https://ko-fi.com/img/githubbutton_sm.svg" alt="Support me on Ko-fi"></a>
+
 ![SimpleRadio LCD player](.screenshots/lcd/player1.jpg)
 
 ## Features
@@ -39,11 +41,9 @@
 ## Links
 
 - [Web UI and LCD behaviour](docs/ui-refresh.md)
-- [Support: Ko-fi](https://ko-fi.com/zsoltsogorka)
 - [GNU GPL v3 license](LICENSE) · [Third-party dependencies and licenses](THIRD_PARTY_NOTICES.md)
 
-<details>
-<summary>Screenshots</summary>
+## Screenshots
 
 - Web screenshots: the current UI's local preview with sample data; LCD images are actual photographs.
 
@@ -62,5 +62,3 @@
 | ![System overview](.screenshots/en/system.jpg) | ![Connections](.screenshots/en/system-connections.jpg) |
 | System – Update | |
 | ![Update](.screenshots/en/system-update.jpg) | |
-
-</details>
