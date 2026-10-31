@@ -64,6 +64,14 @@ static constexpr const char* MQTT_BAD_CREDENTIALS_TEXT = "Hibás hitelesítés";
 static constexpr const char* MQTT_UNAUTHORIZED_TEXT = "Nincs jogosultság";
 static constexpr const char* MQTT_UNKNOWN_TEXT = "Ismeretlen állapot";
 
+static inline const char* month(uint8_t index) {
+  static constexpr const char* MONTHS[] = {
+    "január", "február", "március", "április", "május", "június",
+    "július", "augusztus", "szeptember", "október", "november", "december"
+  };
+  return index < 12 ? MONTHS[index] : "";
+}
+
 static inline const char* weekday(uint8_t day) {
   static constexpr const char* DAYS[] = {
     "vasárnap", "hétfő", "kedd", "szerda", "csütörtök", "péntek", "szombat"

@@ -54,6 +54,14 @@ SimpleRadio is distributed under GPLv3.
 
 ## Attribution and source availability
 
+### Noto Sans (LCD text and standby clock digits)
+
+- Source: [The Noto Project Authors](https://github.com/notofonts/latin-greek-cyrillic)
+- License: SIL Open Font License 1.1, Copyright 2022 The Noto Project Authors.
+- Rasterized subsets are embedded in `src/display/lcd_font_data.h` and
+  `src/display/lcd_clock_font_data.h`; the license is included in
+  [licenses/NotoSans-OFL.txt](licenses/NotoSans-OFL.txt).
+
 ### Tabler Icons (web interface)
 
 - Source: [tabler/tabler-icons](https://github.com/tabler/tabler-icons)

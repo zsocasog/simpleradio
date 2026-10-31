@@ -64,6 +64,14 @@ static constexpr const char* MQTT_BAD_CREDENTIALS_TEXT = "Invalid credentials";
 static constexpr const char* MQTT_UNAUTHORIZED_TEXT = "Unauthorized";
 static constexpr const char* MQTT_UNKNOWN_TEXT = "Unknown state";
 
+static inline const char* month(uint8_t index) {
+  static constexpr const char* MONTHS[] = {
+    "January", "February", "March", "April", "May", "June",
+    "July", "August", "September", "October", "November", "December"
+  };
+  return index < 12 ? MONTHS[index] : "";
+}
+
 static inline const char* weekday(uint8_t day) {
   static constexpr const char* DAYS[] = {
     "Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"

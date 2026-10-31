@@ -16,6 +16,7 @@
 #include "../stations/station_manager.h"
 #include "../web/web_server.h"
 #include "lcd_font_data.h"
+#include "lcd_clock_font_data.h"
 #include "station_picker_policy.h"
 #include <atomic>
 #include <utility>
@@ -217,6 +218,12 @@ static bool analogClockHandsValid = false;
 static float analogClockLastHourAngle = 0.0f;
 static float analogClockLastMinuteAngle = 0.0f;
 static float analogClockLastSecondAngle = 0.0f;
+static int clockWaveLastFilled = -1;
+struct ClockTile {
+  uint16_t* pixels;
+  int x, y, width, height;
+};
+static ClockTile* clockTile = nullptr;
 static const uint8_t kVuShape[VU_BAR_COUNT] = {
   92, 142, 204, 126, 232, 166,
   108, 190, 248, 154, 212, 116,
@@ -2959,81 +2966,190 @@ static String clockDateLine(const struct tm& timeinfo) {
   int month = constrain(timeinfo.tm_mon + 1, 1, 12);
   int day = constrain(timeinfo.tm_mday, 1, 31);
   char date[16];
-  snprintf(date, sizeof(date), "%04d.%02d.%02d",
+  snprintf(date, sizeof(date), "%04d.%02d.%02d.",
            year,
            month,
            day);
 
-  String out = date;
-  out += "  ";
-  out += I18n::weekday(timeinfo.tm_wday % 7);
-  return out;
+  return String(date);
 }
 
 static void drawClockSurfaceRegion(int32_t x, int32_t y, int32_t w, int32_t h) {
-  int32_t x0 = max<int32_t>(0, x);
-  int32_t y0 = max<int32_t>(0, y);
-  int32_t x1 = min<int32_t>(SCREEN_W, x + w);
-  int32_t y1 = min<int32_t>(SCREEN_H, y + h);
-  if (x1 <= x0 || y1 <= y0) return;
-
-  for (int32_t yy = y0; yy < y1; ++yy) {
-    uint16_t color = cBg;
-    if (yy < SCREEN_H / 2) {
-      color = blend565(cPanelAlt, cBg, 34 - yy / 12);
-    } else {
-      color = blend565(cPanel, cBg, 12 + (yy - SCREEN_H / 2) / 8);
-    }
-    lcd.drawFastHLine(x0, yy, x1 - x0, color);
-  }
-
-  for (int32_t lineX = sx(16); lineX < SCREEN_W; lineX += sx(32)) {
-    if (lineX >= x0 && lineX < x1) {
-      lcd.drawFastVLine(lineX, y0, y1 - y0, blend565(cLine, cBg, 28));
-    }
-  }
-
-  int32_t lineY = SCREEN_H - sy(16);
-  if (lineY >= y0 && lineY < y1) {
-    lcd.drawFastHLine(max<int32_t>(sx(28), x0), lineY, min<int32_t>(SCREEN_W - sx(28), x1) - max<int32_t>(sx(28), x0), blend565(cAccent, cBg, 120));
-  }
+  lcd.fillRect(x, y, w, h, cBg);
 }
 
 static void drawClockSurface() {
   drawClockSurfaceRegion(0, 0, SCREEN_W, SCREEN_H);
+  clockWaveLastFilled = -1;
+}
+
+static void writeClockPixel(int x, int y, uint16_t color, uint8_t alpha) {
+  if (!alpha) return;
+  if (!clockTile) {
+    lcd.writePixel(x, y, blend565(color, cBg, alpha));
+    return;
+  }
+  const int localX = x - clockTile->x;
+  const int localY = y - clockTile->y;
+  if (localX < 0 || localY < 0 || localX >= clockTile->width || localY >= clockTile->height) return;
+  uint16_t& pixel = clockTile->pixels[localY * clockTile->width + localX];
+  pixel = blend565(color, pixel, alpha);
+}
+
+// Composite anti-aliased text one scanline at a time. Even the large digits
+// need only SCREEN_W * 2 scratch bytes, with no PSRAM sprite or DMA-heap reserve.
+// The same baseline is shared by differently colored portions of a word/time.
+static void drawClockText(const String& text, int anchorX, int centerY,
+                          const LcdFont& font, uint16_t color,
+                          textdatum_t datum = middle_center,
+                          int accentFrom = -1, int accentTo = -1) {
+  struct ClockGlyphRun { GlyphInfo glyph; int x; bool accent; };
+  ClockGlyphRun runs[32];
+  int count = 0;
+  int advance = 0;
+  int top = 255;
+  int bottom = 0;
+  int left = 0;
+  int right = 0;
+  const char* cursor = text.c_str();
+  while (*cursor && count < 32) {
+    GlyphInfo glyph;
+    if (!findGlyph(font, nextUtf8Codepoint(cursor), glyph)) continue;
+    runs[count] = {glyph, advance, count >= accentFrom && count < accentTo};
+    if (glyph.width && glyph.height) {
+      top = min(top, static_cast<int>(glyph.yOffset));
+      bottom = max(bottom, glyph.yOffset + glyph.height);
+      left = min(left, advance + glyph.xOffset);
+      right = max(right, advance + glyph.xOffset + glyph.width);
+    }
+    advance += glyph.xAdvance;
+    ++count;
+  }
+  if (bottom <= top) return;
+  right = max(right, advance);
+  int x = anchorX;
+  if (datum == middle_center) x -= advance / 2;
+  else if (datum == middle_right) x -= advance;
+  const int x0 = max(0, x + left);
+  const int x1 = min(SCREEN_W, x + right);
+  const int width = x1 - x0;
+  const int y = centerY - (bottom - top) / 2 - top;
+  const int y0 = max(0, y + top);
+  const int y1 = min(SCREEN_H, y + bottom);
+  if (width <= 0 || y1 <= y0) return;
+
+  const uint8_t* bitmap = fontBitmap(font);
+  if (clockTile) {
+    for (int i = 0; i < count; ++i) {
+      const GlyphInfo& glyph = runs[i].glyph;
+      const int glyphX = x + runs[i].x + glyph.xOffset;
+      const int glyphY = y + glyph.yOffset;
+      const int col0 = max(0, clockTile->x - glyphX);
+      const int col1 = min(static_cast<int>(glyph.width), clockTile->x + clockTile->width - glyphX);
+      const int row0 = max(0, clockTile->y - glyphY);
+      const int row1 = min(static_cast<int>(glyph.height), clockTile->y + clockTile->height - glyphY);
+      for (int row = row0; row < row1; ++row) {
+        for (int col = col0; col < col1; ++col) {
+          const uint32_t index = static_cast<uint32_t>(row) * glyph.width + col;
+          const uint8_t packed = pgm_read_byte(&bitmap[glyph.offset + index / 2]);
+          const uint8_t alpha = (index & 1) ? packed & 15 : packed >> 4;
+          writeClockPixel(glyphX + col, glyphY + row, runs[i].accent ? cAccent : color, alpha * 17);
+        }
+      }
+    }
+    return;
+  }
+
+  uint16_t shades[2][16];
+  for (int alpha = 0; alpha < 16; ++alpha) {
+    shades[0][alpha] = blend565(color, cBg, alpha * 17);
+    shades[1][alpha] = blend565(cAccent, cBg, alpha * 17);
+  }
+  uint16_t pixels[SCREEN_W];
+  lcd.startWrite();
+  lcd.setAddrWindow(x0, y0, width, y1 - y0);
+  for (int row = y0; row < y1; ++row) {
+    for (int col = 0; col < width; ++col) pixels[col] = cBg;
+    for (int i = 0; i < count; ++i) {
+      const GlyphInfo& glyph = runs[i].glyph;
+      const int glyphRow = row - y - glyph.yOffset;
+      if (glyphRow < 0 || glyphRow >= glyph.height) continue;
+      const int glyphX = x + runs[i].x + glyph.xOffset - x0;
+      for (int col = 0; col < glyph.width; ++col) {
+        const int dest = glyphX + col;
+        if (dest < 0 || dest >= width) continue;
+        const uint32_t index = static_cast<uint32_t>(glyphRow) * glyph.width + col;
+        const uint8_t packed = pgm_read_byte(&bitmap[glyph.offset + index / 2]);
+        const uint8_t alpha = (index & 1) ? packed & 15 : packed >> 4;
+        if (alpha) pixels[dest] = shades[runs[i].accent ? 1 : 0][alpha];
+      }
+    }
+    // Native RGB565, explicitly swapped for the panel; never inherit artwork
+    // or station-picker byte-order settings.
+    lcd.writePixels(pixels, width, true);
+  }
+  lcd.endWrite();
+}
+
+static void drawClockLabel(const String& text, int x, int y, int maxWidth,
+                           textdatum_t datum = middle_center) {
+  const LcdFont* font = uiFontForSize(2);
+  if (uiTextWidth(text, *font) > maxWidth) font = &kLcdFontSmall;
+  drawClockText(text, x, y, *font, cText, datum);
+}
+
+static void drawClockBrand(int centerX, int centerY) {
+  const LcdFont& font = COMPACT_LCD ? kLcdFontSmall : kLcdFontArtist;
+  drawClockText("SimpleRadio", centerX, centerY, font, cText, middle_center, 6, 11);
 }
 
 static void drawDigitalClockText(const struct tm& timeinfo, bool haveTime) {
-  drawClockSurfaceRegion(sx(20), sy(44), SCREEN_W - sx(40), sy(184));
+  drawClockSurfaceRegion(0, sy(32), SCREEN_W, sy(170));
+  const String date = haveTime ? clockDateLine(timeinfo) : String(I18n::TIME_SYNC);
+  const String weekday = haveTime ? String(I18n::weekday(timeinfo.tm_wday % 7)) : String("");
+  drawClockLabel(date, sx(32), sy(58), sx(236), middle_left);
+  drawClockLabel(weekday, SCREEN_W - sx(32), sy(58), sx(160), middle_right);
   String timeText = haveTime
                       ? twoDigits(timeinfo.tm_hour) + ":" + twoDigits(timeinfo.tm_min)
                       : "--:--";
-
-  setBaseFont();
-  lcd.setFont(COMPACT_LCD ? &fonts::Font7 : &fonts::Font8);
-  lcd.setTextDatum(middle_center);
-  lcd.setTextColor(cText, cBg);
-  lcd.drawString(timeText, SCREEN_W / 2, sy(128));
-
-  setUiFont(2);
-  String subtitle = haveTime ? clockDateLine(timeinfo) : I18n::TIME_SYNC;
-  drawUiText(subtitle, SCREEN_W / 2, sy(220), *currentUiFont, cAccent, cBg, middle_center);
+  const LcdFont& font = COMPACT_LCD ? kClockFontTimeCompact : kClockFontTime;
+  drawClockText(timeText, SCREEN_W / 2, sy(142), font, haveTime ? cText : cMuted,
+                middle_center, haveTime ? 0 : -1, haveTime ? 3 : -1);
 }
 
 static void drawDigitalClockSecondBar(const struct tm& timeinfo, bool haveTime) {
-  int second = haveTime ? timeinfo.tm_sec : (millis() / 1000) % 60;
-  const int barX = sx(118);
-  const int barY = sy(256);
-  const int barW = SCREEN_W - barX * 2;
-  drawClockSurfaceRegion(barX - sx(4), barY - sy(4), barW + sx(8), sy(18));
-  lcd.fillRoundRect(barX, barY, barW, sy(8), ss(4), blend565(cLine, cBg, 170));
-  lcd.fillRoundRect(barX, barY, map(second, 0, 59, 0, barW), sy(8), ss(4), cAccent);
+  const int filled = haveTime ? constrain(timeinfo.tm_sec, 0, 59) : 0;
+  if (filled == clockWaveLastFilled) return;
+  // Reuse the volume/boot geometry, contour and partial-height fill verbatim.
+  // Only the source of progress differs: elapsed seconds instead of volume.
+  VuLayout layout = volumeMeterLayout();
+  layout.axisY = sy(233);
+  layout.maxH = min(layout.maxH, sy(23));
+  layout.clearY = layout.axisY - layout.maxH - 1;
+  layout.clearH = layout.maxH * 2 + 3;
+  const uint32_t units = static_cast<uint32_t>(filled) * VU_BAR_COUNT * 256U / 59U;
+  const uint32_t previousUnits = clockWaveLastFilled < 0 ? 0
+    : static_cast<uint32_t>(clockWaveLastFilled) * VU_BAR_COUNT * 256U / 59U;
+  const uint16_t ghost = blend565(cLine, cBg, 118);
+  lcd.startWrite();
+  for (int i = 0; i < VU_BAR_COUNT; ++i) {
+    const int fill = constrain(static_cast<int32_t>(units) - i * 256, 0, 256);
+    const int before = constrain(static_cast<int32_t>(previousUnits) - i * 256, 0, 256);
+    if (clockWaveLastFilled >= 0 && fill == before) continue;
+    lcd.fillRect(vuBarXInLayout(layout, i), layout.clearY, VU_BAR_W, layout.clearH, cBg);
+    drawVolumeMeterBar(nullptr, layout, i, 0, volumeMeterGhostHeight(i, layout.maxH), ghost);
+    if (fill > 0) {
+      const uint8_t target = volumeMeterTargetHeight(i, layout.maxH, 0, false);
+      const uint8_t height = max<int>(VU_MIN_H, target * fill / 256);
+      drawVolumeMeterBar(nullptr, layout, i, 0, height, cAccent);
+    }
+  }
+  lcd.endWrite();
+  clockWaveLastFilled = filled;
 }
 
 static void drawDigitalClockFooter() {
-  drawClockSurfaceRegion(0, sy(284), SCREEN_W, sy(30));
-  setUiFont(1);
-  drawUiText(I18n::SIMPLE_RADIO, SCREEN_W / 2, sy(298), *currentUiFont, cMuted, cBg, middle_center);
+  drawClockBrand(SCREEN_W / 2, sy(284));
 }
 
 static void drawDigitalClock(const struct tm& timeinfo, bool haveTime) {
@@ -3043,17 +3159,86 @@ static void drawDigitalClock(const struct tm& timeinfo, bool haveTime) {
   drawDigitalClockFooter();
 }
 
-static void drawClockHand(int cx, int cy, float angle, int length, uint16_t color, uint8_t width) {
-  float px = -sinf(angle);
-  float py = cosf(angle);
-  int x2 = cx + static_cast<int>(cosf(angle) * length);
-  int y2 = cy + static_cast<int>(sinf(angle) * length);
-  int halfWidth = max<int>(1, width / 2);
+static void drawClockStroke(int x1, int y1, int x2, int y2, uint16_t color, int width) {
+  const float dx = x2 - x1;
+  const float dy = y2 - y1;
+  const float lengthSquared = dx * dx + dy * dy;
+  const float radius = max(1, width) * 0.5f;
+  const float edge = radius + 0.5f;
+  const int left = max(clockTile ? clockTile->x : 0, static_cast<int>(floorf(min(x1, x2) - edge)));
+  const int right = min(clockTile ? clockTile->x + clockTile->width - 1 : SCREEN_W - 1,
+                        static_cast<int>(ceilf(max(x1, x2) + edge)));
+  const int top = max(clockTile ? clockTile->y : 0, static_cast<int>(floorf(min(y1, y2) - edge)));
+  const int bottom = min(clockTile ? clockTile->y + clockTile->height - 1 : SCREEN_H - 1,
+                         static_cast<int>(ceilf(max(y1, y2) + edge)));
+  // The clock has a known solid background, so anti-aliasing needs neither
+  // framebuffer allocation nor LCD readback (our SPI wiring has no MISO).
+  for (int y = top; y <= bottom; ++y) {
+    for (int x = left; x <= right; ++x) {
+      const float along = lengthSquared > 0.0f
+        ? constrain(((x - x1) * dx + (y - y1) * dy) / lengthSquared, 0.0f, 1.0f) : 0.0f;
+      const float px = x - x1 - along * dx;
+      const float py = y - y1 - along * dy;
+      const float distanceSquared = px * px + py * py;
+      if (distanceSquared >= edge * edge) continue;
+      const float coverage = min(1.0f, edge - sqrtf(distanceSquared));
+      writeClockPixel(x, y, color, static_cast<uint8_t>(coverage * 255.0f));
+    }
+  }
+}
 
-  for (int offset = -halfWidth; offset <= halfWidth; ++offset) {
-    int ox = static_cast<int>(px * offset);
-    int oy = static_cast<int>(py * offset);
-    lcd.drawLine(cx + ox, cy + oy, x2 + ox, y2 + oy, color);
+struct ClockHandSegment {
+  int x1, y1, x2, y2, width;
+};
+
+static ClockHandSegment clockHandSegment(int cx, int cy, float angle, int length,
+                                         int width, int tail = 0) {
+  const float dx = cosf(angle);
+  const float dy = sinf(angle);
+  return {cx - static_cast<int>(lroundf(dx * tail)), cy - static_cast<int>(lroundf(dy * tail)),
+          cx + static_cast<int>(lroundf(dx * length)), cy + static_cast<int>(lroundf(dy * length)), width};
+}
+
+static bool clockHandChanged(const ClockHandSegment& before, const ClockHandSegment& after) {
+  return before.x1 != after.x1 || before.y1 != after.y1 || before.x2 != after.x2 ||
+         before.y2 != after.y2 || before.width != after.width;
+}
+
+static bool clockHandTouchesTile(const ClockHandSegment& hand, const ClockTile& tile) {
+  const int pad = (hand.width + 1) / 2 + 1;
+  return min(hand.x1, hand.x2) - pad < tile.x + tile.width &&
+         max(hand.x1, hand.x2) + pad >= tile.x &&
+         min(hand.y1, hand.y2) - pad < tile.y + tile.height &&
+         max(hand.y1, hand.y2) + pad >= tile.y;
+}
+
+static void drawClockHand(int cx, int cy, float angle, int length, uint16_t color,
+                          int width, int tail = 0) {
+  const ClockHandSegment hand = clockHandSegment(cx, cy, angle, length, width, tail);
+  drawClockStroke(hand.x1, hand.y1, hand.x2, hand.y2, color, width);
+}
+
+static void drawClockWaveHand(int cx, int cy, float angle) {
+  const float dx = cosf(angle);
+  const float dy = sinf(angle);
+  const int length = ss(108);
+  const int tail = ss(20);
+  const int maxHeight = max(2, ss(8));
+  const int width = max(2, ss(3));
+  // Rotate the existing VU/boot contour as a whole: the bars stay
+  // perpendicular to the hand, with a short counterweight behind the pivot.
+  for (int i = 0; i < VU_BAR_COUNT; ++i) {
+    const float along = -static_cast<float>(tail) +
+      static_cast<float>(length + tail) * i / (VU_BAR_COUNT - 1);
+    int height = max(1, (kVuShape[i] * maxHeight + 127) / 255);
+    const int endDistance = min(i, VU_BAR_COUNT - 1 - i);
+    if (endDistance < 2) height = min(height, max(1, maxHeight * (endDistance + 1) / 3));
+    const int halfStroke = max(0, height - (width + 1) / 2);
+    const int x1 = cx + static_cast<int>(lroundf(dx * along - dy * halfStroke));
+    const int y1 = cy + static_cast<int>(lroundf(dy * along + dx * halfStroke));
+    const int x2 = cx + static_cast<int>(lroundf(dx * along + dy * halfStroke));
+    const int y2 = cy + static_cast<int>(lroundf(dy * along - dx * halfStroke));
+    drawClockStroke(x1, y1, x2, y2, cAccent, width);
   }
 }
 
@@ -3062,55 +3247,55 @@ static void resetAnalogClockHandCache() {
 }
 
 static void analogClockAngles(const struct tm& timeinfo, bool haveTime, float& hourAngle, float& minuteAngle, float& secondAngle) {
-  const int second = haveTime ? timeinfo.tm_sec : (millis() / 1000) % 60;
+  const int second = haveTime ? timeinfo.tm_sec : 0;
   const int minute = haveTime ? timeinfo.tm_min : 0;
   const int hour = haveTime ? timeinfo.tm_hour % 12 : 10;
 
-  hourAngle = ((static_cast<float>(hour) + minute / 60.0f) / 12.0f) * CLOCK_PI * 2.0f - CLOCK_PI / 2.0f;
-  minuteAngle = (static_cast<float>(minute) / 60.0f) * CLOCK_PI * 2.0f - CLOCK_PI / 2.0f;
+  hourAngle = ((static_cast<float>(hour) + minute / 60.0f + second / 3600.0f) / 12.0f) * CLOCK_PI * 2.0f - CLOCK_PI / 2.0f;
+  minuteAngle = ((static_cast<float>(minute) + second / 60.0f) / 60.0f) * CLOCK_PI * 2.0f - CLOCK_PI / 2.0f;
   secondAngle = (static_cast<float>(second) / 60.0f) * CLOCK_PI * 2.0f - CLOCK_PI / 2.0f;
 }
 
 static void drawAnalogClockMarks(int cx, int cy, int radius, uint16_t faceBg) {
+  if (!clockTile) lcd.startWrite();
   for (int i = 0; i < 60; ++i) {
     float angle = (static_cast<float>(i) / 60.0f) * CLOCK_PI * 2.0f - CLOCK_PI / 2.0f;
     int outer = radius;
-    int inner = (i % 5 == 0) ? radius - ss(14) : radius - ss(7);
-    uint16_t color = (i % 5 == 0) ? cText : cMuted;
+    const bool cardinal = i % 15 == 0;
+    int inner = radius - ss(cardinal ? 18 : i % 5 == 0 ? 16 : 5);
+    uint16_t color = cardinal ? cAccent : i % 5 == 0 ? cText : cMuted;
     int x1 = cx + static_cast<int>(cosf(angle) * inner);
     int y1 = cy + static_cast<int>(sinf(angle) * inner);
     int x2 = cx + static_cast<int>(cosf(angle) * outer);
     int y2 = cy + static_cast<int>(sinf(angle) * outer);
-    lcd.drawLine(x1, y1, x2, y2, color);
+    drawClockStroke(x1, y1, x2, y2, color, cardinal ? max(3, ss(8)) : i % 5 == 0 ? max(2, ss(6)) : 1);
   }
-
-  setUiFont(2);
-  drawUiText("12", cx, cy - radius + sy(26), *currentUiFont, cText, faceBg, middle_center);
-  drawUiText("3", cx + radius - sx(28), cy, *currentUiFont, cText, faceBg, middle_center);
-  drawUiText("6", cx, cy + radius - sy(28), *currentUiFont, cText, faceBg, middle_center);
-  drawUiText("9", cx - radius + sx(28), cy, *currentUiFont, cText, faceBg, middle_center);
+  if (!clockTile) lcd.endWrite();
+  const LcdFont& font = COMPACT_LCD ? kLcdFontMedium : kLcdFontArtist;
+  const int labelRadius = radius - ss(34);
+  drawClockText("12", cx, cy - labelRadius, font, cAccent);
+  drawClockText("3", cx + labelRadius, cy, font, cAccent);
+  drawClockText("6", cx, cy + labelRadius, font, cAccent);
+  drawClockText("9", cx - labelRadius, cy, font, cAccent);
+  (void)faceBg;
 }
 
 static void drawAnalogClockHands(float hourAngle, float minuteAngle, float secondAngle) {
-  const int cx = SCREEN_W / 2;
-  const int cy = sy(148);
-  drawClockHand(cx, cy, hourAngle, ss(52), cText, ss(6));
-  drawClockHand(cx, cy, minuteAngle, ss(78), cText, ss(4));
-  drawClockHand(cx, cy, secondAngle, ss(90), cAccent, ss(2));
-  lcd.fillCircle(cx, cy, ss(8), cAccent);
-  lcd.fillCircle(cx, cy, ss(3), cOnAccent);
+  const int cx = sx(158);
+  const int cy = sy(156);
+  if (!clockTile) lcd.startWrite();
+  drawClockHand(cx, cy, hourAngle, ss(60), cText, max(2, ss(6)));
+  drawClockHand(cx, cy, minuteAngle, ss(98), cText, max(2, ss(4)));
+  drawClockWaveHand(cx, cy, secondAngle);
+  drawClockStroke(cx, cy, cx, cy, cAccent, max(6, ss(12)));
+  if (!clockTile) lcd.endWrite();
 }
 
 static void drawAnalogClockFace(const struct tm& timeinfo, bool haveTime) {
-  const int cx = SCREEN_W / 2;
-  const int cy = sy(148);
-  const int radius = ss(106);
-  const uint16_t faceBg = blend565(cPanelAlt, cBg, 150);
-
-  lcd.fillCircle(cx, cy, radius + ss(14), faceBg);
-  lcd.drawCircle(cx, cy, radius + ss(14), blend565(cLine, cBg, 190));
-  lcd.drawCircle(cx, cy, radius, blend565(cAccent, cBg, 170));
-  drawAnalogClockMarks(cx, cy, radius, faceBg);
+  const int cx = sx(158);
+  const int cy = sy(156);
+  drawAnalogClockMarks(cx, cy, ss(123), cBg);
+  if (!haveTime) return;
 
   float hourAngle;
   float minuteAngle;
@@ -3124,10 +3309,9 @@ static void drawAnalogClockFace(const struct tm& timeinfo, bool haveTime) {
 }
 
 static void drawAnalogClockHandsOnly(const struct tm& timeinfo, bool haveTime) {
-  const int cx = SCREEN_W / 2;
-  const int cy = sy(148);
-  const int radius = ss(106);
-  const uint16_t faceBg = blend565(cPanelAlt, cBg, 150);
+  if (!haveTime) return;
+  const int cx = sx(158);
+  const int cy = sy(156);
 
   float hourAngle;
   float minuteAngle;
@@ -3139,12 +3323,56 @@ static void drawAnalogClockHandsOnly(const struct tm& timeinfo, bool haveTime) {
     return;
   }
 
-  drawClockHand(cx, cy, analogClockLastHourAngle, ss(52), faceBg, ss(8));
-  drawClockHand(cx, cy, analogClockLastMinuteAngle, ss(78), faceBg, ss(6));
-  drawClockHand(cx, cy, analogClockLastSecondAngle, ss(90), faceBg, ss(4));
-  lcd.fillCircle(cx, cy, ss(10), faceBg);
-  drawAnalogClockMarks(cx, cy, radius, faceBg);
-  drawAnalogClockHands(hourAngle, minuteAngle, secondAngle);
+  const ClockHandSegment before[3] = {
+    clockHandSegment(cx, cy, analogClockLastHourAngle, ss(60), max(2, ss(6))),
+    clockHandSegment(cx, cy, analogClockLastMinuteAngle, ss(98), max(2, ss(4))),
+    clockHandSegment(cx, cy, analogClockLastSecondAngle, ss(108), max(2, ss(18)), ss(20))
+  };
+  const ClockHandSegment after[3] = {
+    clockHandSegment(cx, cy, hourAngle, ss(60), max(2, ss(6))),
+    clockHandSegment(cx, cy, minuteAngle, ss(98), max(2, ss(4))),
+    clockHandSegment(cx, cy, secondAngle, ss(108), max(2, ss(18)), ss(20))
+  };
+  const bool changed[3] = {
+    clockHandChanged(before[0], after[0]), clockHandChanged(before[1], after[1]),
+    clockHandChanged(before[2], after[2])
+  };
+
+  // Compose each changed tile completely before sending it to the LCD. The
+  // old hands are never erased on-screen; the second-hand bounds include the
+  // full transverse waveform, and overlapping hands/labels are
+  // restored together. This uses 1.5 KB of the existing display task's stack;
+  // no persistent framebuffer, PSRAM slot or internal heap allocation.
+  static constexpr int tileWidth = 32;
+  static constexpr int tileHeight = 24;
+  uint16_t pixels[tileWidth * tileHeight];
+  const int extent = ss(131);
+  const int left = max(0, cx - extent);
+  const int right = min(SCREEN_W, cx + extent + 1);
+  const int top = max(0, cy - extent);
+  const int bottom = min(SCREEN_H, cy + extent + 1);
+  for (int y = top; y < bottom; y += tileHeight) {
+    for (int x = left; x < right; x += tileWidth) {
+      ClockTile tile = {pixels, x, y, min(tileWidth, right - x), min(tileHeight, bottom - y)};
+      bool dirty = false;
+      for (int hand = 0; hand < 3; ++hand) {
+        if (changed[hand] && (clockHandTouchesTile(before[hand], tile) || clockHandTouchesTile(after[hand], tile))) {
+          dirty = true;
+          break;
+        }
+      }
+      if (!dirty) continue;
+      for (int i = 0; i < tile.width * tile.height; ++i) pixels[i] = cBg;
+      clockTile = &tile;
+      drawAnalogClockMarks(cx, cy, ss(123), cBg);
+      drawAnalogClockHands(hourAngle, minuteAngle, secondAngle);
+      clockTile = nullptr;
+      lcd.startWrite();
+      lcd.setAddrWindow(tile.x, tile.y, tile.width, tile.height);
+      lcd.writePixels(pixels, tile.width * tile.height, true);
+      lcd.endWrite();
+    }
+  }
 
   analogClockLastHourAngle = hourAngle;
   analogClockLastMinuteAngle = minuteAngle;
@@ -3153,12 +3381,19 @@ static void drawAnalogClockHandsOnly(const struct tm& timeinfo, bool haveTime) {
 }
 
 static void drawAnalogClockCaption(const struct tm& timeinfo, bool haveTime) {
-  drawClockSurfaceRegion(0, sy(262), SCREEN_W, sy(44));
-  setUiFont(2);
-  String bottom = haveTime
-                    ? twoDigits(timeinfo.tm_hour) + ":" + twoDigits(timeinfo.tm_min) + "  " + clockDateLine(timeinfo)
-                    : I18n::TIME_SYNC;
-  drawUiText(bottom, SCREEN_W / 2, sy(284), *currentUiFont, cAccent, cBg, middle_center);
+  const int x = sx(300);
+  const int width = SCREEN_W - x - sx(20);
+  const int centerX = x + width / 2;
+  drawClockSurfaceRegion(x, sy(72), SCREEN_W - x, sy(204));
+  const String yearMonth = haveTime
+    ? String(timeinfo.tm_year + 1900) + " " + I18n::month(constrain(timeinfo.tm_mon, 0, 11))
+    : String(I18n::TIME_SYNC);
+  drawClockLabel(yearMonth, centerX, sy(100), width);
+  const LcdFont& font = COMPACT_LCD ? kClockFontDayCompact : kClockFontDay;
+  drawClockText(haveTime ? String(timeinfo.tm_mday) : String("--"),
+                centerX, sy(160), font, haveTime ? cAccent : cMuted);
+  if (haveTime) drawClockLabel(I18n::weekday(timeinfo.tm_wday % 7), centerX, sy(217), width);
+  drawClockBrand(centerX, sy(252));
 }
 
 static void drawAnalogClock(const struct tm& timeinfo, bool haveTime) {
@@ -3996,12 +4231,18 @@ void Display::renderIdleClock(bool force) {
     stamp = static_cast<int>((millis() / 1000UL) % 86400UL);
     memset(&timeinfo, 0, sizeof(timeinfo));
   }
-  int minuteStamp = stamp / 60;
+  // Include the calendar day so midnight/timezone/NTP corrections also update
+  // the date, even when the displayed HH:MM:SS happens to remain unchanged.
+  int minuteStamp = haveTime
+    ? (timeinfo.tm_year * 366 + timeinfo.tm_yday) * 1440 + timeinfo.tm_hour * 60 + timeinfo.tm_min
+    : stamp / 60;
 
   bool styleChanged = style != lastClockStyle;
-  if (!force && !styleChanged && stamp == lastClockStamp) return;
+  bool timeAvailabilityChanged = haveTime != lastClockHadTime;
+  if (!force && !styleChanged && !timeAvailabilityChanged &&
+      stamp == lastClockStamp && minuteStamp == lastClockMinuteStamp) return;
 
-  if (force || styleChanged || lastClockStamp < 0) {
+  if (force || styleChanged || timeAvailabilityChanged || lastClockStamp < 0) {
     if (style == "analog") {
       drawAnalogClock(timeinfo, haveTime);
     } else {
@@ -4010,6 +4251,7 @@ void Display::renderIdleClock(bool force) {
     }
     lastClockStamp = stamp;
     lastClockMinuteStamp = minuteStamp;
+    lastClockHadTime = haveTime;
     lastClockStyle = style;
     return;
   }

@@ -105,5 +105,6 @@ private:
   unsigned long lastMeterRenderMs = 0;
   int lastClockStamp = -1;
   int lastClockMinuteStamp = -1;
+  bool lastClockHadTime = false;
   String lastClockStyle;
 };
