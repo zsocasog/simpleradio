@@ -184,7 +184,7 @@ window.SR_TEXT_KEYS = {
   "Stream URL": "text.e176b7688670",
   "Stream kapcsolat": "text.0e913de1391d",
   "Szimmetrikus oszlopok": "text.112c29d70bec",
-  "Sötét kijelző": "text.7fcc9371c8c6",
+  "Kikapcsolt kijelző": "text.7fcc9371c8c6",
   "TR - Törökország": "text.c5d285851dff",
   "Treble": "text.7891c4a9319b",
   "Tárhely": "text.5e465970972f",

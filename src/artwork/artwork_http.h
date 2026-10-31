@@ -29,6 +29,9 @@ struct Options {
 };
 
 bool get(const String& url, size_t limit, Response& response, const Options& options = {});
+void reserveAudioConnection();
+bool backgroundNetworkActive();
+void releaseAudioConnection();
 String publicImageUrl(const String& url);
 String host(const String& url);
 } // namespace ArtworkHttp

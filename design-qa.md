@@ -488,3 +488,60 @@ Evidence: `.pio/artifacts/lcd-refinements-20261028/firmware-viewport-final.log`,
 - Existing physical LCD photographs are retained. No firmware, data assets or
   device settings changed. The replaced PNGs have no remaining Markdown
   references; all image/local documentation links were checked.
+
+
+---
+
+# Csatornalista: sarokszámozás és animált lejátszásjelző
+
+## Összehasonlítás
+
+- Forrás: `C:/Users/zsoca/.codex/generated_images/01a0ddc2-ba4f-75d1-9099-949e8a98f255/exec-c891c78a-e61b-4a47-8513-09cf05fa1919.png`.
+- Megvalósítás: `http://127.0.0.1:8787/`, a projekt saját, memóriában működő tesztrádiójával; fizikai eszközre nem került feltöltés.
+- Asztali képernyő: `.pio/station-list-preview/desktop.jpg` (1600 × 1000 CSS px, 1×).
+- Csatornalista: `.pio/station-list-preview/queue.jpg` (400 × 508 px).
+- Mobil: `.pio/station-list-preview/mobile.jpg` (390 × 844 CSS px).
+- Közös összehasonlító kép: `.pio/station-list-preview/comparison.jpg`.
+- A 1114 × 1412 px méretű generált forrás szélességét 400 px-re normalizáltam, torzítás nélkül. A külső képkivágás és a meglévő fejléc térközei nem változtatási célok.
+- Állapot: hat mentett adó, Danubius kiválasztva és lejátszás alatt, borostyán téma. Az animáció pillanatnyi sávállása változó, ezért nem képpontonkénti azonosságot vizsgáltam.
+
+## Findings
+
+- Nincs nyitott P0/P1/P2 eltérés a kért számozásban és lejátszásjelzőben.
+- A logó sarkán lévő, legalább kétjegyű index külön elem, így a logó frissítése és a logó nélküli rövidítés sem tünteti el.
+- A kiválasztott sor nyolc, középvonalra igazított, lekerekített sávja a témaszínt követi; a szélső elemek halványabbak.
+- A teljes lista és a kiválasztott sor részletének összevetése ugyanabban a képen történt. A jelző mérete és a számjelvény helye a kis méretű részleteknél is látható.
+
+## Összehasonlítási előzmények
+
+1. Az első asztali nézetben a jelző és a sor jobb széle között csak 4 px hely maradt. A jobb oldali térközt 12 px-re növeltem, és a bal oldali kijelölősáv mellett igazítottam a logók helyét.
+2. A javítás után új képernyőképek és közös összehasonlítás készültek. Hat adónál görgethető maradt a lista; az utolsó sor 06-os jelvénye is a soron belül maradt. A jelző jobb oldalán mért távolság 12 px.
+
+## Ellenőrzött működés
+
+- Lejátszás, megállítás és csatornaváltás: egyszerre csak a megfelelő állomáshoz tartozó jelző látszik; megállításkor eltűnik.
+- Kapcsolódás közben rejtett jelző, a kapcsolat felépülésekor megjelenik; az ismételt állapotüzenetek nem építik újra a vezérlőket.
+- Másik nézetben szünetelő, a lejátszóhoz visszatérve futó animáció.
+- Témaváltás borostyán és cián között: a jelző és a kijelölt szám színe követi a beállítást.
+- Asztali, 834 × 1112-es tablet- és 390 × 844-es mobilnézet: nincs vízszintes túllógás, a sarokszámok megmaradnak.
+- Szűréskor a Retro Rádió száma 04 marad; rendezési módban a meglévő mozgató vezérlők és a számozás megmaradnak.
+- Logó nélküli tesztállomások: az alapértelmezett rövidítés és a sarokszám együtt látható.
+- 12 automatizált WebUI-ellenőrzés, JavaScript-szintaktikai ellenőrzés és LittleFS build sikeres.
+- Böngészőkonzol: nincs hiba a helyi ellenőrzés során.
+
+## Open Questions
+
+- Nincs. Fizikai rádión történő ellenőrzés és feltöltés nem része ennek a helyi vizsgálatnak.
+
+## Implementation Checklist
+
+- A tényleges állomáslogókat és a meglévő témaváltozókat használja.
+- Az animáció a böngészőben fut, nem kér FFT-adatokat és nem ad hozzá hálózati lekérdezéseket.
+- Csak a látható lejátszónézetben fut; csökkentett mozgás beállításánál álló mintát mutat.
+- A korábbi előnézeti keretjavítás megmaradt.
+
+## Follow-up Polish
+
+- Nincs szükséges további módosítás.
+
+final result: passed

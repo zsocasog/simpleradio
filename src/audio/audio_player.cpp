@@ -1,8 +1,10 @@
 #include "audio_player.h"
 #include "audio_spectrum.h"
 #include "audio_meter.h"
+#include "audio_network_control.h"
 #include "volume_math.h"
 #include "../artwork/artwork_cache.h"
+#include "../artwork/artwork_http.h"
 #include "../state/player_state.h"
 #include "../config/app_config.h"
 #include "../config/logging.h"
@@ -394,6 +396,10 @@ static void audioInfo(Audio::msg_t m) {
 }
 
 void AudioPlayer::begin() {
+  SimpleRadioAudio::networkOwner = this;
+  SimpleRadioAudio::continueNetwork = [](void* owner) {
+    return static_cast<AudioPlayer*>(owner)->networkStillRequested();
+  };
   if (!audioEventQueue) {
     audioEventQueue = xQueueCreate(AUDIO_EVENT_QUEUE_LENGTH, sizeof(QueuedAudioEvent));
   }
@@ -446,6 +452,11 @@ uint32_t AudioPlayer::retryDelayMs(const AppConfig& config) const {
   return min<uint32_t>(base * multiplier, 60000);
 }
 
+bool AudioPlayer::networkStillRequested() const {
+  const PlayerStateSnapshot desired = PlayerState::instance().snapshot();
+  return desired.playing && desired.streamUrl == lastStreamUrl && WiFi.isConnected();
+}
+
 bool AudioPlayer::connectToStream(const String& url) {
   if (!url.length()) return false;
 
@@ -456,11 +467,40 @@ bool AudioPlayer::connectToStream(const String& url) {
 
   ArtworkCache::instance().notifyAudioConnectStarting();
   PlayerState::instance().setStreamConnectionState(StreamConnectionState::Connecting, connectFailureCount);
+  ArtworkCache::instance().cancelIdlePrewarm();
+  struct AudioConnectionScope {
+    AudioConnectionScope() { ArtworkHttp::reserveAudioConnection(); }
+    ~AudioConnectionScope() { ArtworkHttp::releaseAudioConnection(); }
+  } connectionScope;
+  // Cancellation alone does not close a socket while the background worker is
+  // inside connect()/TLS. Yield until that worker has closed its OWN client;
+  // the web/main/input tasks remain runnable throughout the handover.
+  const uint32_t handoverStarted = millis();
+  while (ArtworkHttp::backgroundNetworkActive()) {
+    if (!networkStillRequested()) return false;
+    if (millis() - handoverStarted >= 13000) {
+      lastRetryMs = millis();
+      PlayerState::instance().setStreamConnectionState(StreamConnectionState::RetryWaiting, connectFailureCount);
+      Serial.println("[audio] background network still closing; connection deferred");
+      return false;
+    }
+    vTaskDelay(pdMS_TO_TICKS(10));
+  }
+  if (!networkStillRequested()) return false;
   resetQueuedAudioEventCache();
   updateCodecFromText(PlayerState::instance(), url.c_str());
   uint32_t startMs = millis();
   bool ok = audio.connecttohost(url.c_str());
   uint32_t durationMs = millis() - startMs;
+  // Retry spacing starts AFTER a slow failure, not before it. A failed request
+  // must never immediately consume another full connection timeout.
+  lastRetryMs = millis();
+  if (!networkStillRequested()) {
+    audio.stopSong();
+    ArtworkCache::instance().notifyAudioConnectResult(false);
+    resetQueuedAudioEventCache();
+    return false;
+  }
 
   if (ok) {
     connectFailureCount = 0;
@@ -561,7 +601,7 @@ void AudioPlayer::service() {
   applyProcessingSettings(config, s);
   applyVolumeCurve(config.volumeCurve);
 
-  if (s.playing &&
+  if (!streamControlOperation && s.playing &&
       s.streamUrl.length() &&
       lastStreamUrl == s.streamUrl &&
       !audio.isRunning()) {
@@ -583,6 +623,9 @@ void AudioPlayer::service() {
       }
     }
   }
+
+  // A stop or station command may have arrived while connect()/headers waited.
+  if (streamControlOperation && !networkStillRequested()) return;
 
   if (s.volume != lastVolume) {
     lastVolume = s.volume;

@@ -14,6 +14,7 @@ private:
     void startTask();
     void service();
     bool connectToStream(const String& url);
+    bool networkStillRequested() const;
     uint32_t retryDelayMs(const AppConfig& config) const;
     void applyVolumeCurve(const String& curve);
     void applyProcessingSettings(const AppConfig& config, const PlayerStateSnapshot& state);

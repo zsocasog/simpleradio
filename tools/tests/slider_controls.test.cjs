@@ -45,7 +45,7 @@ function harness({live=true,hold=false}={}){
   updateLastFmDeleteButton(){},updateIrPanel(){},syncEncoderControls(){},syncDisplayFooterMode(){},
   syncDisplayIdleMode(){},syncFrontLedControls(){},syncThemeAccent(){},syncVolumeCurve(){},
   applyThemeAccent(){},normalizeThemeAccent:v=>v||'green',
-  updatePlayButtons(){},renderStations(){},updateCover(){},streamConnectionMessage:()=>''});
+  updatePlayButtons(){},renderStations(){},syncStationPlayButtons(){},updateCover(){},streamConnectionMessage:()=>''});
  context.fetch=(url,options)=>{
   const values=Object.fromEntries(options.body);requests.push({url,values});
   const reply=()=>({ok:true,json:async()=>Object.fromEntries(Object.entries(values).map(([k,v])=>[k,/^-?\d+$/.test(v)?Number(v):v]))});

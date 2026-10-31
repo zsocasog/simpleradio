@@ -811,6 +811,30 @@ function selectStation(id) {
   sendCommand({ station: id, play: true });
 }
 
+function toggleStationPlayback(id) {
+  if (playing && currentStationId === id) sendCommand({ play: false });
+  else selectStation(id);
+}
+
+function syncStationPlayButton(button, stationId) {
+  const stop = playing && currentStationId === stationId;
+  const action = stop ? "stop" : "play";
+  if (button.dataset.playbackAction === action) return;
+  button.dataset.playbackAction = action;
+  const label = stop ? t("player.stop", "Megállítás") : t("stations.play", "Lejátszás");
+  button.title = label;
+  button.setAttribute("aria-label", label);
+  if (window.SRUI?.ready) {
+    button.dataset.uiIcon = stop ? "player-stop" : "player-play";
+    button.innerHTML = window.SRUI.icon(button.dataset.uiIcon);
+  } else button.textContent = stop ? "■" : "►";
+}
+
+function syncStationPlayButtons() {
+  document.querySelectorAll("[data-station-play]").forEach(button =>
+    syncStationPlayButton(button, Number(button.dataset.stationPlay)));
+}
+
 function prevStation() {
   if (!stations.length) return;
   let idx = stations.findIndex(s => s.id === currentStationId);
@@ -901,13 +925,9 @@ function stationRow(station, compact = false, index = 0, total = 0) {
 
   const badge = document.createElement("span");
   badge.className = "station-badge";
-  badge.textContent = stationInitial(station.name);
-  if (station.logo) {
-    const badgeUrl = logoUrl(station.logo, `${station.id}|${station.logo}`);
-    badge.classList.add("has-logo");
-    badge.style.backgroundImage = `url("${String(badgeUrl).replace(/"/g, "%22")}")`;
-    badge.textContent = "";
-  }
+  const badgePaths = stationLogoPaths(station.id, station.logo);
+  applyArtworkNode(badge, badgePaths[0], `${station.id}|${station.logo}`,
+    stationInitial(station.name), badgePaths.slice(1));
 
   const number = document.createElement("span");
   number.className = "station-number";
@@ -928,9 +948,9 @@ function stationRow(station, compact = false, index = 0, total = 0) {
   if (!compact) {
     const play = document.createElement("button");
     play.type = "button";
-    play.textContent = "►";
-    play.title = t("stations.play", "Lejátszás");
-    play.onclick = () => selectStation(station.id);
+    play.dataset.stationPlay = station.id;
+    syncStationPlayButton(play, station.id);
+    play.onclick = () => toggleStationPlayback(station.id);
     actions.appendChild(play);
 
     const up = document.createElement("button");
@@ -1157,7 +1177,9 @@ async function uploadStationLogo(stationId, logoUrl) {
 async function cacheArtworkViaBrowser(state) {
   const sourceUrl = state?.streamLogoUrl || state?.stationLogo || "";
   const cachedPath = String(state?.cachedArtworkPath || "");
-  if (!remoteUrl(sourceUrl) || (cachedPath && !cachedPath.toLowerCase().endsWith(".sr565"))) return;
+  // The firmware now exposes cached LCD pixels as a web image too. Do not
+  // convert/upload the same remote logo again when the local cache is ready.
+  if (!remoteUrl(sourceUrl) || cachedPath) return;
 
   const cached = browserArtworkCache.get(sourceUrl);
   const now = Date.now();
@@ -1625,6 +1647,42 @@ async function searchOnlineStations(append = false) {
   }
 }
 
+function onlineStationLogoThumbnail(source) {
+  // Match the firmware's public-image policy: private/signed URLs stay direct.
+  try {
+    const url = new URL(source);
+    const host = url.hostname.toLowerCase();
+    if (!/^https?:$/.test(url.protocol) || source.length > 2048 ||
+        url.username || url.password || url.hash ||
+        (url.port && url.port !== "80" && url.port !== "443") ||
+        !host.includes(".") || host.endsWith(".") || /^[\d.]+$/.test(host) || host.includes(":") ||
+        /\.(local|lan|home|internal|localhost|test|invalid)$/.test(host) ||
+        host === "wsrv.nl" || host.endsWith(".wsrv.nl") ||
+        host === "images.weserv.nl" || host.endsWith(".images.weserv.nl")) return "";
+    for (const key of url.searchParams.keys()) {
+      if (/%|key|token|auth|pass|secret|sig|credential|x-amz-/i.test(key)) return "";
+    }
+    const params = new URLSearchParams({ url: source, w: "96", h: "96", fit: "inside", output: "png", we: "" });
+    return `https://wsrv.nl/?${params}`;
+  } catch (_) {
+    return "";
+  }
+}
+
+function onlineStationLogoPaths(result) {
+  const source = String(result.favicon || "").trim();
+  const stream = stationStreamUrl(result);
+  // Stream variants can share the same logo. Reuse their prepared local image
+  // without downloading or changing the URL saved with the search result.
+  const saved = stations.find(station => source && station.logo === source) ||
+    stations.find(station => station.url === stream);
+  const paths = saved ? stationLogoPaths(saved.id, saved.logo) : [];
+  if (source) paths.push(source);
+  const thumbnail = onlineStationLogoThumbnail(source);
+  if (thumbnail) paths.push(thumbnail);
+  return [...new Set(paths.filter(Boolean))];
+}
+
 function renderSearchResults(results, append = false) {
   const list = $("searchResults");
   list.querySelector(".search-more")?.remove();
@@ -1638,12 +1696,9 @@ function renderSearchResults(results, append = false) {
 
     const badge = document.createElement("span");
     badge.className = "station-badge";
-    badge.textContent = stationInitial(result.name);
-    if (result.favicon) {
-      badge.classList.add("has-logo");
-      badge.style.backgroundImage = `url("${String(result.favicon).replace(/"/g, "%22")}")`;
-      badge.textContent = "";
-    }
+    const paths = onlineStationLogoPaths(result);
+    applyArtworkNode(badge, paths[0], result.stationuuid || streamUrl,
+      stationInitial(result.name), paths.slice(1));
 
     const tags = [result.countrycode, result.codec].filter(Boolean).join(" / ");
     const info = document.createElement("div");
@@ -1723,6 +1778,13 @@ function clearStationForm(openEditor = true) {
   ["editId", "editName", "editUrl", "editLogo"].forEach(id => setValue(id, ""));
   renderLogoChoices();
   if (openEditor) openStationEditor();
+}
+
+function cancelStationEdit() {
+  clearStationForm(false);
+  const editor = $("stationEditorDrawer");
+  if (editor) editor.open = false;
+  window.SRUI?.stationDialog?.close();
 }
 
 async function saveStation(event) {
@@ -1878,6 +1940,11 @@ function syncDisplayIdleMode() {
   $("displayIdleBlank").checked = enabled && mode === "blank";
   $("displayClockEnabled").checked = enabled && mode === "clock";
   $("displayClockOptions").classList.toggle("hidden", !enabled || mode !== "clock");
+  const brightness = $("displayIdleBrightness");
+  if (brightness) {
+    brightness.disabled = !enabled || mode === "blank";
+    brightness.closest("label").classList.toggle("hidden", !enabled || mode === "blank");
+  }
 }
 
 function syncDisplayFooterMode() {
@@ -2431,23 +2498,69 @@ async function loadStations() {
   renderStations(true);
 }
 
-function applyArtworkNode(node, path, key, fallbackText = "SR") {
-  if (!node) return;
-  const nextKey = path ? `${path}|${key || ""}` : `fallback|${fallbackText}`;
-  if (node.dataset.artworkKey === nextKey) return;
-  node.dataset.artworkKey = nextKey;
+function stationLogoPaths(stationId, logo) {
+  if (!logo) return [];
+  const paths = [logoUrl(logo, `${stationId}|${logo}`)];
+  if (remoteUrl(logo) && Number.isInteger(Number(stationId)) && Number(stationId) >= 0) {
+    paths.unshift(`/api/artwork/station?id=${encodeURIComponent(stationId)}&source=${encodeURIComponent(logo)}`);
+  }
+  return paths;
+}
 
-  if (path) {
-    const separator = String(path).includes("?") ? "&" : "?";
-    const cacheSafePath = `${path}${separator}sr=${encodeURIComponent(key || stationAssetRevision)}`;
+const artworkImageRequests = new Map();
+function artworkImageReady(url) {
+  const previous = artworkImageRequests.get(url);
+  if (previous && Date.now() - previous.at < (previous.ok ? 300000 : 5000)) return previous.promise;
+  const entry = { at: Date.now(), ok: false };
+  entry.promise = new Promise(resolve => {
+    const image = new Image();
+    const timeout = setTimeout(() => { image.src = ""; resolve(false); }, 8000);
+    image.onload = () => { clearTimeout(timeout); entry.ok = true; resolve(true); };
+    image.onerror = () => { clearTimeout(timeout); resolve(false); };
+    image.src = url;
+  });
+  if (artworkImageRequests.size >= 96) artworkImageRequests.delete(artworkImageRequests.keys().next().value);
+  artworkImageRequests.set(url, entry);
+  return entry.promise;
+}
+
+function applyArtworkNode(node, path, key, fallbackText = "SR", fallbackPaths = []) {
+  if (!node) return;
+  const paths = [...new Set([path, ...fallbackPaths].filter(Boolean))];
+  const nextKey = paths.length ? `${paths.join("|")}|${key || ""}` : `fallback|${fallbackText}`;
+  if (node.dataset.artworkKey === nextKey &&
+      (!node.dataset.artworkRetryAt || Date.now() < Number(node.dataset.artworkRetryAt))) return;
+  node.dataset.artworkKey = nextKey;
+  delete node.dataset.artworkRetryAt;
+  // Keep the established RAM album-art route direct. Station fallback probing
+  // must not add a preload or change how an already found album is displayed.
+  if (String(path || "").startsWith("/api/artwork/album?")) {
+    const cacheSafePath = `${path}&sr=${encodeURIComponent(key || stationAssetRevision)}`;
     node.style.backgroundImage = `url("${String(cacheSafePath).replace(/"/g, "%22")}")`;
     node.textContent = "";
     node.classList.add("has-logo");
-  } else {
-    node.style.backgroundImage = "";
-    node.textContent = fallbackText;
-    node.classList.remove("has-logo");
+    return;
   }
+  node.style.backgroundImage = "";
+  node.textContent = fallbackText;
+  node.classList.remove("has-logo");
+  if (!paths.length) return;
+
+  const tryPath = async index => {
+    if (node.dataset.artworkKey !== nextKey) return;
+    if (index >= paths.length) { node.dataset.artworkRetryAt = Date.now() + 5000; return; }
+    const path = paths[index];
+    const separator = String(path).includes("?") ? "&" : "?";
+    // Leave public/signed URLs untouched; local file revisions invalidate on save.
+    const cacheSafePath = remoteUrl(path) ? path :
+      `${path}${separator}sr=${encodeURIComponent(key || stationAssetRevision)}`;
+    if (!await artworkImageReady(cacheSafePath)) return tryPath(index + 1);
+    if (node.dataset.artworkKey !== nextKey) return;
+    node.style.backgroundImage = `url("${String(cacheSafePath).replace(/"/g, "%22")}")`;
+    node.textContent = "";
+    node.classList.add("has-logo");
+  };
+  tryPath(0);
 }
 
 function updateCover(state) {
@@ -2456,8 +2569,10 @@ function updateCover(state) {
   const albumPath = String(state.albumArtworkPath || "");
   const webAlbumPath = albumPath.toLowerCase().endsWith(".sr565") ? "" : albumPath;
   const useAlbum = currentConfig.displayArtworkMode === "album";
+  const stationPaths = stationLogoPaths(state.stationId, state.stationLogo);
   const path = (useAlbum && state.hasStreamImage && webCachedPath) ||
-    (useAlbum && webAlbumPath) || webCachedPath || state.streamLogoUrl || state.stationLogo || "";
+    (useAlbum && webAlbumPath) || webCachedPath ||
+    (cachedPath.toLowerCase().endsWith(".sr565") && stationPaths[0]) || state.streamLogoUrl || state.stationLogo || "";
   const logoKey = [
     state.stationId,
     state.cachedArtworkPath || "",
@@ -2467,8 +2582,18 @@ function updateCover(state) {
   ].join("|");
   const fallback = stationInitial(state.station || "SR");
 
-  applyArtworkNode($("webCoverArt"), path, logoKey, fallback);
-  applyArtworkNode($("brandMark"), path, logoKey, fallback);
+  const alternatives = [...stationPaths, state.streamLogoUrl, state.stationLogo];
+  applyArtworkNode($("webCoverArt"), path, logoKey, fallback, alternatives);
+  applyArtworkNode($("brandMark"), path, logoKey, fallback, alternatives);
+  // A logo may finish prewarming after the list was built. Retry only failed
+  // images after their backoff; successfully loaded badges remain untouched.
+  document.querySelectorAll(".station-item[data-station-id]").forEach(row => {
+    const station = stations.find(item => String(item.id) === row.dataset.stationId);
+    if (!station) return;
+    const paths = stationLogoPaths(station.id, station.logo);
+    applyArtworkNode(row.querySelector(".station-badge"), paths[0], `${station.id}|${station.logo}`,
+      stationInitial(station.name), paths.slice(1));
+  });
   cacheArtworkViaBrowser(state);
 }
 
@@ -2527,6 +2652,7 @@ function updateUI(state) {
   setText("current-station", state.station || t("state.chooseStation", "Állomás kiválasztása"));
   updateCover(state);
   if (stationSelectionChanged) renderStations();
+  syncStationPlayButtons();
   window.SRUI?.state(state);
 }
 

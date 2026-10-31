@@ -53,7 +53,7 @@ Add a dashboard resource. Use a versioned URL so the browser cannot keep serving
 an older cached card script:
 
 ```yaml
-url: /local/simple-radio-card.js?v=11
+url: /local/simple-radio-card.js?v=12
 type: module
 ```
 
@@ -80,7 +80,12 @@ publishes `play <station id>` to `command_topic`.
 
 Artwork uses the current stream image or album cover when available, then falls
 back to the cached station logo, stream logo, and saved station logo if loading
-fails. LCD-only `.sr565` files are skipped because browsers cannot display them.
+fails. Remote station logos first use the radio's prepared image through
+`/api/artwork/station?id=...`, including in the station list. This keeps logos
+available when the original website URL stops working. LCD-only `.sr565` files
+are skipped because browsers cannot display them directly. If no image loads,
+station initials remain visible; failed images can retry after five seconds on
+subsequent Home Assistant state updates without rebuilding the station list.
 Set `radio_url` to the radio's reachable HTTP address: relative `/cache/` and
 `/logos/` paths belong to the radio, not the Home Assistant server. When opening
 Home Assistant over HTTPS, the browser must also be able to load the image URL
@@ -89,7 +94,7 @@ Home Assistant over HTTPS, the browser must also be able to load the image URL
 If you see an error such as `extra keys not allowed @ data['target']`, Home
 Assistant is still running an older cached card version. The `v2` card type and
 the versioned resource URL are there specifically to avoid that. Increase the
-query-string version after replacing the card file, for example `?v=11`.
+query-string version after replacing the card file, for example `?v=12`.
 
 ## Manual MQTT test
 
@@ -161,13 +166,18 @@ automatikusan közzéteszi a discovery-adatokat. A kártya telepítéséhez más
 add hozzá erőforrásként, például:
 
 ```yaml
-url: /local/simple-radio-card.js?v=11
+url: /local/simple-radio-card.js?v=12
 type: module
 ```
 
 A kártya konfigurációjában a `radio_url` legyen az ESP IP-címe vagy hostneve.
 Erre azért van szükség, hogy a helyi LCD-logó útvonalak, például
 `/logos/station-8.png`, a böngészőből is betölthetők legyenek.
+
+A kártya a külső logócímek előtt a rádió már előkészített logóját próbálja
+betölteni, a csatornalistában is. Sikertelen képbetöltésnél megmaradnak a
+kezdőbetűk; a következő HA-állapotfrissítések öt másodperc után újra próbálhatják
+a képet, a lista újraépítése nélkül.
 
 Ha frissítés után régi felület jelenik meg, növeld az URL végén a `?v=` értéket,
 majd töltsd újra a dashboardot.

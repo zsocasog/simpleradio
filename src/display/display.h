@@ -74,7 +74,7 @@ private:
   unsigned long lastBootFrameMs = 0;
   unsigned long bootFullSinceMs = 0;
   unsigned long lastTickMs = 0;
-  uint8_t lastBrightness = 255;
+  int16_t lastBrightness = -1;
   bool lastInvert = false;
   String lastThemeAccent;
   String lastThemeCustomColor;
@@ -89,6 +89,7 @@ private:
   unsigned long stationPickerMarqueeHoldUntil = 0;
   unsigned long lastActivityMs = 0;
   bool idleBlanked = false;
+  bool panelSleeping = false;
   bool idleGuardBlanked = false;
   unsigned long idleGuardLastMs = 0;
   unsigned long idleGuardRestoreMs = 0;

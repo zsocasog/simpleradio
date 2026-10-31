@@ -43,10 +43,6 @@ class SimpleRadioCard extends HTMLElement {
     }[char]));
   }
 
-  cssUrl(value) {
-    return String(value || "").replace(/["'()\\]/g, (char) => `\\${char}`);
-  }
-
   call(domain, service, data = {}) {
     this._hass.callService(domain, service, data);
   }
@@ -70,8 +66,18 @@ class SimpleRadioCard extends HTMLElement {
     return base ? `${base}${raw.startsWith("/") ? raw : `/${raw}`}` : "";
   }
 
-  stationImage(station) {
-    return this.resolveImage(station?.logo || "");
+  cachedStationImage(station) {
+    const id = station?.id;
+    const logo = String(station?.logo || "").trim();
+    if (id === null || id === undefined || String(id).trim() === "" ||
+        !Number.isInteger(Number(id)) || Number(id) < 0 ||
+        !logo || !(/^https?:\/\//i.test(logo) || /\.sr565(?:[?#]|$)/i.test(logo))) return "";
+    return this.resolveImage(`/api/artwork/station?id=${encodeURIComponent(Number(id))}&source=${encodeURIComponent(logo)}`);
+  }
+
+  stationImageCandidates(station) {
+    return [...new Set([this.cachedStationImage(station), this.resolveImage(station?.logo)]
+      .filter(Boolean))];
   }
 
   artworkCandidates(attrs) {
@@ -80,6 +86,7 @@ class SimpleRadioCard extends HTMLElement {
       attrs.hasStreamImage ? attrs.cachedArtworkPath : "",
       attrs.albumArtworkPath,
       attrs.cachedArtworkPath,
+      this.cachedStationImage({ id: attrs.stationId ?? station?.id, logo: attrs.stationLogo || station?.logo }),
       attrs.streamLogoUrl,
       attrs.stationLogo,
       station?.logo
@@ -91,26 +98,58 @@ class SimpleRadioCard extends HTMLElement {
     const art = this.querySelector(".sr-art");
     if (!art) return;
     const attrs = this.entity(this.config.station_entity)?.attributes || {};
-    const candidates = this.artworkCandidates(attrs);
-    const key = JSON.stringify(candidates);
-    if (art.dataset.artworkKey === key) return;
-    art.dataset.artworkKey = key;
-    art.replaceChildren();
-    art.textContent = "SR";
+    this.updateImage(art, this.artworkCandidates(attrs), "SR");
+  }
+
+  updateImage(node, candidates, fallback) {
+    const key = JSON.stringify([candidates, fallback]);
+    if (node.dataset.artworkKey === key &&
+        (!node.dataset.artworkRetryAt || Date.now() < Number(node.dataset.artworkRetryAt))) return;
+    node.dataset.artworkKey = key;
+    delete node.dataset.artworkRetryAt;
+    node.replaceChildren();
+    node.textContent = fallback;
 
     // Keep the fallback visible until a browser-readable image has loaded.
     const tryNext = (index) => {
-      if (art.dataset.artworkKey !== key || index >= candidates.length) return;
+      if (node.dataset.artworkKey !== key) return;
+      if (index >= candidates.length) {
+        if (candidates.length) node.dataset.artworkRetryAt = Date.now() + 5000;
+        return;
+      }
       const image = this.ownerDocument.createElement("img");
       image.alt = "";
-      image.onload = () => {
-        if (art.dataset.artworkKey !== key) return;
-        art.replaceChildren(image);
+      image.decoding = "async";
+      let settled = false;
+      const timeout = window.setTimeout(() => {
+        finish(false);
+        image.src = "";
+      }, 8000);
+      const finish = (loaded) => {
+        if (settled) return;
+        settled = true;
+        window.clearTimeout(timeout);
+        if (node.dataset.artworkKey !== key) return;
+        if (loaded) node.replaceChildren(image);
+        else tryNext(index + 1);
       };
-      image.onerror = () => tryNext(index + 1);
+      image.onload = () => finish(true);
+      image.onerror = () => finish(false);
       image.src = candidates[index];
     };
     tryNext(0);
+  }
+
+  updateStationArtwork() {
+    const stations = this.stationList();
+    this.querySelectorAll(".sr-station-row").forEach((row) => {
+      const station = stations.find(item => String(item.id) === row.dataset.stationId);
+      if (!station) return;
+      const logo = row.querySelector(".sr-station-logo");
+      if (!logo) return;
+      const initials = String(station.name || "SR").slice(0, 2).toUpperCase();
+      this.updateImage(logo, this.stationImageCandidates(station), initials);
+    });
   }
 
   stationList() {
@@ -148,14 +187,13 @@ class SimpleRadioCard extends HTMLElement {
     }
 
     return stations.map((station, index) => {
-      const image = this.stationImage(station);
       const active = Number(station.id) === Number(currentStationId);
       const initials = String(station.name || "SR").slice(0, 2).toUpperCase();
       const number = this.stationNumber(station, index);
       return `
         <button class="sr-station-row${active ? " active" : ""}" data-station-id="${this.escape(station.id)}">
           <span class="sr-station-media">
-            <span class="sr-station-logo" style="background-image: ${image ? `url('${this.cssUrl(image)}')` : "none"}">${image ? "" : this.escape(initials)}</span>
+            <span class="sr-station-logo">${this.escape(initials)}</span>
             <span class="sr-station-number">${this.escape(number)}</span>
           </span>
           <span class="sr-station-copy">
@@ -209,6 +247,7 @@ class SimpleRadioCard extends HTMLElement {
     list.innerHTML = this.renderStationRows(this.currentStationId());
     if (preserveScroll) list.scrollTop = previousScrollTop;
     this.attachStationRowHandlers();
+    this.updateStationArtwork();
   }
 
   updateText(selector, value) {
@@ -281,6 +320,10 @@ class SimpleRadioCard extends HTMLElement {
     if (stationsChanged || this._listedStationId !== model.currentStationId) {
       this.updateStationList({ preserveScroll: true });
       this._listedStationId = model.currentStationId;
+    } else {
+      // A cached radio logo can become ready without changing MQTT metadata.
+      // Retry failed images after their backoff, retaining successful DOM nodes.
+      this.updateStationArtwork();
     }
     this.restoreInteractiveState(state);
   }
@@ -604,6 +647,12 @@ class SimpleRadioCard extends HTMLElement {
             font-weight: 750;
             box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--divider-color) 65%, transparent);
           }
+          .sr-station-logo img {
+            width: 100%;
+            height: 100%;
+            object-fit: contain;
+            border-radius: inherit;
+          }
           .sr-station-number {
             position: absolute;
             right: -2px;
@@ -730,6 +779,7 @@ class SimpleRadioCard extends HTMLElement {
     });
 
     this.attachStationRowHandlers();
+    this.updateStationArtwork();
     this.updateArtwork();
     this.restoreInteractiveState(interactiveState);
     this._rendered = true;

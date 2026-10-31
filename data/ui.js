@@ -34,7 +34,7 @@
     const head = make("header", "dialog-head"); const h = make("h2", "", title); h.id = name + "Title";
     n.setAttribute("aria-labelledby", h.id); head.append(h, button(tr("ui.close", "Bezárás"), "x", () => n.close(), "ui-icon-button"));
     const body = make("div", "dialog-body"); n.append(head, body); document.body.appendChild(n);
-    n.addEventListener("click", e => { if (e.target === n && e.clientX < n.getBoundingClientRect().left) n.close(); });
+    n.addEventListener("click", e => { if (n.dataset.dismissOnBackdrop !== "false" && e.target === n && e.clientX < n.getBoundingClientRect().left) n.close(); });
     return n;
   }
   function openDialog(n) {
@@ -52,21 +52,39 @@
   U.stationRow = (row, station, compact, index) => {
     row.setAttribute("data-user-content", "");
     row.classList.add("clean-station"); row.title = station.name || "";
+    // Keep the index outside the artwork node, whose fallback/image can change.
+    const badge = row.querySelector(".station-badge");
+    const number = row.querySelector(".station-number");
+    if (badge && number) {
+      const identity = make("span", "station-identity");
+      number.textContent = String(index + 1).padStart(2, "0");
+      badge.setAttribute("aria-hidden", "true");
+      row.insertBefore(identity, number); identity.append(badge, number);
+    }
     if (compact) {
       if (station.id === currentStationId) {
-        const playing = make("span", "station-playing"); playing.innerHTML = U.icon("chart-bar");
-        playing.hidden = !U.lastPlayer?.playing;
-        row.appendChild(playing);
+        const activity = make("span", "station-playing");
+        activity.setAttribute("role", "img");
+        activity.setAttribute("aria-label", tr("status.playing", "Lejátszás"));
+        // A small excerpt of the shared signature; motion is CSS-only, not FFT.
+        [0, 7, 1, 4, 8, 5, 2, 6].forEach((shapeIndex, i) => {
+          const bar = make("span", "station-activity-bar");
+          bar.style.height = Math.round(signatureShape[shapeIndex] / 248 * 100) + "%";
+          bar.style.setProperty("--activity-duration", (1100 + i * 71 % 400) + "ms");
+          bar.style.setProperty("--activity-delay", (-i * 173) + "ms");
+          activity.appendChild(bar);
+        });
+        activity.hidden = !playing;
+        row.appendChild(activity);
       }
       return;
     }
     row.draggable = U.ordering; row.setAttribute("draggable", String(U.ordering));
     const grip = row.querySelector(".drag-handle"); visible(grip, U.ordering); if (grip) grip.innerHTML = U.icon("grip-vertical");
     const meta = row.querySelector(".item-meta"); if (meta) meta.remove();
-    const number = row.querySelector(".station-number"); if (number) number.textContent = String(index + 1).padStart(2, "0");
     const actions = row.querySelector(".item-actions");
     const [play, up, down, edit, del] = [...actions.children];
-    iconButton(play, "player-play"); iconButton(up, "arrow-up"); iconButton(down, "arrow-down");
+    iconButton(play, playing && station.id === currentStationId ? "player-stop" : "player-play"); iconButton(up, "arrow-up"); iconButton(down, "arrow-down");
     visible(up, U.ordering); visible(down, U.ordering);
     const menu = make("details", "station-menu"); const summary = make("summary", "ui-icon-button");
     summary.setAttribute("aria-label", tr("ui.moreActions", "További műveletek")); summary.innerHTML = U.icon("dots");
@@ -95,6 +113,7 @@
   }
   U.stationDrawer = kind => {
     if (!U.ready) return;
+    U.stationDialog.dataset.dismissOnBackdrop = kind === "editor" ? "false" : "true";
     Object.entries(U.stationPanels).forEach(([key, panel]) => { visible(panel, key === kind); if (panel.tagName === "DETAILS") panel.open = key === kind; });
     U.stationDialog.querySelectorAll("[data-drawer-tab]").forEach(n => n.classList.toggle("active", n.dataset.drawerTab === kind));
     U.stationDialog.querySelectorAll("[data-drawer-tab]").forEach(n => n.setAttribute("aria-pressed", String(n.dataset.drawerTab === kind)));
@@ -500,7 +519,8 @@
     visible(id("brightness").closest("label"), !auto);
     ["dayStartTime", "nightStartTime", "dayBrightness", "nightBrightness"].forEach(name => visible(id(name).closest("label"), auto));
     visible(id("timeZone").closest("label"), auto || clock);
-    ["displayIdleMode", "displayIdleSeconds", "displayIdleBrightness"].forEach(name => visible(id(name).closest("label"), id("displayIdleEnabled").checked));
+    ["displayIdleMode", "displayIdleSeconds"].forEach(name => visible(id(name).closest("label"), id("displayIdleEnabled").checked));
+    visible(id("displayIdleBrightness").closest("label"), id("displayIdleEnabled").checked && id("displayIdleMode").value !== "blank");
     visible(id("encoderAutoPlayMs").closest("label"), id("encoderAutoPlayStation").checked);
     visible(id("streamRetryMs").closest("label"), id("streamRetryEnabled").checked);
     visible(id("secondEncoderEnabled").closest("label"), !!hardwareCapabilities.encoder2?.available);
@@ -607,7 +627,8 @@
   };
   U.transport = () => {
     if (!U.ready) return;
-    document.querySelectorAll("#stations .station-playing").forEach(n => { n.hidden = !playing; });
+    const active = playing && !(U.lastPlayer && streamConnectionMessage(U.lastPlayer));
+    document.querySelectorAll("#stations .station-playing").forEach(n => { n.hidden = !active; });
     if (U.transportPlaying === playing) return;
     U.transportPlaying = playing;
     const main = id("playButton"); main.innerHTML = U.icon(playing ? "player-pause" : "player-play");

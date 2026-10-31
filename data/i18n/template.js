@@ -343,7 +343,7 @@
     "text.e176b7688670": "Stream URL",
     "text.0e913de1391d": "Stream connection",
     "text.112c29d70bec": "Symmetric bars",
-    "text.7fcc9371c8c6": "Blank display",
+    "text.7fcc9371c8c6": "Display off",
     "text.c5d285851dff": "TR - Turkey",
     "text.7891c4a9319b": "Treble",
     "text.5e465970972f": "Storage",

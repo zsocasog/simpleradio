@@ -8,12 +8,17 @@ unchanged.
 ## ESP32-audioI2S
 
 - Source: [schreibfaul1/ESP32-audioI2S](https://github.com/schreibfaul1/ESP32-audioI2S)
-- Pinned revision: `6053353399376439b42f42f1626225bb6fad0f28`
+- Pinned revision: `6f44f0ab8d9a0889eaa4460b82d6b223b40dbddc`
 - License: GNU General Public License v3.0
 
 This is the main audio dependency and includes the decoder and audio
 processing functionality used by the firmware. Its license is also the reason
 SimpleRadio is distributed under GPLv3.
+
+The build applies version-guarded patches for HLS URL resolution, bounded
+TCP/TLS connection waits and cooperative, cancellable HTTP header polling.
+The patches live in `tools/patch_audio_hls.py` and `tools/patch_audio_network.py`;
+upstream decoder and PCM processing remain unchanged.
 
 ## LovyanGFX
 

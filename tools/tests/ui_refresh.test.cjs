@@ -175,3 +175,22 @@ test('repeated playback status frames preserve mounted transport icons', () => {
   assert.deepEqual(writes, { playButton: 2, playButtonSmall: 2 });
   assert.match(nodes.playButton.content, /#player-play/);
 });
+
+test('station activity waits for audio connection and follows stop/resume without rebuilding controls', () => {
+  const { context, U } = ui(); let writes = 0;
+  const indicator = { hidden: true };
+  context.document.getElementById = () => ({ set innerHTML(value) { writes++; } });
+  context.document.querySelectorAll = () => [indicator];
+  context.streamConnectionMessage = state => state.streamConnectionState === 'connecting' ? 'Connecting' : '';
+  context.playing = true;
+  U.lastPlayer = { playing: true, streamConnectionState: 'connecting' };
+  U.transport(); assert.equal(indicator.hidden, true);
+  U.lastPlayer.streamConnectionState = 'playing';
+  U.transport(); assert.equal(indicator.hidden, false);
+  U.transport(); assert.equal(indicator.hidden, false);
+  assert.equal(writes, 2, 'status updates must retain the mounted transport and activity bars');
+  context.playing = false;
+  U.transport(); assert.equal(indicator.hidden, true);
+  context.playing = true;
+  U.transport(); assert.equal(indicator.hidden, false);
+});

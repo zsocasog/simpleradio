@@ -92,7 +92,20 @@ select { text-overflow: ellipsis; }
 .volume-rail { margin-top: 25px; gap: 12px; }
 .volume-label { font-size: 13px; color: var(--muted); }
 .volume-label .ui-icon, .station-playing { color: var(--accent); }
-.station-playing { display: inline-flex; flex: 0 0 auto; margin-left: auto; }
+.station-playing { display: inline-flex; flex: 0 0 38px; width: 38px; height: 22px; align-items: center; gap: 2px; margin-left: auto; pointer-events: none; }
+.station-activity-bar { flex: 0 0 3px; width: 3px; border-radius: 999px; background: currentColor; transform: scaleY(.65); transform-origin: center; animation: station-activity var(--activity-duration) ease-in-out var(--activity-delay) infinite; animation-play-state: paused; }
+.station-activity-bar:first-child, .station-activity-bar:last-child { opacity: .45; }
+body[data-view=player] .station-playing:not([hidden]) .station-activity-bar { animation-play-state: running; }
+@keyframes station-activity {
+  0%, 100% { transform: scaleY(.35); }
+  22% { transform: scaleY(.85); }
+  43% { transform: scaleY(.5); }
+  64% { transform: scaleY(1); }
+  83% { transform: scaleY(.55); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .station-activity-bar { animation: none; transform: none; }
+}
 .volume-step { min-width: 36px; min-height: 36px; width: 36px; height: 36px; padding: 8px; }
 .queue-panel { padding-left: 26px; border-left: 1px solid var(--line-soft); }
 .queue-panel .station-list { max-height: 420px; overflow-y: auto; padding: 0; }
@@ -100,17 +113,20 @@ select { text-overflow: ellipsis; }
 .queue-panel .panel-head button { border: 0; color: var(--accent); padding: 4px; min-height: 32px; }
 .station-item.clean-station { display: flex; align-items: center; background: transparent; border: 0; border-bottom: 1px solid var(--line-soft); border-radius: 0; padding: 14px 8px; gap: 18px; margin: 0; min-height: 78px; box-shadow: none; }
 .station-item.clean-station.active { background: rgba(var(--accent-rgb), .075); border-left: 3px solid var(--accent); padding-left: 5px; }
-.station-item.clean-station .station-number { position: static; background: none; border: 0; border-radius: 0; color: var(--muted); padding: 0; min-width: 26px; font-size: 13px; order: 0; }
-.station-item.clean-station .station-badge { width: 44px; height: 44px; border-radius: 6px; flex: 0 0 44px; background-size: contain; background-repeat: no-repeat; background-position: center; }
+.station-identity { --station-logo-size: 44px; position: relative; display: block; flex: 0 0 calc(var(--station-logo-size) + 6px); width: calc(var(--station-logo-size) + 6px); height: var(--station-logo-size); }
+.station-item.clean-station .station-number { position: absolute; display: inline-grid; place-items: center; right: 0; bottom: -5px; top: auto; left: auto; min-width: 24px; height: 18px; padding: 1px 4px; border: 1px solid var(--line); border-radius: 5px; background: var(--chrome); box-shadow: 0 0 0 2px var(--bg); color: var(--muted); font-size: 11px; font-weight: 700; font-variant-numeric: tabular-nums; line-height: 1.25; }
+.station-item.clean-station.active .station-number { background: var(--accent); border-color: var(--accent); color: var(--bg); }
+.station-item.clean-station .station-badge { width: 44px; height: 44px; margin: 0; border-radius: 6px; flex: 0 0 44px; background-size: contain; background-repeat: no-repeat; background-position: center; }
 .station-info { min-width: 0; flex: 1 1 auto; }
 .item-title { font-size: 16px; overflow-wrap: anywhere; }
 .station-item .item-actions { display: flex; flex: 0 0 auto; gap: 10px; }
 .station-item .drag-handle { border: 0; min-width: 18px; padding: 0; background: transparent; color: var(--muted); }
 .station-item .drag-handle .ui-icon { width: 18px; }
-.station-list.compact .clean-station { gap: 10px; padding: 14px 4px; min-height: 72px; }
+.station-list.compact .clean-station { gap: 10px; padding: 14px 12px 14px 10px; min-height: 72px; }
+.station-list.compact .clean-station.active { padding-left: 7px; }
 .station-list.compact .station-badge { width: 52px; height: 52px; flex-basis: 52px; }
+.station-list.compact .station-identity { --station-logo-size: 52px; }
 .station-list.compact .item-title { font-size: 17px; }
-.station-list.compact .station-number { font-size: 11px; min-width: 18px; }
 .station-list.compact .item-actions { display: none; }
 .stations-layout { display: block; }
 .saved-stations-panel { max-width: none; overflow: visible; }
@@ -238,7 +254,7 @@ select { text-overflow: ellipsis; }
 .schedule-row .setting-range input { min-width: 50px; }
 .layout-preview { margin: 0 0 24px; }
 .layout-preview > small { display: block; margin-bottom: 8px; }
-.lcd-preview { position: relative; container-type: inline-size; width: 100%; aspect-ratio: 480 / 320; overflow: hidden; border-radius: 8px; background: var(--bg); color: var(--accent); box-shadow: 0 0 0 1px var(--line-soft); }
+.lcd-preview { position: relative; container-type: inline-size; width: 100%; aspect-ratio: 480 / 320; overflow: hidden; border: 1px solid var(--line-soft); border-radius: 8px; background: var(--bg); color: var(--accent); }
 .lcd-preview.is-inverted { filter: invert(1); }
 .preview-art { position: absolute; left: 4.5833%; top: 16.25%; width: 36.6667%; aspect-ratio: 1; display: flex; align-items: center; justify-content: center; overflow: hidden; border: 1px solid var(--accent); border-radius: 1.04cqw; background: var(--logo-mat) center / contain no-repeat; color: var(--accent); font-size: 7cqw; font-weight: 600; }
 .preview-art.is-album { background-size: cover; }
@@ -296,7 +312,7 @@ select { text-overflow: ellipsis; }
   .saved-search { min-width: 100%; }
   .station-item.clean-station { gap: 10px; flex-wrap: nowrap; }
   .station-item.clean-station .station-badge { width: 36px; height: 36px; flex-basis: 36px; }
-  .station-item.clean-station .station-number { display: none; }
+  .station-identity, .station-list.compact .station-identity { --station-logo-size: 36px; }
   .station-item .item-actions { gap: 5px; }
   .station-item .ui-icon-button { min-width: 38px; min-height: 38px; padding: 8px; }
   .station-item[draggable=true] .station-menu,

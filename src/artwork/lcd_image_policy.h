@@ -3,6 +3,20 @@
 #include <stdint.h>
 
 namespace LcdImagePolicy {
+// A URL suffix or image Content-Type is not proof of an image. Reject HTML/
+// JSON error pages before flash writes, even if the origin returns HTTP 200.
+constexpr bool supportedPayload(const uint8_t* data, size_t size) {
+  if (!data || size < 12) return false;
+  const bool png = size >= 33 && data[0] == 0x89 && data[1] == 'P' && data[2] == 'N' && data[3] == 'G' &&
+      data[4] == 13 && data[5] == 10 && data[6] == 26 && data[7] == 10;
+  const bool jpeg = data[0] == 0xFF && data[1] == 0xD8 && data[2] == 0xFF;
+  const bool bmp = size >= 54 && data[0] == 'B' && data[1] == 'M';
+  const unsigned icons = data[4] | (static_cast<unsigned>(data[5]) << 8);
+  const bool ico = data[0] == 0 && data[1] == 0 && data[2] == 1 && data[3] == 0 &&
+      icons > 0 && icons <= 32 && size >= 6 + icons * 16;
+  return png || jpeg || bmp || ico;
+}
+
 enum class Jpeg { NotJpeg, Baseline, Unsupported, Malformed };
 constexpr bool needsConversion(Jpeg kind) {
   return kind == Jpeg::Unsupported || kind == Jpeg::Malformed;

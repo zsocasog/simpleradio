@@ -343,7 +343,7 @@
     "text.e176b7688670": "Adás webcíme",
     "text.0e913de1391d": "Adáskapcsolat",
     "text.112c29d70bec": "Szimmetrikus oszlopok",
-    "text.7fcc9371c8c6": "Sötét kijelző",
+    "text.7fcc9371c8c6": "Kikapcsolt kijelző",
     "text.c5d285851dff": "TR - Törökország",
     "text.7891c4a9319b": "Magas",
     "text.5e465970972f": "Tárhely",

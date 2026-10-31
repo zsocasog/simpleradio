@@ -14,6 +14,8 @@
 #include "../stations/station_manager.h"
 #include "../artwork/artwork_cache.h"
 #include "../artwork/album_art_store.h"
+#include "../artwork/lcd_bmp_stream.h"
+#include <memory>
 #include "../display/display.h"
 #include "../display/display_presenter.h"
 #include "../i18n/i18n.h"
@@ -1184,6 +1186,38 @@ void webServerBegin() {
   WebUiCompatibility::refresh();
   ws.onEvent(onWsEvent);
   server.addHandler(&ws);
+
+  server.on("/api/artwork/station", HTTP_GET, [](AsyncWebServerRequest* request) {
+    if (!request->hasParam("id")) { request->send(400); return; }
+    String imagePath;
+    ArtworkCache& cache = ArtworkCache::instance();
+    if (!cache.stationArtworkReady(request->getParam("id")->value().toInt(), &imagePath) || !imagePath.length()) {
+      request->send(404); return;
+    }
+    const String path = cache.lcdThumbnailPath(imagePath);
+    auto file = std::make_shared<File>(LittleFS.open(path, "r"));
+    uint8_t sr[8]{};
+    if (!*file || file->read(sr, sizeof(sr)) != sizeof(sr) ||
+        sr[0] != 'S' || sr[1] != 'R' || sr[2] != '5' || sr[3] != '6') {
+      request->send(404); return;
+    }
+    const uint16_t width = sr[4] | (static_cast<uint16_t>(sr[5]) << 8);
+    const uint16_t height = sr[6] | (static_cast<uint16_t>(sr[7]) << 8);
+    const size_t pixels = static_cast<size_t>(width) * height * 2;
+    if (!width || (width & 1) || !height || width > 512 || height > 512 || file->size() != 8 + pixels) {
+      request->send(404); return;
+    }
+    const auto bmp = LcdBmp::header(width, height);
+    const size_t total = bmp.size() + pixels;
+    auto* response = request->beginResponse("image/bmp", total,
+        [file, bmp, total](uint8_t* buffer, size_t maxLen, size_t index) {
+      const size_t read = LcdBmp::read(*file, bmp, buffer, maxLen, index, total);
+      if (index + read >= total) file->close();
+      return read;
+    });
+    response->addHeader("Cache-Control", "no-cache");
+    request->send(response);
+  });
 
   server.on("/api/stations", HTTP_GET, [](AsyncWebServerRequest* request) {
     JsonDocument doc;

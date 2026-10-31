@@ -3563,6 +3563,25 @@ void Display::applyConfig() {
 void Display::applyConfigNow() {
   AppConfig& config = AppConfig::instance();
 
+  const bool idle = !lastModel.playing && config.displayIdleEnabled &&
+      lastActivityMs > 0 &&
+      millis() - lastActivityMs >= static_cast<unsigned long>(config.displayIdleSeconds) * 1000UL;
+  const bool canShowIdle = idle && !lastModel.apMode && !stationPickerActive && !isVolumeScreenActive();
+  const bool clockRequested = canShowIdle && config.displayClockEnabled;
+  const bool offRequested = canShowIdle && !clockRequested && config.displayIdleBlank;
+  const bool waking = panelSleeping && !offRequested;
+  if (waking) {
+    lcd.wakeup();
+    // Match the supported controllers' sleep-out settling time. Only the LCD
+    // task waits; audio, network and input keep running on their own tasks.
+    vTaskDelay(pdMS_TO_TICKS(130));
+    panelSleeping = false;
+    idleBlanked = false;
+    lastBrightness = -1;
+    lastClockStamp = -1;
+    lastClockMinuteStamp = -1;
+  }
+
   bool themeChanged = config.themeAccent != lastThemeAccent ||
                       config.themeCustomColor != lastThemeCustomColor;
   if (config.displayInvert != lastInvert || themeChanged) {
@@ -3580,13 +3599,7 @@ void Display::applyConfigNow() {
     }
   }
 
-  bool idleEligible = !lastModel.playing;
-  bool idle = idleEligible &&
-              config.displayIdleEnabled &&
-              lastActivityMs > 0 &&
-              millis() - lastActivityMs >= static_cast<unsigned long>(config.displayIdleSeconds) * 1000UL;
-
-  uint8_t targetBrightness = idle ? config.displayIdleBrightness : config.brightness;
+  uint8_t targetBrightness = offRequested ? 0 : idle ? config.displayIdleBrightness : config.brightness;
   if (!idle && config.autoBrightness) {
     struct tm timeinfo;
     if (getLocalTime(&timeinfo, 5)) {
@@ -3600,9 +3613,6 @@ void Display::applyConfigNow() {
       targetBrightness = isDay ? config.dayBrightness : config.nightBrightness;
     }
   }
-
-  bool canShowIdle = idle && !lastModel.apMode && !stationPickerActive;
-  bool clockRequested = canShowIdle && config.displayClockEnabled;
 
   if (clockRequested) {
     String style = config.displayClockStyleId == DisplayClockStyle::Analog ? "analog" : "digital";
@@ -3619,11 +3629,20 @@ void Display::applyConfigNow() {
     if (hasRenderedModel) renderCurrent();
   }
 
-  if (!clockRequested && idle && config.displayIdleBlank && !idleBlanked && !lastModel.apMode) {
+  if (offRequested && !idleBlanked) {
     idleBlanked = true;
     idleGuardBlanked = false;
     lcd.fillScreen(TFT_BLACK);
   }
+  if (offRequested && !panelSleeping) {
+#if TFT_BL >= 0
+    ledcWrite(TFT_BL, 0);
+#endif
+    lcd.sleep();
+    panelSleeping = true;
+    lastBrightness = 0;
+  }
+  if (waking && !clockRequested && hasRenderedModel) renderCurrent();
 
   unsigned long now = millis();
   bool guardEligible = idle &&
@@ -3731,7 +3750,7 @@ void Display::renderNow(const DisplayModel& m) {
     idleGuardRestoreMs = 0;
     lastClockStamp = -1;
     lastClockMinuteStamp = -1;
-    lastBrightness = 255;
+    lastBrightness = -1;
     applyConfigNow();
     renderCurrent();
     finishRender(true);
@@ -4186,7 +4205,7 @@ void Display::notifyActivityNow() {
   idleClockActive = false;
   lastClockStamp = -1;
   lastClockMinuteStamp = -1;
-  lastBrightness = 255;
+  lastBrightness = -1;
   applyConfigNow();
   renderCurrent();
 }

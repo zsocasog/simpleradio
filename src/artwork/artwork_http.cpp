@@ -1,5 +1,6 @@
 #include "artwork_http.h"
 #include "artwork_http_policy.h"
+#include "artwork_network_gate.h"
 #include "../config/version.h"
 
 #include <HTTPClient.h>
@@ -15,6 +16,16 @@ namespace {
 constexpr uint32_t CONNECT_MS = 3500;
 constexpr uint16_t READ_MS = 6000;
 constexpr uint32_t REQUEST_MS = 12000;
+NetworkGate networkGate;
+
+class BackgroundNetworkScope {
+public:
+  BackgroundNetworkScope() : acquired_(networkGate.beginBackground()) {}
+  ~BackgroundNetworkScope() { if (acquired_) networkGate.endBackground(); }
+  bool acquired() const { return acquired_; }
+private:
+  bool acquired_;
+};
 
 bool expired(uint32_t deadline) {
   return deadline && static_cast<int32_t>(millis() - deadline) >= 0;
@@ -35,7 +46,7 @@ struct Transfer {
   bool service() {
     if (stopped) return false;
     const uint32_t now = millis();
-    if (expired(options.deadlineMs) || WiFi.status() != WL_CONNECTED) stopped = true;
+    if (networkGate.audioReserved() || expired(options.deadlineMs) || WiFi.status() != WL_CONNECTED) stopped = true;
     if (!stopped && options.cancelled &&
         (!lastCancelCheckMs || now - lastCancelCheckMs >= 100)) {
       lastCancelCheckMs = now;
@@ -284,6 +295,10 @@ template<class Client> bool request(Client& client, const String& url, size_t li
 
 Response::~Response() { free(data); }
 
+void reserveAudioConnection() { networkGate.reserveAudio(); }
+bool backgroundNetworkActive() { return networkGate.backgroundActive(); }
+void releaseAudioConnection() { networkGate.releaseAudio(); }
+
 String host(const String& url) {
   const int scheme = url.indexOf("://");
   if (scheme < 0) return "";
@@ -308,6 +323,11 @@ String publicImageUrl(const String& url) {
 }
 
 bool get(const String& url, size_t limit, Response& response, const Options& supplied) {
+  BackgroundNetworkScope network;
+  if (!network.acquired()) {
+    response.error = "background network deferred for audio connection";
+    return false;
+  }
   Options options = supplied;
   if (!options.deadlineMs || (!expired(options.deadlineMs) &&
                              options.deadlineMs - millis() > REQUEST_MS)) {

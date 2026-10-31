@@ -3888,14 +3888,16 @@ bool ArtworkCache::refreshArtworkIfThumbnailReady(const String& imagePath, const
   String refreshKey = imagePath + (fillFrame ? ":fill" : "");
   if (lastArtworkRefreshPath != refreshKey) {
     lastArtworkRefreshPath = refreshKey;
-    Serial.printf("[artwork] lcd thumbnail ready, refreshing display: %s\n", imagePath.c_str());
+    artworkTraceSerial.printf("[artwork] lcd thumbnail ready, refreshing display: %s\n", imagePath.c_str());
     if (AppConfig::instance().displayArtworkMode == "album" && state.playing) {
       // Rebuild the model so it can switch from the station-logo fallback to
       // album art only after the fill-cropped LCD thumbnail is valid.
       Display::instance().render(DisplayPresenter::build(PlayerState::instance()));
-    } else {
-      Display::instance().refreshArtwork();
     }
+    // A prepared station fallback can keep the exact same model/path (notably
+    // with no track metadata). render() then coalesces the unchanged model, so
+    // also queue the artwork event; its render key redraws only newly ready art.
+    Display::instance().refreshArtwork();
   }
   return true;
 }
@@ -4610,6 +4612,8 @@ bool ArtworkCache::download(const String& url, String& outPath, uint32_t budgetM
     const unsigned long networkStartedMs = millis();
     if (!ArtworkHttp::get(fetchUrl, MAX_ARTWORK_BYTES, response, options)) {
       noteDownloadStatus(response.error + " host=" + ArtworkHttp::host(fetchUrl));
+      if (!cacheKey.length()) albumArtTrace("station image request failed: %s host=%s",
+          response.error.c_str(), ArtworkHttp::host(fetchUrl).c_str());
       return false;
     }
     const size_t written = response.size;
@@ -4618,6 +4622,12 @@ bool ArtworkCache::download(const String& url, String& outPath, uint32_t budgetM
                   static_cast<unsigned long>(millis() - networkStartedMs),
                   ArtworkHttp::host(fetchUrl).c_str());
 
+    if (!cacheKey.length() && !LcdImagePolicy::supportedPayload(response.data, written)) {
+      noteDownloadStatus("station response is not a supported image; host=" + ArtworkHttp::host(fetchUrl));
+      albumArtTrace("station response rejected before cache write: %u bytes, type=%s, host=%s",
+          static_cast<unsigned>(written), response.contentType.c_str(), ArtworkHttp::host(fetchUrl).c_str());
+      return false;
+    }
     if (!cacheKey.length() &&
         LcdImagePolicy::needsConversion(LcdImagePolicy::inspect(response.data, written))) {
       albumArtTrace("station JPEG is not LCD-compatible; trying an alternate source");

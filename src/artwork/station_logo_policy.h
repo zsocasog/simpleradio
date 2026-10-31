@@ -5,15 +5,17 @@
 
 namespace StationLogoPolicy {
 // Prefer known official variants before the general public-image resizer.
-// Existing cache keys keep using the original source URL.
+// Request PNG from the native Thumbor service: its default JPEG output can be
+// progressive, which the LCD JPEG decoder cannot read. Cache identity remains
+// the original URL; already prepared LCD files need no migration or download.
 constexpr const char* smallerOfficialUrl(std::string_view source) {
   if (source == "https://danubiusradio.hu/assets/img/front/danubius_radio_album_cover_v2.png" ||
       source == "http://danubiusradio.hu/assets/img/front/danubius_radio_album_cover_v2.png") {
-    return "https://s2.audiostream.hu:9443/unsafe/176x0/smart/https://danubiusradio.hu/assets/img/front/danubius_radio_album_cover_v2.png";
+    return "https://s2.audiostream.hu:9443/unsafe/176x0/smart/filters:format(png)/https://danubiusradio.hu/assets/img/front/danubius_radio_album_cover_v2.png";
   }
   if (source == "https://www.bdpstrock.hu/assets/img/front/favicon.ico" ||
       source == "http://www.bdpstrock.hu/assets/img/front/favicon.ico") {
-    return "https://s2.audiostream.hu:9443/unsafe/176x0/smart/https://www.bdpstrock.hu/assets/img/front/favicon.ico";
+    return "https://s2.audiostream.hu:9443/unsafe/176x0/smart/filters:format(png)/https://www.bdpstrock.hu/assets/img/front/favicon.ico";
   }
   return "";
 }
