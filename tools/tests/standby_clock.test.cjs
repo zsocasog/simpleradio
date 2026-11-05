@@ -100,7 +100,7 @@ test('seconds use the shared volume bars, progress monotonically and reset witho
   const shape = source.match(/kVuShape\[VU_BAR_COUNT\] = \{([^]*?)\};/)[1];
   const context = vm.createContext({
     SCREEN_W: 480, VU_BAR_COUNT: 24, VU_BAR_W: 9, VU_BAR_GAP: 7, VU_MIN_H: 2,
-    VU_SYMMETRIC_MAX_H: 25, VOLUME_METER_AXIS_Y: 186,
+    VOLUME_METER_MAX_H: 25, VOLUME_METER_AXIS_Y: 186,
     clockWaveLastFilled: -1, cLine: 10, cBg: 0, cAccent: 65504, kVuSeed: Array(24).fill(0),
     sx: Math.round, sy: Math.round, ss: Math.round,
     constrain: (value, lo, hi) => Math.max(lo, Math.min(hi, value)), max: Math.max, min: Math.min,

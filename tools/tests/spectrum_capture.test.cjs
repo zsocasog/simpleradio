@@ -1,12 +1,13 @@
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const vm = require('node:vm');
 const test = require('node:test');
+const vm = require('node:vm');
 const root = path.resolve(__dirname, '../..');
 const source = fs.readFileSync(path.join(root, 'src/audio/audio_spectrum.cpp'), 'utf8');
 const policy = fs.readFileSync(path.join(root, 'src/audio/spectrum_capture.h'), 'utf8');
 const math = fs.readFileSync(path.join(root, 'src/audio/spectrum_math.h'), 'utf8');
+const output = fs.readFileSync(path.join(root, 'src/audio/audio_output.cpp'), 'utf8');
 const N = Number(math.match(/POINT_COUNT = (\d+)/)[1]);
 const BUFFERS = Number(policy.match(/BUFFER_COUNT = (\d+)/)[1]);
 
@@ -20,7 +21,7 @@ function body(text, marker) {
   throw new Error(marker);
 }
 function translate(text) {
-  return text.replace(/static_cast<(?:u?int\d+_t|size_t)>\(/g, 'Math.trunc(')
+  return text.replace(/static_cast<(?:u?int\d+_t|size_t|int)>\(/g, 'Math.trunc(')
     .replace(/\bconst (?:u?int\d+_t|size_t|bool|int) /g, 'const ')
     .replace(/(\d+)u\b/g,'$1')
     .replace(/\b(?:u?int\d+_t|size_t|bool|int) /g, 'let ')
@@ -29,6 +30,7 @@ function translate(text) {
     .replace(/BufferState::/g, 'State.')
     .replace(/SpectrumMath::/g, 'MathPolicy.')
     .replace(/SpectrumCapture::/g, 'CapturePolicy.')
+    .replace(/SpectrumOutput::/g, 'OutputPolicy.')
     .replace(/frames_\.size\(\)/g, 'frames_.length')
     .replace(/min<size_t>\(/g, 'Math.min(').replace(/\bmax\(/g, 'Math.max(')
     .replace(/published_ = \{\};/g, 'published_ = {};')
@@ -38,19 +40,17 @@ const capture = translate(body(source, 'void AudioSpectrum::capture('))
   .replace('memcpy(frames_[index].samples + start * 2, samples + offset * 2, count * 2 * sizeof(int32_t));',
     'frames_[index].samples.set(samples.subarray(offset * 2, (offset + count) * 2), start * 2);');
 const take = translate(body(source, 'bool AudioSpectrum::takeFrame('))
-  .replace(/static_cast<int>\(/g, 'Math.trunc(')
   .replace('return oldest >= 0;', 'return oldest;');
 const snapshot = translate(body(source, 'AudioSpectrumSnapshot AudioSpectrum::snapshot('))
   .replace('AudioSpectrumSnapshot result;', 'let result;')
   .replace('result = published_;', 'result = clone(published_);')
   .replace('result = resultStorage_[newest];', 'result = clone(resultStorage_[newest]);')
   .replace('published_ = result;', 'published_ = clone(result);')
-  .replace(/static_cast<int>\(/g, 'Math.trunc(')
   .replace('for (float db : published_.bandDb)', 'for (const db of published_.bandDb)')
   .replace(/\bmin\(/g, 'Math.min(');
 const reset = translate(body(source, 'void AudioSpectrum::resetLocked('));
-const clockMethod = name => translate(body(policy, name)).replace(/\b(ready|anchorMs|frames)\b/g, 'this.$1')
-  .replace(/\btimeAt\(/g, 'this.timeAt(');
+const clockMethod = name => translate(body(policy, name))
+  .replace(/\b(ready|anchorMs|frames|epoch)\b/g, 'this.$1');
 
 function analyzer(rate = 44100) {
   const context = vm.createContext({ N, rate, BUFFERS, now:1000, Int32Array, Math });
@@ -60,28 +60,30 @@ function analyzer(rate = 44100) {
       MAX_QUEUE_AGE_MS:${Number(math.match(/MAX_QUEUE_AGE_MS = (\d+)/)[1])},
       FRAME_HOLD_MS:${Number(math.match(/FRAME_HOLD_MS = (\d+)/)[1])},
       beforeDeadline:(now,due) => due!==0 && ((now-due)|0)<0 };
+    let epoch=1;
+    const OutputPolicy={isCurrent:value=>value===epoch};
     const CapturePolicy={ PEAK_MERGE_MS:${Number(policy.match(/PEAK_MERGE_MS = (\d+)/)[1])},
       windowHop:function(sampleRate) ${translate(body(policy,'uint32_t windowHop(')).replace('sampleRate * INTERVAL_MS / 1000','Math.trunc(sampleRate * INTERVAL_MS / 1000)')} };
     const INTERVAL_MS=${Number(policy.match(/INTERVAL_MS = (\d+)/)[1])};
     class Clock {
-      constructor(){this.ready=false;this.anchorMs=0;this.frames=0;}
+      constructor(){this.ready=false;this.anchorMs=0;this.frames=0;this.epoch=0;}
       timeAt(frame,rate) ${clockMethod('uint32_t timeAt(')}
-      discontinuity(now,rate) ${clockMethod('bool discontinuity(')}
-      start(now) ${clockMethod('void start(')}
-      append(count) ${clockMethod('uint64_t append(')}
+      discontinuity(firstFrame,outputEpoch) ${clockMethod('bool discontinuity(')}
+      observe(firstFrame,count,endedMs,rate,outputEpoch) ${clockMethod('void observe(').replace('this.frames * 1000 / rate','Math.trunc(this.frames * 1000 / rate)')}
     }
     let frames_=Array.from({length:BUFFERS},()=>({samples:new Int32Array(N*2),state:State.Free}));
     let initialized_=true,enabled_=true,visible_=true, generation_=1, sampleRate_=rate;
     let playbackGainDb_=-20, captureClock_=new Clock(),nextWindowFrame_=0,writeBuffer_=-1,writePosition_=0;
     let published_={},firstFrame_=true,lastPcmMs_=0,task_=1,mux_=0,notifications=0,lastMinDb_=0,lastMaxDb_=-120;
+    let timing_={},timingStartedMs_=0;
     let diagnostics_={callbacks:0,pcmFrames:0,captured:0,processed:0,presented:0,merged:0,busyDrops:0,staleDrops:0,resets:0,maxCaptureUs:0};
-    let resultStorage_=Array(BUFFERS), traces=new Map(), lastReturnedTime=-1;
+    let resultStorage_=Array(BUFFERS), traces=new Map();
     const clone=x=>({...x,bandDb:[...(x.bandDb||Array(24).fill(-120))]});
     const millis=()=>now,micros=()=>now*1000;
     function portENTER_CRITICAL(){} function portEXIT_CRITICAL(){}
     function xTaskNotifyGive(){++notifications;}
     function resetLocked() ${reset}
-    function capture(samples,frames) ${capture.replace(/&mux_/g,'mux_')}
+    function capture(samples,frames,firstFrame,endedMs,outputEpoch=epoch,outputRate=rate) ${capture.replace(/&mux_/g,'mux_')}
     function takeFrame(index) ${take.replace(/&mux_/g,'mux_')}
     function snapshot() ${snapshot.replace(/&mux_/g,'mux_')}
     function finishWork(i,db=-30){
@@ -92,198 +94,153 @@ function analyzer(rate = 44100) {
       frame.state=State.Analyzed;++diagnostics_.processed;
     }
     function worker(){for(let i=takeFrame();i>=0;i=takeFrame())finishWork(i);}
-    function drain(){
-      worker();const value=snapshot();
-      if(!value.active || value.updatedMs===lastReturnedTime)return [];
-      lastReturnedTime=value.updatedMs;return [traces.get(value.updatedMs)];
-    }
     function stats(){return {...diagnostics_,notifications};}
-    function setVisible(value){visible_=value;resetLocked();}
+    function setVisible(value){visible_=value;resetLocked();++epoch;}
+    function restart(){resetLocked();++epoch;}
   `, context);
   return context;
 }
-function packet(start, count) {
-  return Int32Array.from({length:count*2},(_,i)=>Math.floor(i/2)+start+(i%2 ? 1000000 : 0));
+function pcm(first, count) {
+  return Int32Array.from({length:count*2},(_,i)=>Math.floor(i/2)+first+(i%2 ? 1000000 : 0));
+}
+function feed(a,first,count,endedMs,arrivedMs=endedMs) {
+  a.now=arrivedMs; const input=pcm(first,count), before=new Int32Array(input);
+  a.capture(input,count,first,endedMs);
+  assert.deepEqual(input,before);
 }
 
-test('long FLAC packets yield several time-ordered windows, without changing audio',()=>{
-  const a=analyzer(), input=packet(0,4096), before=new Int32Array(input);
-  a.capture(input,4096);
-  assert.deepEqual(input,before);
-  assert.equal(a.stats().captured,3); // fourth spans the next packet.
-  assert.deepEqual(Array.from(a.drain()),[]); // midpoint has not arrived yet.
-  const windows=[];
-  for(let t=1000;t<1100;t+=5){a.now=t;windows.push(...a.drain());}
-  assert.equal(windows.length,3);
-  assert.deepEqual(windows.map(w=>w.time),[1011,1036,1061]);
-  assert.deepEqual(windows.map(w=>w.pcm[0]),[0,1102,2204]);
-  for(const w of windows) for(let i=0;i<N;++i){
-    assert.equal(w.pcm[i*2],w.pcm[0]+i);
-    assert.equal(w.pcm[i*2+1],w.pcm[i*2]+1000000);
+test('window timestamps follow sent samples regardless of callback/task arrival delay',()=>{
+  for(const handoff of [0,3,17,40]) {
+    const a=analyzer();
+    feed(a,0,1024,1023,1023+handoff);a.worker();
+    assert.equal(a.snapshot().updatedMs,1011);
+    assert.equal(a.stats().captured,1);
   }
 });
 
-test('window samples stay contiguous across uneven MP3/FLAC packet boundaries',()=>{
-  const a=analyzer(); let offset=0; const out=[];
-  for(const count of [700,452,4096,1152,3000,1152]){
-    a.now=1000+Math.floor(offset*1000/44100);out.push(...a.drain());
-    a.capture(packet(offset,count),count); offset+=count;
-    for(let t=a.now;t<1000+offset*1000/44100;t+=5){a.now=t;out.push(...a.drain());}
+test('small DMA blocks make complete contiguous stereo windows across all boundaries',()=>{
+  for(const rate of [44100,48000]) {
+    const a=analyzer(rate);
+    for(let first=0;first<rate;++first) {
+      // Deliberately uneven segments, independent of decoder packet sizes.
+      const count=Math.min(37+(first%220),rate-first);
+      feed(a,first,count,1000+Math.floor((first+count)*1000/rate));
+      first+=count-1;a.worker();a.snapshot();
+    }
+    const windows=Array.from(vm.runInContext('traces.values().toArray ? traces.values().toArray() : Array.from(traces.values())',a));
+    assert.ok(windows.length>=39 && windows.length<=41);
+    for(const w of windows)for(let i=0;i<N;++i) {
+      assert.equal(w.pcm[i*2],w.pcm[0]+i);
+      assert.equal(w.pcm[i*2+1],w.pcm[0]+i+1000000);
+    }
+    assert.equal(a.stats().busyDrops,0);assert.equal(a.stats().resets,0);
   }
-  assert.ok(out.length>8);
-  for(const w of out) for(let i=0;i<N;++i) assert.equal(w.pcm[i*2],w.pcm[0]+i);
+});
+
+test('a dropped DMA hand-off discards the incomplete FFT window and resumes current PCM',()=>{
+  const a=analyzer();feed(a,0,700,1015);
+  feed(a,956,1024,1044);a.worker();
+  assert.equal(a.stats().resets,1);
+  const windows=Array.from(vm.runInContext('Array.from(traces.values())',a));
+  assert.equal(windows.length,1);assert.equal(windows[0].pcm[0],956);
+  assert.equal(windows[0].pcm.at(-2),956+1023);
+});
+
+test('output restart, visibility change and old DMA epochs cannot leak a previous track',()=>{
+  const a=analyzer();feed(a,0,1024,1023);a.worker();
+  a.restart();a.now=1030;
+  a.capture(pcm(1024,1024),1024,1024,1046,1);a.worker();
+  assert.equal(a.snapshot().active,undefined);
+  feed(a,0,1024,1053);a.worker();assert.equal(a.snapshot().updatedMs,1041);
+  a.setVisible(false);a.now=1060;assert.equal(a.snapshot().active,undefined);
+  feed(a,1024,1024,1076);assert.equal(a.stats().captured,2);
+});
+
+test('opening spectrum during a song anchors to the current output frame, not frame zero',()=>{
+  const a=analyzer();feed(a,441000,1024,11023);a.worker();
+  assert.equal(a.snapshot().updatedMs,11011);
+  const windows=Array.from(vm.runInContext('Array.from(traces.values())',a));
+  assert.equal(windows[0].pcm[0],441000);
   assert.equal(a.stats().busyDrops,0);
 });
 
-test('future FLAC windows survive selection of the current window',()=>{
-  const a=analyzer();a.capture(packet(0,8192),8192);
-  a.now=1012;assert.equal(a.drain().length,1);
-  a.now=1037;assert.equal(a.drain().length,1);
-  a.now=1062;assert.equal(a.drain().length,1);
-  assert.equal(a.stats().staleDrops,0);
-});
-
-test('full queue skips analyzer windows without blocking or touching playback',()=>{
-  const a=analyzer();const input=packet(0,30000),before=new Int32Array(input);
-  a.capture(input,30000);
-  assert.ok(a.stats().busyDrops>0);assert.equal(a.stats().captured,BUFFERS);
-  assert.deepEqual(input,before);
-  a.now=2000;assert.equal(a.drain().length,0); // obsolete windows are not replayed.
-  assert.ok(a.stats().staleDrops>=BUFFERS);
-});
-
-test('visibility/stop resets cancel scheduled future windows and partial input',()=>{
-  const a=analyzer();a.capture(packet(0,4096),4096);a.setVisible(false);
-  a.now=1100;assert.equal(a.drain().length,0);
-  a.capture(packet(4096,4096),4096);assert.equal(a.stats().captured,3);
-  a.setVisible(true);a.capture(packet(8000,1152),1152);a.now=1120;
-  assert.equal(a.drain()[0].pcm[0],8000);
-});
-
-test('5-second MP3 and FLAC streams both supply about 200 evenly scheduled FFT windows',()=>{
-  for(const rate of [44100,48000]) for(const size of [1152,4096]){
-    const a=analyzer(rate);let cursor=0;const out=[];
-    while(cursor<rate*5){
-      a.now=1000+Math.floor(cursor*1000/rate);out.push(...a.drain());
-      a.capture(packet(cursor,size),size);cursor+=size;
-      for(let t=a.now;t<1000+cursor*1000/rate;t+=5){a.now=t;out.push(...a.drain());}
-    }
-    assert.ok(out.length>=197 && out.length<=205,`${rate}/${size}: ${out.length}`);
-    assert.equal(a.stats().busyDrops,0);assert.equal(a.stats().resets,0);
-    assert.ok(out.every((w,i)=>!i || w.time>out[i-1].time));
-  }
-});
-
-test('DMA startup prefill plus a full FLAC packet fits without dropping windows',()=>{
-  const a=analyzer();let offset=0;
-  for(let i=0;i<7;++i){a.capture(packet(offset,1152),1152);offset+=1152;}
-  a.capture(packet(offset,4608),4608);
-  assert.equal(a.stats().busyDrops,0);assert.equal(a.stats().resets,0);
-  const out=[];
-  for(let t=1000;t<1300;t+=5){a.now=t;out.push(...a.drain());}
-  assert.ok(out.length>=11);
-});
-
-test('queued PCM uses PSRAM exclusively and callback contains no wait, allocation or FFT',()=>{
-  const callback=body(source,'void AudioSpectrum::capture(');
-  assert.doesNotMatch(callback,/vTaskDelay|ulTaskNotifyTake|malloc|transform\(|captureWindowOffset/);
-  assert.match(source,/MALLOC_CAP_SPIRAM \| MALLOC_CAP_8BIT/);
-  assert.doesNotMatch(source,/MALLOC_CAP_INTERNAL/);
-});
-
-test('future windows are analyzed immediately but never displayed early',()=>{
-  const a=analyzer();a.capture(packet(0,4096),4096);a.worker();
-  assert.equal(a.stats().processed,3);
-  assert.equal(a.snapshot().active,undefined);
-  assert.equal(a.stats().presented,0);
-  a.now=1012;assert.equal(a.snapshot().updatedMs,1011);
-  assert.equal(a.stats().presented,1);
-  a.now=1037;assert.equal(a.snapshot().updatedMs,1036);
-  assert.equal(a.stats().presented,2);
-  assert.equal(a.stats().staleDrops,0);
-});
-
-test('slightly late FLAC windows are all analyzed rather than discarded as neighbors',()=>{
-  const a=analyzer();a.capture(packet(0,4096),4096);
-  a.now=1045;a.worker();
-  assert.equal(a.stats().processed,3);
-  assert.equal(a.snapshot().updatedMs,1036);
-  assert.equal(a.stats().presented,2);
-  assert.equal(a.stats().merged,1);
-  assert.equal(a.stats().staleDrops,0);
-  a.now=1062;a.snapshot();assert.equal(a.stats().presented,3);
-});
-
-test('12ms FFT work and 33ms LCD updates retain about 200 windows per five seconds',(t)=>{
-  for(const rate of [44100,48000])for(const count of [1152,4096]){
-    const a=analyzer(rate);let cursor=0,pending=-1,done=0,nextLcd=1000;
-    for(let t=1000;t<=6000;++t){
-      a.now=t;
-      if(cursor<rate*5 && t>=1000+Math.floor(cursor*1000/rate)){
-        a.capture(packet(cursor,count),count);cursor+=count;
+test('MP3 and FLAC decoder batching cannot change output timing or discard visual peaks',t=>{
+  for(const rate of [44100,48000])for(const decoderPacket of [1152,4096,4608]) {
+    const a=analyzer(rate);
+    let first=0,pending=-1,done=0,nextLcd=1000,last=-1,updates=0;
+    // Decoder delivery deliberately varies by codec. The simulated I2S device
+    // has the same output clock; production capture never receives its packets.
+    const decoderArrivals=[];
+    for(let n=0;n<rate*5;n+=decoderPacket)decoderArrivals.push(n*1000/rate);
+    for(let ms=1000;ms<=6000;++ms) {
+      a.now=ms;
+      if(first<rate*5 && ms>=1000+Math.floor((first+256)*1000/rate)) {
+        feed(a,first,256,1000+Math.floor((first+256)*1000/rate),ms);first+=256;
       }
-      if(pending>=0 && t>=done){a.finishWork(pending);pending=-1;}
-      if(t>=nextLcd){
-        const s=a.snapshot();
-        if(s.active)assert.ok(s.updatedMs<=t,'future result appeared early');
-        nextLcd+=33;
+      if(pending>=0 && ms>=done){a.finishWork(pending);pending=-1;}
+      if(ms>=nextLcd) {
+        const value=a.snapshot();
+        if(value.active && value.updatedMs!==last){++updates;last=value.updatedMs;}
+        nextLcd+=36;
       }
-      if(pending<0){pending=a.takeFrame();if(pending>=0)done=t+12;}
+      if(pending<0){pending=a.takeFrame();if(pending>=0)done=ms+12;}
     }
     const s=a.stats();
-    assert.ok(s.processed>=196 && s.processed<=204,`${rate}/${count}: ${s.processed}`);
-    assert.ok(s.presented>=194,`${rate}/${count}: ${s.presented}`);
-    assert.ok(s.merged>20,'sub-frame results should be preserved in LCD frames');
-    assert.equal(s.busyDrops,0,`${rate}/${count}: ${JSON.stringify(s)}`);
-    // Rare results outside the one-LCD-frame peak horizon may be skipped;
-    // every raw window was still analyzed, with no playback backpressure.
-    assert.ok(s.staleDrops<=5,`${rate}/${count}: ${JSON.stringify(s)}`);assert.equal(s.resets,0);
-    t.diagnostic(`${rate}/${count}: FFT=${s.processed}, presented=${s.presented}, merged=${s.merged}, obsolete=${s.staleDrops}`);
+    assert.ok(s.processed>=196 && s.processed<=201,`${rate}/${decoderPacket}: ${JSON.stringify(s)}`);
+    assert.ok(updates>=135 && updates<=139,`fresh LCD ${updates}`);
+    assert.equal(s.busyDrops,0);assert.equal(s.staleDrops,0);assert.equal(s.resets,0);
+    assert.ok(s.presented>=195);assert.ok(s.merged>50);
+    assert.ok(decoderArrivals.length>40);
+    t.diagnostic(`${rate}/${decoderPacket}: FFT=${s.processed}, fresh-LCD=${updates}, merged=${s.merged}, obsolete=${s.staleDrops}`);
   }
 });
 
-test('a measured short beat survives between LCD frames, then immediately releases',()=>{
-  const a=analyzer();a.capture(packet(0,4096),4096);
+test('peak merge preserves a short measured beat without keeping it as the baseline',()=>{
+  const a=analyzer();feed(a,0,4096,1092);
   a.finishWork(a.takeFrame(),-4);a.finishWork(a.takeFrame(),-42);a.finishWork(a.takeFrame(),-42);
-  a.now=1044;const beat=a.snapshot();
-  assert.equal(beat.updatedMs,1036);assert.equal(beat.bandDb[0],-4);
-  a.now=1045;assert.equal(a.snapshot().bandDb[0],-42,'peak must not become the retained baseline');
-  a.now=1062;assert.equal(a.snapshot().bandDb[0],-42);
+  a.now=1045;const beat=a.snapshot(); // First two window centers have passed.
+  assert.equal(beat.bandDb[0],-4);
+  a.now=1046;assert.equal(a.snapshot().bandDb[0],-42);
+  a.now=1100;assert.equal(a.snapshot().bandDb[0],-42);
 });
 
-test('a delayed LCD does not replay an old strong beat over current quiet audio',()=>{
-  const a=analyzer();a.capture(packet(0,4096),4096);
+test('a stalled LCD skips old beats, then returns the current quiet measurement',()=>{
+  const a=analyzer();feed(a,0,4096,1092);
   a.finishWork(a.takeFrame(),-4);a.finishWork(a.takeFrame(),-42);a.finishWork(a.takeFrame(),-42);
-  a.now=1090;const current=a.snapshot();
-  assert.equal(current.updatedMs,1061);assert.equal(current.bandDb[0],-42);
+  a.now=1090;assert.equal(a.snapshot().bandDb[0],-42);
   assert.equal(a.stats().staleDrops,1);
+  a.now=1800; // Existing snapshot freshness policy releases the display.
+  assert.ok(a.now-a.snapshot().updatedMs>180);
 });
 
-test('stop and visibility changes cancel already analyzed future results',()=>{
-  const a=analyzer();a.capture(packet(0,4096),4096);a.worker();
-  a.setVisible(false);a.now=1150;assert.equal(a.snapshot().active,undefined);
-  a.setVisible(true);a.capture(packet(8000,1152),1152);a.worker();
-  assert.equal(a.snapshot().active,undefined);
-  a.now=1162;assert.equal(a.snapshot().updatedMs,1161);
+test('a full FFT queue never changes output; old input expires and current input recovers',()=>{
+  const a=analyzer();feed(a,0,30000,1680);
+  assert.equal(a.stats().captured,BUFFERS);assert.ok(a.stats().busyDrops>0);
+  a.now=3000;a.worker();assert.equal(a.snapshot().active,undefined);
+  feed(a,90000,1024,3023);a.worker();assert.equal(a.snapshot().updatedMs,3011);
 });
 
-test('analyzed results expire after a long stall and recover with current PCM',()=>{
-  const a=analyzer();a.capture(packet(0,4096),4096);a.worker();
-  a.now=1800;assert.equal(a.snapshot().active,undefined);
-  assert.equal(a.stats().staleDrops,3);
-  a.capture(packet(9000,1152),1152);a.worker();a.now=1812;
-  assert.equal(a.snapshot().updatedMs,1811);
+test('DMA ISR only copies to internal RAM and notifies; FFT/input work remains in tasks',()=>{
+  const isr=body(output,'bool IRAM_ATTR onSent(');
+  assert.match(output,/DRAM_ATTR int32_t pcm/);
+  assert.match(output,/DRAM_ATTR SpectrumOutput::Queue queue/);
+  assert.match(isr,/memcpy\(pcm\[index\], event->dma_buf, event->size\)/);
+  assert.match(isr,/frames <= SpectrumOutput::BLOCK_FRAMES/);
+  assert.match(isr,/vTaskNotifyGiveFromISR/);
+  assert.doesNotMatch(isr,/SpectrumLog|Serial|heap_caps|malloc|log10|transform|\.capture|vTaskDelay|i2s_channel_write/);
+  const bridge=body(output,'void inputLoop(');
+  assert.match(bridge,/spectrum.capture/);assert.match(bridge,/portMAX_DELAY/);
+  assert.match(output,/"spectrum-in", 2048, &spectrum, 1/);
 });
 
-test('production FFT stores PSRAM results and LCD consumption performs no FFT or USB IO',()=>{
-  const process=body(source,'void AudioSpectrum::processFrame(');
-  const draw=body(source,'AudioSpectrumSnapshot AudioSpectrum::snapshot(');
-  const loop=body(source,'void AudioSpectrum::taskLoop(');
+test('FFT windows and results stay in PSRAM and LCD consumption contains no processing or IO',()=>{
+  const header=fs.readFileSync(path.join(root,'src/audio/audio_spectrum.h'),'utf8');
+  assert.match(header,/float\* window_ = nullptr/);
+  assert.match(source,/heap_caps_aligned_alloc\(16,\s*SpectrumMath::POINT_COUNT \* sizeof\(float\), MALLOC_CAP_SPIRAM \| MALLOC_CAP_8BIT\)/);
+  assert.match(header,/alignas\(16\) std::array<float, SpectrumMath::POINT_COUNT \* 2> work_/);
   assert.match(source,/frames_\.size\(\) \* sizeof\(AudioSpectrumSnapshot\), MALLOC_CAP_SPIRAM \| MALLOC_CAP_8BIT/);
+  const process=body(source,'void AudioSpectrum::processFrame(');
   assert.match(process,/resultStorage_\[index\] = result/);
-  assert.match(process,/frame\.state = BufferState::Analyzed/);
-  assert.doesNotMatch(process,/published_ = result/);
-  assert.match(loop,/if \(frames_\[index\]\.state == BufferState::Processing\)/);
-  assert.doesNotMatch(draw,/prepareFrame|transform\(|SpectrumLog|Serial|malloc|vTaskDelay/);
-  assert.match(source,/presented=%lu merged=%lu/);
+  assert.match(process,/frame.state = BufferState::Analyzed/);
+  assert.doesNotMatch(body(source,'AudioSpectrumSnapshot AudioSpectrum::snapshot('),/prepareFrame|transform\(|SpectrumLog|Serial|malloc|vTaskDelay/);
 });

@@ -105,10 +105,18 @@ static constexpr int INFO_REGION_X = INFO_X - sx(8);
 static constexpr int INFO_REGION_Y = sy(36);
 static constexpr int INFO_REGION_W = SCREEN_W - INFO_REGION_X - sx(14);
 static constexpr int INFO_REGION_H = sy(198);
+// Use the room below BOTH protected content regions, with breathing room
+// above the tallest bar and an 8-pixel (scaled) margin at the bottom.
+static constexpr int PLAYER_CONTENT_BOTTOM =
+    ART_REGION_Y + ART_REGION_H > INFO_REGION_Y + INFO_REGION_H
+        ? ART_REGION_Y + ART_REGION_H : INFO_REGION_Y + INFO_REGION_H;
+static constexpr int PLAYER_METER_TOP = PLAYER_CONTENT_BOTTOM + sy(12);
+static constexpr int PLAYER_METER_BOTTOM = SCREEN_H - sy(8) - 1;
 static constexpr int FOOTER_REGION_X = 0;
-static constexpr int FOOTER_REGION_Y = sy(252);
+static constexpr int FOOTER_REGION_Y = PLAYER_METER_TOP - sy(4);
 static constexpr int FOOTER_REGION_W = SCREEN_W;
 static constexpr int FOOTER_REGION_H = SCREEN_H - FOOTER_REGION_Y;
+static constexpr int FOOTER_TEXT_CENTER_Y = SCREEN_H - sy(34);
 static constexpr unsigned long METER_RENDER_MS = 42;
 static constexpr unsigned long SPECTRUM_RENDER_MS = 33;
 static constexpr int VU_BAR_COUNT = 24;
@@ -116,10 +124,12 @@ static_assert(SpectrumMath::BAND_COUNT <= VU_BAR_COUNT, "Spectrum exceeds the sh
 static constexpr int VU_HALF_COUNT = VU_BAR_COUNT / 2;
 static constexpr int VU_BAR_W = ss(9);
 static constexpr int VU_BAR_GAP = ss(7);
-static constexpr int VU_BASELINE_Y = SCREEN_H - sy(13);
-static constexpr int VU_MAX_H = sy(42);
-static constexpr int VU_SYMMETRIC_CENTER_Y = SCREEN_H - sy(28);
-static constexpr int VU_SYMMETRIC_MAX_H = sy(25);
+static constexpr int VU_BASELINE_Y = PLAYER_METER_BOTTOM;
+static constexpr int VU_MAX_H = VU_BASELINE_Y - PLAYER_METER_TOP;
+static constexpr int VU_SYMMETRIC_CENTER_Y = (PLAYER_METER_TOP + PLAYER_METER_BOTTOM) / 2;
+static constexpr int VU_SYMMETRIC_MAX_H = (PLAYER_METER_BOTTOM - PLAYER_METER_TOP) / 2;
+static_assert(FOOTER_REGION_Y >= PLAYER_CONTENT_BOTTOM, "Player meter must not erase artwork or text");
+static_assert(VU_SYMMETRIC_MAX_H > 0 && VU_MAX_H < 256, "Player meter height must fit its buffers");
 static constexpr int VU_MIN_H = sy(2) > 1 ? sy(2) : 1;
 static constexpr unsigned long VOLUME_SCREEN_MS = 5000;
 static constexpr int VOLUME_DIAL_CX = SCREEN_W / 2;
@@ -134,8 +144,10 @@ static constexpr int VOLUME_POPUP_Y = sy(126);
 static constexpr int VOLUME_POPUP_W = SCREEN_W - VOLUME_POPUP_X - sx(20);
 static constexpr int VOLUME_POPUP_H = sy(112);
 static constexpr int VOLUME_METER_AXIS_Y = SCREEN_H / 2 + sy(4);
-static constexpr int VOLUME_TITLE_Y = VOLUME_METER_AXIS_Y - VU_SYMMETRIC_MAX_H - sy(78);
-static constexpr int VOLUME_VALUE_Y = VOLUME_METER_AXIS_Y + VU_SYMMETRIC_MAX_H + sy(58);
+// Full-screen volume, boot and clock graphics keep their existing geometry.
+static constexpr int VOLUME_METER_MAX_H = sy(25);
+static constexpr int VOLUME_TITLE_Y = VOLUME_METER_AXIS_Y - VOLUME_METER_MAX_H - sy(78);
+static constexpr int VOLUME_VALUE_Y = VOLUME_METER_AXIS_Y + VOLUME_METER_MAX_H + sy(58);
 static constexpr unsigned long IDLE_LCD_GUARD_MS = 10UL * 60UL * 1000UL;
 static constexpr unsigned long IDLE_LCD_GUARD_BLACK_MS = 450;
 static constexpr int PICKER_BOX_X = 0;
@@ -1508,8 +1520,8 @@ static bool updateVuBars(bool playing) {
   return changed || hasFreshSignal || vuBarsHaveSignal();
 }
 
-static bool updateSpectrumBars(bool playing) {
-  const AudioSpectrumSnapshot spectrum = AudioSpectrum::instance().snapshot();
+static bool updateSpectrumBars(bool playing, AudioSpectrumSnapshot& spectrum) {
+  spectrum = AudioSpectrum::instance().snapshot();
   const unsigned long now = millis();
   const bool fresh = playing && SpectrumMath::usableFrame(spectrum.active, now, spectrum.updatedMs);
   uint32_t elapsedMs = lastSpectrumEnvelopeMs ? now - lastSpectrumEnvelopeMs : SPECTRUM_RENDER_MS;
@@ -1565,8 +1577,8 @@ static VuLayout currentVuLayout() {
   layout.centerX = layout.meterX + layout.meterW / 2;
   layout.axisY = (symmetric || classic) ? VU_SYMMETRIC_CENTER_Y : VU_BASELINE_Y;
   layout.maxH = (symmetric || classic) ? VU_SYMMETRIC_MAX_H : VU_MAX_H;
-  layout.clearY = layout.axisY - layout.maxH - 4;
-  layout.clearH = SCREEN_H - layout.clearY;
+  layout.clearY = FOOTER_REGION_Y;
+  layout.clearH = FOOTER_REGION_H;
   return layout;
 }
 
@@ -1780,7 +1792,7 @@ static void drawStationFooter(const DisplayModel& m) {
   setUiFont(2);
   drawUiText(fitText(station, SCREEN_W - sx(44)),
              SCREEN_W / 2,
-             FOOTER_REGION_Y + FOOTER_REGION_H / 2,
+             FOOTER_TEXT_CENTER_Y,
              *currentUiFont,
              cAccent,
              cBg,
@@ -1835,7 +1847,7 @@ static void drawDateTimeFooter(bool force = false) {
   setUiFont(2);
   drawUiText(fitText(line, SCREEN_W - sx(44)),
              SCREEN_W / 2,
-             FOOTER_REGION_Y + FOOTER_REGION_H / 2,
+             FOOTER_TEXT_CENTER_Y,
              *currentUiFont,
              cAccent,
              cBg,
@@ -2552,7 +2564,7 @@ static VuLayout volumeMeterLayout() {
   layout.meterX = (SCREEN_W - meterW) / 2;
   layout.centerX = layout.meterX + meterW / 2;
   layout.axisY = VOLUME_METER_AXIS_Y;
-  layout.maxH = VU_SYMMETRIC_MAX_H;
+  layout.maxH = VOLUME_METER_MAX_H;
   layout.clearY = layout.axisY - layout.maxH - sy(7);
   layout.clearH = layout.maxH * 2 + sy(14);
   return layout;
@@ -2604,6 +2616,7 @@ static uint32_t volumeMeterFillUnits(uint8_t volume) {
 static void drawVolumeFooter(const DisplayModel& m) {
   VuLayout layout = volumeMeterLayout();
   layout.axisY = VU_SYMMETRIC_CENTER_Y;
+  layout.maxH = VU_SYMMETRIC_MAX_H;
   layout.clearY = FOOTER_REGION_Y;
   layout.clearH = FOOTER_REGION_H;
   const uint32_t fillUnits = volumeMeterFillUnits(m.volume);
@@ -4071,12 +4084,15 @@ void Display::renderAudioMeterFrame(bool force) {
     return;
   }
 
+  AudioSpectrumSnapshot measurement;
+  const uint32_t renderStartedUs = spectrum ? micros() : 0;
   bool active = spectrum
-                  ? updateSpectrumBars(lastModel.playing) : updateVuBars(lastModel.playing);
+                  ? updateSpectrumBars(lastModel.playing, measurement) : updateVuBars(lastModel.playing);
   // After the final sub-pixel decay, erase the axis/last rendered frame once.
   const bool releaseFinished = spectrum && !lastModel.playing && !vuBarsHaveSignal() && vuRendered;
   if (!force && !active && !releaseFinished) return;
   drawVuMeter(lastModel, force);
+  if (spectrum) AudioSpectrum::instance().noteDisplayFrame(measurement, renderStartedUs, micros());
 }
 
 uint32_t Display::showStationPicker(int selectedStationId) {

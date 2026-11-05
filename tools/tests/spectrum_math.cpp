@@ -128,10 +128,13 @@ static_assert(!usableFrame(false, 150, 100));
 static_assert(usableFrame(true, 0x20u, 0xfffffff0u)); // millis() rollover.
 
 static_assert(smoothLevel(100, 200, 0) == 100);
-static_assert(smoothLevel(0, 255, 42) > 0 && smoothLevel(0, 255, 42) < 255);
+static_assert(smoothLevel(0, 255, 42) == 255);
 static_assert(smoothLevel(255, 0, 42) > 0 && smoothLevel(255, 0, 42) < 255);
-static_assert(smoothLevel(0, 255, 42) > 255 - smoothLevel(255, 0, 42)); // Faster attack.
-static_assert(smoothLevel(0, 255, 84) > smoothLevel(0, 255, 42));
+static_assert(smoothLevel(30, 200, 8) == 200); // Even a one-frame peak is preserved.
+static_assert(smoothLevel(0, 255, 84) == smoothLevel(0, 255, 42));
+static_assert(smoothLevel(255, 0, 84) < smoothLevel(255, 0, 42));
+static_assert(smoothLevel(255, 100, 42) > 100 && smoothLevel(255, 100, 42) < 255);
+static_assert(smoothLevel(smoothLevel(255, 0, 36), 0, 36) - smoothLevel(255, 0, 72) < 0.01f);
 static_assert(smoothLevel(0.25f, 0, 42) == 0); // Eventually settle at silence.
 static_assert(smoothLevel(123, 123, 42) == 123);
 
@@ -217,9 +220,13 @@ static_assert(SpectrumCapture::windowHop(48000) == 1200);
 static_assert(SpectrumCapture::windowHop(8000) == POINT_COUNT);
 constexpr bool clockTracksPackets() {
   SpectrumCapture::Clock clock;
-  clock.start(0xfffffff0u);
-  if (clock.append(4096) != 0 || clock.append(1152) != 4096) return false;
-  if (clock.timeAt(4800, 48000) != 84) return false; // millis rollover.
-  return !clock.discontinuity(84, 48000) && clock.discontinuity(1000, 48000);
+  // Output completion times, including millis rollover and a nonzero first
+  // frame when opening the spectrum halfway through an already playing song.
+  clock.observe(96000, 256, 0xfffffff0u, 48000, 1);
+  if (clock.discontinuity(96256, 1)) return false;
+  if (!clock.discontinuity(96512, 1) || !clock.discontinuity(96256, 2)) return false;
+  clock.observe(96256, 256, 0xfffffff6u, 48000, 1);
+  return clock.timeAt(96512, 48000) == 0xfffffff6u &&
+      clock.timeAt(96992, 48000) == 0u;
 }
 static_assert(clockTracksPackets());

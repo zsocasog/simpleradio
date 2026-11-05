@@ -7,12 +7,15 @@
 #include <freertos/task.h>
 #include "spectrum_math.h"
 #include "spectrum_capture.h"
+#include "spectrum_timing.h"
 
 struct AudioSpectrumSnapshot {
   std::array<float, SpectrumMath::BAND_COUNT> bandDb{};
   bool active = false;
   uint32_t updatedMs = 0;
   uint32_t generation = 0;
+  uint32_t readyMs = 0;
+  uint32_t analyzedMs = 0;
   float peakDb = SpectrumMath::SILENCE_DB;
   float rmsDb = SpectrumMath::SILENCE_DB;
   float outputRmsDb = SpectrumMath::SILENCE_DB;
@@ -21,10 +24,13 @@ struct AudioSpectrumSnapshot {
 class AudioSpectrum {
 public:
   static AudioSpectrum& instance();
-  void setEnabled(bool enabled, uint32_t sampleRate, float playbackGainDb = 0);
+  void setEnabled(bool enabled, uint32_t sampleRate, float playbackGainDb = 0,
+                  uint32_t dmaBufferFrames = 0);
   void setDisplayVisible(bool visible);
-  void capture(const int32_t* samples, int16_t frames);
+  void capture(const int32_t* samples, int16_t frames, uint64_t firstFrame,
+               uint32_t endedMs, uint32_t outputEpoch, uint32_t outputRate);
   AudioSpectrumSnapshot snapshot();
+  void noteDisplayFrame(const AudioSpectrumSnapshot& sample, uint32_t startedUs, uint32_t finishedUs);
 
 private:
   enum class BufferState : uint8_t { Free, Writing, Ready, Processing, Analyzed };
@@ -36,6 +42,8 @@ private:
     uint32_t sampleRate = 0;
     uint32_t generation = 0;
     uint32_t capturedMs = 0;
+    uint32_t readyUs = 0;
+    uint32_t readyMs = 0;
     float playbackGainDb = 0;
   };
 
@@ -70,8 +78,10 @@ private:
   int32_t* sampleStorage_ = nullptr;
   AudioSpectrumSnapshot* resultStorage_ = nullptr;
   SpectrumMath::BandPlan* bandPlan_ = nullptr;
-  alignas(16) std::array<float, SpectrumMath::POINT_COUNT> window_{};
-  alignas(16) std::array<float, SpectrumMath::POINT_COUNT> coefficients_{};
+  // Task-only tables live in PSRAM. Keep the 8 KiB FFT work array internal,
+  // but leave contiguous internal heap for playback and the artwork task.
+  float* window_ = nullptr;
+  float* coefficients_ = nullptr;
   alignas(16) std::array<float, SpectrumMath::POINT_COUNT * 2> work_{};
   float windowEnergy_ = 0;
   AudioSpectrumSnapshot published_;
@@ -93,6 +103,9 @@ private:
   float lastMinDb_ = SpectrumMath::DB_FLOOR;
   float lastMaxDb_ = SpectrumMath::DB_FLOOR;
   Diagnostics diagnostics_;
+  SpectrumTiming::Interval timing_;
+  uint32_t timingStartedMs_ = 0;
+  uint32_t dmaBufferFrames_ = 0;
   int8_t writeBuffer_ = -1;
   size_t writePosition_ = 0;
 };

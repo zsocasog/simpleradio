@@ -128,14 +128,19 @@ constexpr bool usableFrame(bool active, uint32_t now, uint32_t capturedMs) {
   return active && now - capturedMs <= FRAME_HOLD_MS;
 }
 
-// Fractional 0..255 display envelope. Time-based attack/release avoids losing
-// the smoothing state every time heights are rounded to the LCD's few pixels.
+// Fractional 0..255 display envelope. A measured peak is visible on this LCD
+// frame; only falling levels are smoothed. Release follows exp(-dt/45ms), so
+// changing the LCD cadence does not change its apparent decay time.
 constexpr float smoothLevel(float current, float target, uint32_t elapsedMs) {
   if (!elapsedMs) return current;
+  if (target >= current) return target;
   if (elapsedMs > 250) elapsedMs = 250;
-  const float timeConstantMs = target > current ? 12.0f : 50.0f;
-  const float blend = elapsedMs / (timeConstantMs + elapsedMs);
-  const float next = current + (target - current) * blend;
+  // Range-reduced fourth-order exp, then four squarings. Error stays below
+  // 0.1% for 0..250ms; no libm call, lookup allocation or audio-path work.
+  const float x = elapsedMs / (45.0f * 16.0f);
+  float decay = 1.0f - x * (1.0f - x * (0.5f - x * (1.0f / 6.0f - x / 24.0f)));
+  for (int i = 0; i < 4; ++i) decay *= decay;
+  const float next = target + (current - target) * decay;
   return target == 0 && next < 0.5f ? 0 : next;
 }
 

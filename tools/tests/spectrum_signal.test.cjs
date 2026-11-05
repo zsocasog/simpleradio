@@ -13,7 +13,7 @@ const dynamics = read("src/audio/spectrum_dynamics.h");
 // bridge. Independently, spectrum_math.cpp compiles these headers for ESP32.
 // This bridge only erases C++ types/casts; it does not reimplement the policy.
 function body(source, name) {
-  const match = source.match(new RegExp(`\\b${name}\\([^\\n]*\\)\\s*\\{`));
+  const match = source.match(new RegExp(`\\b${name}\\([^)]*\\)\\s*\\{`));
   assert.ok(match, `missing production function ${name}`);
   const start = source.indexOf("{", match.index);
   let nesting = 0;
@@ -201,12 +201,37 @@ test("beats rise, softer sections recede, and stop decays monotonically without 
 test("one LCD frame catches a beat and the envelope recedes before the next beat", () => {
   const beat = production.displayLevel(-12, 100);
   const first = production.smoothLevel(0, beat, 33);
-  assert.ok(first > beat * 0.70);
+  assert.equal(first, beat);
   const released = production.smoothLevel(first, 0, 33);
-  assert.ok(released > first * 0.50 && released < first * 0.65);
+  assert.ok(released > first * 0.47 && released < first * 0.49);
   let tail=released;
   for(let i=0;i<3;++i) tail=production.smoothLevel(tail,0,33);
   assert.ok(tail>0 && tail<first*0.15); // Clear valley after 132 ms; no abrupt cut.
+});
+
+test("every rising measurement reaches its target on the first LCD frame", () => {
+  for (const elapsed of [1, 8, 16, 25, 33, 36, 42, 100]) {
+    for (const [current, target] of [[0, 20], [0, 255], [30, 200], [100, 101]]) {
+      assert.equal(production.smoothLevel(current, target, elapsed), target);
+    }
+  }
+  assert.equal(production.smoothLevel(30, 200, 0), 30);
+});
+
+test("release matches a 45ms exponential across LCD cadences and target changes", () => {
+  for (let elapsed = 1; elapsed <= 250; ++elapsed) {
+    for (const target of [0, 40, 150]) {
+      const expected = target + (255 - target) * Math.exp(-elapsed / 45);
+      const actual = production.smoothLevel(255, target, elapsed);
+      assert.ok(actual >= target && actual <= 255);
+      assert.ok(Math.abs(actual - expected) < 0.01, `${elapsed}ms, target ${target}`);
+    }
+  }
+  for (const interval of [9, 10, 15, 18, 20, 30, 36, 45, 60, 90, 180]) {
+    let level = 255;
+    for (let time = 0; time < 180; time += interval) level = production.smoothLevel(level, 0, interval);
+    assert.ok(Math.abs(level - 255 * Math.exp(-4)) < 0.01, `${interval}ms cadence`);
+  }
 });
 
 test("24 ERB peaks use fixed Hz positions and uniform ERB-rate spacing", () => {

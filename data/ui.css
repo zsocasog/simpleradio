@@ -262,7 +262,7 @@ body[data-view=player] .station-playing:not([hidden]) .station-activity-bar { an
 .preview-title, .preview-artist { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; overflow: hidden; overflow-wrap: anywhere; white-space: normal; }
 .preview-title { color: var(--text); font-size: 6.25cqw; line-height: 1.3; font-weight: 650; letter-spacing: -.02em; }
 .preview-artist { -webkit-line-clamp: 2; color: var(--accent); font-size: 5cqw; line-height: 1.292; }
-.preview-footer { position: absolute; left: 0; bottom: 0; width: 100%; height: 21.25%; overflow: hidden; }
+.preview-footer { position: absolute; left: 0; bottom: 0; width: 100%; height: 24.375%; overflow: hidden; }
 .preview-footer text { font-family: inherit; }
 .overview-heading { margin: 0 0 16px; }
 .status-card { position: relative; padding-left: 56px; }

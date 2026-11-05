@@ -242,12 +242,13 @@ void AudioPlayer::applyProcessingSettings(const AppConfig& config, const PlayerS
   const VolumeMath::Curve curve = config.volumeCurve == "linear" ? VolumeMath::Curve::Linear :
       config.volumeCurve == "log" ? VolumeMath::Curve::Log : VolumeMath::Curve::Soft;
   // The project keeps the driver's SR_ORIGIN output (no forced resampling), so
-  // getSampleRate() also describes the post-EQ I2S callback. Compensate only the
+  // getSampleRate() also describes the sent I2S samples. Compensate only the
   // common volume law, never EQ/balance, keeping the music display useful at
   // normal listening volume without changing any playback samples.
   AudioSpectrum::instance().setEnabled(config.displayFooterModeId == DisplayFooterMode::Spectrum &&
                                        state.playing && state.volume > 0 && audio.isRunning(),
-                                       audio.getSampleRate(), VolumeMath::gainDb(state.volume, curve));
+                                       audio.getSampleRate(), VolumeMath::gainDb(state.volume, curve),
+                                       static_cast<uint32_t>(audio.settings.DMA_DESC_NUM) * audio.settings.DMA_FRAME_NUM);
 
   bool iirNeeded = state.eqLow != 0 || state.eqMid != 0 || state.eqHigh != 0;
   if (iirNeeded != lastIirProcessing) {

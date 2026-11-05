@@ -1,5 +1,4 @@
 #include "audio_meter.h"
-#include "audio_spectrum.h"
 
 #include <freertos/FreeRTOS.h>
 #include <freertos/portmacro.h>
@@ -88,8 +87,5 @@ void audio_process_raw_samples(int32_t* outBuff, int16_t validSamples) {
   AudioMeter::instance().updateFromSamples(outBuff, validSamples);
 }
 
-void audio_process_i2s(int32_t* outBuff, int16_t validSamples, bool* continueI2S) {
-  // Read-only post-EQ tap. Never modify the output or stop the I2S transfer.
-  (void)continueI2S;
-  AudioSpectrum::instance().capture(outBuff, validSamples);
-}
+// Spectrum observes the actual I2S DMA output in audio_output.cpp. The decoder's
+// pre-write callback is deliberately left to the library's no-op default.

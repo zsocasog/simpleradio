@@ -418,7 +418,7 @@
       '<div id="layoutPreviewScreen" class="lcd-preview" role="img" aria-labelledby="layoutPreviewLabel layoutPreviewMode">' +
       '<div id="layoutPreviewArt" class="preview-art" aria-hidden="true"></div>' +
       '<div id="layoutPreviewInfo" class="preview-info" data-user-content><strong id="layoutPreviewTitle" class="preview-title"></strong><span id="layoutPreviewArtist" class="preview-artist"></span></div>' +
-      '<svg id="layoutPreviewFooter" class="preview-footer" viewBox="0 252 480 68" aria-hidden="true"></svg></div>' +
+      '<svg id="layoutPreviewFooter" class="preview-footer" viewBox="0 242 480 78" aria-hidden="true"></svg></div>' +
       '<span id="layoutPreviewMode" class="visually-hidden"></span>';
     artworkSection.querySelector("header").after(preview);
     // Reuse displayed artwork; the static preview needs no audio samples or artwork search.
@@ -575,6 +575,10 @@
     visible(id("layoutPreviewArtist"), !!artist);
     id("layoutPreviewMode").textContent = label;
     // Coordinates mirror display.cpp's 480x320 player and 24-column meter grid.
+    const meterTop = 246, meterBottom = 311;
+    const meterAxis = Math.floor((meterTop + meterBottom) / 2);
+    const meterHalfHeight = Math.floor((meterBottom - meterTop) / 2);
+    const meterBaseline = meterBottom, meterHeight = meterBaseline - meterTop;
     const rect = (x, y, width, height, color = "currentColor", radius = 3) =>
       `<rect x="${x}" y="${y}" width="${width}" height="${height}" rx="${radius}" fill="${color}"/>`;
     const text = (value, x, y, size, color = "currentColor", anchor = "middle", maxWidth = 436) => {
@@ -591,21 +595,23 @@
         const classic = !spectrum && style === "classic";
         const distance = i < 12 ? 11 - i : i - 12;
         const shapeIndex = i < 12 ? 11 - i : i;
-        const height = classic ? 6 + Math.floor(signatureShape[shapeIndex] * 19 / 255) : Math.round(heights[i] * (symmetric && !spectrum ? 25 / 42 : 1));
-        const axis = symmetric ? 292 : 307;
+        const classicMin = Math.max(4, Math.floor(meterHalfHeight / 4));
+        const height = classic ? classicMin + Math.floor(signatureShape[shapeIndex] * (meterHalfHeight - classicMin) / 255) :
+          Math.round(heights[i] * (spectrum ? meterHalfHeight / 25 : symmetric ? meterHalfHeight / 42 : meterHeight / 42));
+        const axis = symmetric ? meterAxis : meterBaseline;
         if (classic && distance >= (i < 12 ? 8 : 9)) continue;
         drawing += rect(51 + i * 16, axis - height, 9, symmetric ? height * 2 + 1 : height);
       }
     } else if (mode === "volume") {
       const fillUnits = Math.floor((volume * 24 * 256 + 50) / 100);
       signatureShape.forEach((shape, i) => {
-        const ghost = Math.max(2, Math.floor(shape * 25 / (255 * 3)));
-        drawing += rect(51 + i * 16, 292 - ghost, 9, ghost * 2 + 1, "var(--line)");
+        const ghost = Math.max(2, Math.floor(shape * meterHalfHeight / (255 * 3)));
+        drawing += rect(51 + i * 16, meterAxis - ghost, 9, ghost * 2 + 1, "var(--line)");
         const fill = Math.min(256, fillUnits - i * 256);
         if (fill <= 0) return;
-        const target = Math.max(2, Math.floor(Math.max(76, Math.min(246, shape)) * 25 / 255));
+        const target = Math.max(2, Math.floor(Math.max(76, Math.min(246, shape)) * meterHalfHeight / 255));
         const height = Math.max(2, Math.floor(target * fill / 256));
-        drawing += rect(51 + i * 16, 292 - height, 9, height * 2 + 1);
+        drawing += rect(51 + i * 16, meterAxis - height, 9, height * 2 + 1);
       });
     } else if (mode === "station") {
       drawing = text(state.station || "SimpleRadio", 240, 292, 20);
