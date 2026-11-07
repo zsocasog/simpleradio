@@ -1,6 +1,42 @@
 #pragma once
 
+#include <stdint.h>
+
 namespace AlbumSearchPolicy {
+constexpr uint32_t LOOKUP_BUDGET_MS = 35000;
+constexpr uint32_t IMAGE_BUDGET_MS = 12000;
+constexpr uint32_t PROVIDER_BUDGET_MS = 12000;
+constexpr uint32_t MIN_PROVIDER_BUDGET_MS = 3000;
+// Metadata cannot borrow the final image window, even inside one provider.
+// A slow provider also leaves time for a different source. Unsigned elapsed
+// time keeps both windows correct when millis() wraps.
+class Budget {
+public:
+  constexpr explicit Budget(uint32_t started) : started_(started) {}
+  constexpr uint32_t metadataRemaining(uint32_t now) const {
+    return remaining(now, LOOKUP_BUDGET_MS - IMAGE_BUDGET_MS);
+  }
+  constexpr uint32_t imageRemaining(uint32_t now) const {
+    return remaining(now, LOOKUP_BUDGET_MS);
+  }
+  constexpr uint32_t metadataDeadline(uint32_t now) const {
+    return now + metadataRemaining(now);
+  }
+  constexpr bool canStartProvider(uint32_t now) const {
+    return metadataRemaining(now) >= MIN_PROVIDER_BUDGET_MS;
+  }
+  constexpr uint32_t providerDeadline(uint32_t now) const {
+    const uint32_t left = metadataRemaining(now);
+    return now + (left < PROVIDER_BUDGET_MS ? left : PROVIDER_BUDGET_MS);
+  }
+private:
+  constexpr uint32_t remaining(uint32_t now, uint32_t limit) const {
+    const uint32_t elapsed = now - started_;
+    return elapsed >= limit ? 0 : limit - elapsed;
+  }
+  uint32_t started_;
+};
+
 // One song owns one round. A 503 postpones every further MusicBrainz API
 // request until the other providers finish; the final pass gets ONE request.
 class MusicBrainzRound {

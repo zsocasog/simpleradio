@@ -47,3 +47,11 @@ static_assert(protectedSubtitle("boom remix"));
 static_assert(protectedSubtitle("boom instrumental demo"));
 static_assert(protectedSubtitle("part ii"));
 static_assert(protectedSubtitle("take 2"));
+
+static_assert(splitSubtitle("Around the World (La La La La La) [Radio Version]").subtitle == "(La La La La La)");
+static_assert(splitSubtitle("Around the World (La La) (radio edit)").subtitle == "(La La)");
+static_assert(splitSubtitle("Around the World (La La) [Live] [Radio Version]").subtitle == "(La La) [Live]");
+static_assert(splitSubtitle("Around the World (La La) [Extended Version]").subtitle == "(La La) [Extended Version]");
+static_assert(!splitSubtitle("Around the World (Live [Radio Version]").valid);
+static_assert(splitSubtitle("Around the World (La La) [Radio Version] Live").valid == false);
+static_assert(ArtworkTitleMatch::withoutStandardVersions("Song [Radio Version] [Album Version]") == "Song");

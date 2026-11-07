@@ -1,5 +1,6 @@
 /* Unified layout. Colors remain firmware-backed theme variables set by app.js. */
 [hidden], .hidden { display: none !important; }
+html { scrollbar-gutter: stable; }
 body { background: var(--bg); font-size: 17px; }
 .app-shell { min-height: 100vh; display: flex; flex-direction: column; }
 .ui-icon { width: 21px; height: 21px; flex: 0 0 auto; fill: none; stroke: currentColor; vertical-align: middle; }
@@ -19,7 +20,7 @@ button.primary:hover { background: var(--accent-strong); border-color: var(--acc
 .quiet-button, .ghost-btn { background: transparent; border-color: var(--line); color: var(--text); }
 .ui-icon-button { display: inline-flex; align-items: center; justify-content: center; min-width: 42px; min-height: 42px; padding: 9px; background: transparent; border: 1px solid var(--line); border-radius: 50%; color: var(--text); cursor: pointer; }
 .ui-icon-button > span { display: none; }
-.topbar { min-height: 78px; background: var(--chrome); box-shadow: none; gap: 24px; padding: 14px 26px; }
+.topbar { position: sticky; top: 0; min-height: 78px; background: var(--chrome); box-shadow: none; gap: 24px; padding: 14px 26px; }
 .brand { width: 220px; flex: 0 0 220px; }
 .brand-mark { width: 42px; height: 42px; }
 .brand small { max-width: 165px; }
@@ -254,8 +255,9 @@ body[data-view=player] .station-playing:not([hidden]) .station-activity-bar { an
 .schedule-row .setting-range input { min-width: 50px; }
 .layout-preview { margin: 0 0 24px; }
 .layout-preview > small { display: block; margin-bottom: 8px; }
-.lcd-preview { position: relative; container-type: inline-size; width: 100%; aspect-ratio: 480 / 320; overflow: hidden; border: 1px solid var(--line-soft); border-radius: 8px; background: var(--bg); color: var(--accent); }
-.lcd-preview.is-inverted { filter: invert(1); }
+.lcd-preview { --bg: #000000; --text: #e8f6e2; --muted: #697a70; --line: #1a221e; --accent: var(--lcd-accent, var(--accent-strong)); --logo-mat: var(--bg); position: relative; container-type: inline-size; width: 100%; aspect-ratio: 480 / 320; overflow: hidden; border: 1px solid var(--line-soft); border-radius: 8px; background: var(--bg); color: var(--accent); }
+/* Match display.cpp's light palette, preserving the image and theme accent. */
+.lcd-preview.is-inverted { --bg: #ecf1ea; --text: #090c0b; --muted: #4f5b54; --line: #a0aea4; }
 .preview-art { position: absolute; left: 4.5833%; top: 16.25%; width: 36.6667%; aspect-ratio: 1; display: flex; align-items: center; justify-content: center; overflow: hidden; border: 1px solid var(--accent); border-radius: 1.04cqw; background: var(--logo-mat) center / contain no-repeat; color: var(--accent); font-size: 7cqw; font-weight: 600; }
 .preview-art.is-album { background-size: cover; }
 .preview-info { position: absolute; left: 44.5833%; top: 11.25%; width: 50.8333%; height: 61.875%; display: flex; flex-direction: column; justify-content: center; gap: 1.67cqw; }
@@ -389,7 +391,12 @@ body[data-view=player] .station-playing:not([hidden]) .station-activity-bar { an
 .volume-pattern { display: flex; align-items: center; justify-content: space-between; position: absolute; top: 8px; left: 0; right: 0; height: 36px; pointer-events: none; }
 .volume-pill { display: block; position: relative; flex: 0 0 4px; width: 4px; overflow: hidden; border-radius: 999px; background: var(--line); }
 .volume-pill::after { content: ''; position: absolute; left: 0; top: 0; width: var(--fill, 0%); height: 100%; background: var(--accent); }
-.volume-control-row .signature-volume input[type=range] { position: absolute; inset: 0; width: 100%; min-width: 0; height: 52px; margin: 0; opacity: 0; cursor: pointer; }
+.volume-control-row .signature-volume input[type=range] { appearance: none; -webkit-appearance: none; position: absolute; inset: 0; width: 100%; min-width: 0; height: 52px; margin: 0; padding: 0; border: 0; opacity: 0; cursor: pointer; }
+/* A zero-width invisible thumb makes the native click value match the wave's
+   full 0..100% width and its hover prediction in both browser engines. */
+.signature-volume input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 0; height: 0; border: 0; }
+.signature-volume input[type=range]::-moz-range-thumb { width: 0; height: 0; border: 0; }
+.volume-tooltip { position: absolute; z-index: 5; bottom: calc(100% + 6px); left: var(--hover-position, 50%); transform: translateX(-50%); min-width: 42px; padding: 5px 8px; border: 1px solid var(--line); border-radius: 7px; background: var(--surface); color: var(--accent); font-size: 13px; font-weight: 650; line-height: 1.2; text-align: center; white-space: nowrap; pointer-events: none; }
 .signature-volume input[type=range]:focus-visible { outline: none; }
 .signature-volume:has(input:focus-visible) .volume-pill { box-shadow: 0 0 0 1px var(--accent); }
 /* Small, mutually exclusive update targets and a single file drop area. */

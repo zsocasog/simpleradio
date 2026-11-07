@@ -457,6 +457,23 @@
     U.volumePills = signatureShape.map(height => { const bar = make("span", "volume-pill"); bar.style.height = Math.round(height / 248 * 100) + "%"; pattern.appendChild(bar); return bar; });
     const field = make("span", "signature-volume"); range.before(field); field.append(pattern, range);
     range.setAttribute("aria-label", tr("player.volume", "Hangerő"));
+    const tooltip = make("output", "volume-tooltip"); tooltip.hidden = true;
+    tooltip.setAttribute("aria-hidden", "true"); field.appendChild(tooltip);
+    const hideVolumeHint = () => { tooltip.hidden = true; };
+    const showVolumeHint = event => {
+      if (event.pointerType === "touch") { hideVolumeHint(); return; }
+      const bounds = range.getBoundingClientRect();
+      if (!bounds.width) return;
+      const fraction = Math.max(0, Math.min(1, (event.clientX - bounds.left) / bounds.width));
+      tooltip.textContent = Math.round(fraction * 100) + "%";
+      tooltip.style.setProperty("--hover-position", fraction * 100 + "%");
+      tooltip.hidden = false;
+    };
+    range.addEventListener("pointerenter", showVolumeHint);
+    range.addEventListener("pointermove", showVolumeHint);
+    range.addEventListener("pointerleave", hideVolumeHint);
+    range.addEventListener("pointercancel", hideVolumeHint);
+    range.addEventListener("blur", hideVolumeHint);
     U.restoreVolume = 15;
     try { const saved = Number(localStorage.getItem("simpleradio.lastAudibleVolume")); if (saved > 0 && saved <= 100) U.restoreVolume = saved; } catch (_) {}
   }

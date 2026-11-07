@@ -102,6 +102,12 @@ public:
 protected:
   bool service() {
     if (transfer.service()) return true;
+    // Stream::timedRead() treats read() == -1 as "try again until timeout".
+    // HTTPClient uses that non-virtual loop for headers/chunk sizes. Merely
+    // closing the socket still leaves it spinning for the full 6s timeout
+    // AFTER our deadline or cancellation (12s requests became 18s). Expire
+    // the Stream timeout as well; never return synthetic framing bytes.
+    Stream::setTimeout(0);
     Base::stop();
     return false;
   }

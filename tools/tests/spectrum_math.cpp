@@ -109,13 +109,78 @@ static_assert(SpectrumDynamics::displayLevel(-30, 100) > 80);
 static_assert(SpectrumDynamics::displayLevel(-24, 100) > SpectrumDynamics::displayLevel(-36, 100));
 static_assert(SpectrumDynamics::displayLevel(-24, 50) == SpectrumDynamics::displayLevel(-24, 100) * 0.5f);
 static_assert(SpectrumDynamics::displayLevel(-24, 200) == SpectrumDynamics::displayLevel(-24, 100) * 2);
-static_assert(SpectrumDynamics::visualCorrectionDb(0) == -6);
-static_assert(SpectrumDynamics::visualCorrectionDb(1) == -4);
-static_assert(SpectrumDynamics::visualCorrectionDb(2) == -2);
-static_assert(SpectrumDynamics::visualCorrectionDb(3) == 0);
+static_assert(SpectrumDynamics::visualCorrectionDb(0) == -8);
+static_assert(SpectrumDynamics::visualCorrectionDb(1) > -6.13f && SpectrumDynamics::visualCorrectionDb(1) < -5.87f);
+static_assert(SpectrumDynamics::visualCorrectionDb(2) > -4.09f && SpectrumDynamics::visualCorrectionDb(2) < -3.91f);
+static_assert(SpectrumDynamics::visualCorrectionDb(3) < -2.6f);
+static_assert(SpectrumDynamics::visualCorrectionDb(7) == 0);
+constexpr bool visualTaperIsSmooth() {
+  float previous = SpectrumDynamics::visualCorrectionDb(0);
+  for (size_t band = 1; band < BAND_COUNT; ++band) {
+    const float current = SpectrumDynamics::visualCorrectionDb(band);
+    if (current < previous || current > 0 || current - previous > 2.13f) return false;
+    if (band >= 7 && current != 0) return false;
+    previous = current;
+  }
+  return true;
+}
+static_assert(visualTaperIsSmooth());
 static_assert(SpectrumDynamics::bandDisplayLevel(-14, 0, 100) < SpectrumDynamics::displayLevel(-14, 100));
 static_assert(SpectrumDynamics::bandDisplayLevel(-28, 10, 100) == SpectrumDynamics::displayLevel(-28, 100));
 static_assert(SpectrumDynamics::bandDisplayLevel(-120, 0, 200) == 0);
+static_assert(sizeof(SpectrumDynamics::RhythmBand) == 2 * sizeof(float));
+static_assert(SpectrumDynamics::steadyLevel(100) == 72);
+static_assert(SpectrumDynamics::accentDecayFactor(0) == 1);
+static_assert(SpectrumDynamics::accentDecayFactor(35) > 0.36f && SpectrumDynamics::accentDecayFactor(35) < 0.38f);
+constexpr bool rhythmPreservesHitsWithoutConstantPulsing() {
+  SpectrumDynamics::RhythmBand state;
+  state.update(100, true, true, 1, 0);
+  for (int i = 0; i < 30; ++i) state.update(100, true, false, SpectrumDynamics::accentDecayFactor(33), 0);
+  if (state.accent != 0) return false;
+  state.update(120, true, false, SpectrumDynamics::accentDecayFactor(33), 0);
+  if (state.accent != 45) return false;
+  const float before = state.accent;
+  state.update(120, false, false, SpectrumDynamics::accentDecayFactor(33), 0);
+  if (state.accent >= before || state.previousLevel != 120) return false;
+  state.update(119, true, false, 1, 0);
+  state.update(120, true, false, 1, 0); // A sub-pixel rise is not an accented beat.
+  const float tail = state.accent;
+  state.update(124, true, false, 1, 0); // A small new hit adds to an earlier tail.
+  if (state.accent <= tail) return false;
+  state.update(230, true, true, 1, 0); // A new generation seeds without a false hit.
+  return state.accent == 0 && state.previousLevel == 230;
+}
+static_assert(rhythmPreservesHitsWithoutConstantPulsing());
+constexpr bool rhythmKeepsV1HitStrength() {
+  SpectrumDynamics::RhythmBand small, strong;
+  small.update(100, true, true, 1, 0);
+  strong.update(100, true, true, 1, 0);
+  small.update(108, true, false, 1, 0); // V1's smaller-hit accent is restored.
+  strong.update(120, true, false, 1, 0); // Clear beat retains its old accent 45.
+  return small.accent == 15 && strong.accent == 45;
+}
+static_assert(rhythmKeepsV1HitStrength());
+static_assert(SpectrumDynamics::smallMotionDecayFactor(40) > 0.36f && SpectrumDynamics::smallMotionDecayFactor(40) < 0.38f);
+static_assert(SpectrumDynamics::dampSmallMotion(100, 120, 0.5f) == 120);
+static_assert(SpectrumDynamics::dampSmallMotion(100, 80, 0.5f) == 80);
+static_assert(SpectrumDynamics::dampSmallMotion(100, 102, 0.5f) == 101);
+static_assert(SpectrumDynamics::dampSmallMotion(100, 98, 0.5f) == 99);
+constexpr bool smallChangesSettleWithoutFalseAccents() {
+  SpectrumDynamics::RhythmBand state;
+  const float motion = SpectrumDynamics::smallMotionDecayFactor(33);
+  state.update(100, true, true, 1, motion);
+  for (int i = 0; i < 12; ++i) state.update(102, true, false, 1, motion);
+  if (state.previousLevel < 101.99f || state.accent != 0) return false;
+  const float held = state.previousLevel;
+  state.update(104, false, false, 1, motion);
+  if (state.previousLevel != held) return false;
+  state.update(120, true, false, 1, motion);
+  return state.previousLevel == 120 && state.accent > 39;
+}
+static_assert(smallChangesSettleWithoutFalseAccents());
+static_assert(SpectrumDynamics::smoothRhythmLevel(0, 100, 25) > 63 && SpectrumDynamics::smoothRhythmLevel(0, 100, 25) < 64);
+static_assert(SpectrumDynamics::smoothRhythmLevel(100, 0, 95) > 36 && SpectrumDynamics::smoothRhythmLevel(100, 0, 95) < 37);
+static_assert(SpectrumDynamics::smoothRhythmLevel(0, 0, 33) == 0);
 static_assert(VolumeMath::gainDb(50, VolumeMath::Curve::Soft) == -31);
 static_assert(VolumeMath::gainDb(50, VolumeMath::Curve::Linear) == -30);
 static_assert(VolumeMath::gainDb(50, VolumeMath::Curve::Log) == -45);

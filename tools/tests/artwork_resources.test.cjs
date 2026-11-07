@@ -122,7 +122,7 @@ test('temporary slot contention retries existing bytes only, with bounded wait a
 test('Deezer stops repeated album connections after a transport failure but not a missing album',()=>{
   const part=cache.slice(cache.indexOf('int lookupStatus = 0;'),cache.indexOf('if (lookupOk &&',cache.indexOf('int lookupStatus = 0;')))
     .replace('int lookupStatus = 0;','let lookupStatus=0;').replace('const bool lookupOk','const lookupOk')
-    .replace(/fetchArtworkJson\([^\n]+&lookupStatus\)/,'fetch(code=>lookupStatus=code)');
+    .replace(/fetchArtworkJson\([^\n]+&lookupStatus, requestDeadlineMs\)/,'fetch(code=>lookupStatus=code)');
   const run=new Function('verificationUnavailable','fetch','albumArtTrace',part+';return verificationUnavailable;');
   for(const status of [-1,503,404]){
     let unavailable=false,calls=0;

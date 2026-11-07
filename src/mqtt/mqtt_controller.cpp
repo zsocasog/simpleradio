@@ -20,6 +20,9 @@ static constexpr unsigned long MQTT_RECONNECT_MS = 15000;
 static unsigned long lastConnectAttempt = 0;
 static uint32_t lastPublishedStateRevision = 0;
 static uint32_t lastPublishedStationsRevision = 0;
+static String lastPublishedThemeAccent;
+static String lastPublishedThemeCustomColor;
+static bool statusPublishPending = true;
 static String lastMqttHost;
 static uint16_t lastMqttPort = 0;
 static String lastMqttRoot;
@@ -261,7 +264,10 @@ static void onMessage(char* topicName, uint8_t* payload, unsigned int length) {
 
   if (String(topicName) == "homeassistant/status") {
     command.trim();
-    if (command == "online") discoveryPublished = false;
+    if (command == "online") {
+      discoveryPublished = false;
+      statusPublishPending = true;
+    }
     return;
   }
 
@@ -350,6 +356,7 @@ void MqttController::loop() {
     }
 
     if (mqtt.connected()) {
+      statusPublishPending = true;
       mqtt.subscribe(topic("command").c_str());
       mqtt.subscribe("homeassistant/status");
       mqtt.publish(availabilityTopic.c_str(), "online", true);
@@ -366,13 +373,19 @@ void MqttController::loop() {
   }
 
   uint32_t stateRevision = PlayerState::instance().revision();
-  if (stateRevision != lastPublishedStateRevision) {
+  if (mqtt.connected() && (statusPublishPending || stateRevision != lastPublishedStateRevision ||
+      config.themeAccent != lastPublishedThemeAccent ||
+      config.themeCustomColor != lastPublishedThemeCustomColor)) {
     PlayerStateSnapshot snapshot = PlayerState::instance().snapshot();
     String stateJson = PlayerState::instance().toJson();
-    mqtt.publish(topic("status").c_str(), stateJson.c_str(), true);
+    if (mqtt.publish(topic("status").c_str(), stateJson.c_str(), true)) {
+      lastPublishedStateRevision = stateRevision;
+      lastPublishedThemeAccent = config.themeAccent;
+      lastPublishedThemeCustomColor = config.themeCustomColor;
+      statusPublishPending = false;
+    }
     mqtt.publish(topic("volume").c_str(), String(snapshot.volume).c_str(), true);
     mqtt.publish(topic("balance").c_str(), String(snapshot.balance).c_str(), true);
-    lastPublishedStateRevision = stateRevision;
   }
 
   uint32_t stationsRevision = StationManager::instance().revision();

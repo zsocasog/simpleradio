@@ -33,10 +33,44 @@ struct TitleParts {
   bool valid = true;
 };
 
+constexpr bool standardVersion(std::string_view text) {
+  text = trim(text);
+  for (const char* version : {"radio version", "radio edit", "album version", "album edit",
+                             "single version", "single edit", "original mix",
+                             "clean version", "explicit version"}) {
+    const std::string_view expected(version);
+    if (text.size() != expected.size()) continue;
+    bool equal = true;
+    for (size_t i = 0; i < text.size(); ++i) {
+      const char lower = text[i] >= 'A' && text[i] <= 'Z' ? text[i] + ('a' - 'A') : text[i];
+      if (lower != expected[i]) { equal = false; break; }
+    }
+    if (equal) return true;
+  }
+  return false;
+}
+
+// A store can append [Radio Version] AFTER the actual subtitle. Ignore only
+// complete, explicitly safe trailing groups; never erase a live/remix marker
+// hidden in an earlier group, or an arbitrary annotation containing "version".
+constexpr std::string_view withoutStandardVersions(std::string_view text) {
+  text = trim(text);
+  for (size_t count = 0; count < 4 && !text.empty(); ++count) {
+    const char close = text.back();
+    if (close != ')' && close != ']') break;
+    const char open = close == ')' ? '(' : '[';
+    const size_t at = text.find_last_of(open);
+    if (at == std::string_view::npos || !at || text[at - 1] != ' ' ||
+        !standardVersion(text.substr(at + 1, text.size() - at - 2))) break;
+    text = trim(text.substr(0, at));
+  }
+  return text;
+}
+
 // Only trailing balanced (...) / [...] groups can be optional. Never truncate
 // unbracketed words ("Diamond Eyes Theme") or text after a closing bracket.
 constexpr TitleParts splitSubtitle(std::string_view text) {
-  text = trim(text);
+  text = withoutStandardVersions(text);
   size_t first = text.size();
   for (size_t i = 1; i < text.size(); ++i) {
     if ((text[i] == '(' || text[i] == '[') && (text[i - 1] == ' ' || text[i - 1] == '\t')) { first = i; break; }

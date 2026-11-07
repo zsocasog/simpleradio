@@ -54,12 +54,15 @@ const functions = [
   ["bandPowers", "transformed, sampleRate, windowEnergy"],
   ["cachedBandPowers", "transformed, plan, windowEnergy"],
   ["smoothLevel", "current, target, elapsedMs"],
+  ["usableFrame", "active, now, capturedMs"],
 ].map(([name, args]) => `function ${name}(${args}) ${translate(body(math, name))}`).join("\n");
 const rangeBody = translate(body(math, "binsForBand"))
   .replace(/return \{([^,{}]*),([^{}]*)\}/g, "return { first: $1, last: $2 }")
   .replace(/return \{\}/g, "return { first: 1, last: 0 }");
 const configureBody = translate(body(math, "configure"))
   .replace(/\b(sampleRate|ranges|weights)\b/g, 'this.$1');
+const rhythmUpdate = translate(body(dynamics, "update"))
+  .replace(/\b(previousLevel|accent)\b/g, 'this.$1');
 const production = vm.runInNewContext(`
   ${constants}
   const ERB_KNOTS_HZ = [${knots}], HEIGHT = [${heights}];
@@ -69,6 +72,16 @@ const production = vm.runInNewContext(`
   function displayLevel(measuredDb, sensitivity) ${translate(body(dynamics, "displayLevel")).replace(/\bSILENCE_DB\b/g, "DISPLAY_SILENCE_DB")}
   function visualCorrectionDb(band) ${translate(body(dynamics, "visualCorrectionDb"))}
   function bandDisplayLevel(measuredDb, band, sensitivity) ${translate(body(dynamics, "bandDisplayLevel"))}
+  function steadyLevel(level) ${translate(body(dynamics, "steadyLevel"))}
+  function accentDecayFactor(elapsedMs) ${translate(body(dynamics, "accentDecayFactor"))}
+  function smallMotionDecayFactor(elapsedMs) ${translate(body(dynamics, "smallMotionDecayFactor"))}
+  function dampSmallMotion(current, target, decay) ${translate(body(dynamics, "dampSmallMotion"))}
+  function rhythmicDisplayLevel(steady, accent, sensitivity) ${translate(body(dynamics, "rhythmicDisplayLevel"))}
+  function smoothRhythmLevel(current, target, elapsedMs) ${translate(body(dynamics, "smoothRhythmLevel"))}
+  class RhythmBand {
+    constructor(){ this.previousLevel=0; this.accent=0; }
+    update(level, newMeasurement, initialize, decay, motionDecay) ${rhythmUpdate}
+  }
   function binsForBand(band, sampleRate) ${rangeBody}
   function gainDb(volume, curve) ${translate(body(read("src/audio/volume_math.h"), "gainDb"))}
   function powerDb(power, playbackGainDb = 0) ${translate(body(read("src/audio/audio_spectrum.cpp"), "powerDb"))}
@@ -79,7 +92,8 @@ const production = vm.runInNewContext(`
     configure(rate) ${configureBody}
   }
   ({ POINT_COUNT, BAND_COUNT, ERB_KNOTS_HZ, prepareFrame, bandPowers, cachedBandPowers, BandPlan,
-     bandForFrequency, bandCenterHz, binBandWeight, displayLevel, bandDisplayLevel, smoothLevel, gainDb, powerDb, Curve });
+     bandForFrequency, bandCenterHz, binBandWeight, displayLevel, visualCorrectionDb, bandDisplayLevel, smoothLevel, gainDb, powerDb, Curve,
+     steadyLevel, accentDecayFactor, smallMotionDecayFactor, dampSmallMotion, rhythmicDisplayLevel, smoothRhythmLevel, RhythmBand, usableFrame, clamp, FRAME_HOLD_MS });
 `);
 
 const N = production.POINT_COUNT;
@@ -309,15 +323,38 @@ test("the ERB plan uses external RAM and leaves capture, display dynamics and FF
   assert.doesNotMatch(body(analyzer,'capture'),/BandPlan|configure|binBandWeight|log10|malloc/);
 });
 
-test("the user's logged bass levels fall to about 56/56/44 percent at 100% sensitivity", () => {
+test("the user's logged bass levels fall to about 51/51/40 percent at 100% sensitivity", () => {
   const first=production.bandDisplayLevel(-14.6,0,100)/255;
   const second=production.bandDisplayLevel(-16.6,1,100)/255;
   const third=production.bandDisplayLevel(-22.9,2,100)/255;
-  assert.ok(first>0.55 && first<0.58);
-  assert.ok(second>0.55 && second<0.58);
-  assert.ok(third>0.43 && third<0.46);
-  for(let band=3;band<24;++band) for(const db of [-55,-40,-28,-12,-6]) {
+  assert.ok(first>0.50 && first<0.52);
+  assert.ok(second>0.50 && second<0.52);
+  assert.ok(third>0.39 && third<0.41);
+  for(let band=7;band<24;++band) for(const db of [-55,-40,-28,-12,-6]) {
     assert.equal(production.bandDisplayLevel(db,band,100),production.displayLevel(db,100));
+  }
+});
+
+test("visual bass taper has no three-bar step and smoothly reaches the unchanged mid/high scale", () => {
+  const corrections=Array.from({length:24},(_,band)=>production.visualCorrectionDb(band));
+  assert.equal(corrections[0],-8);
+  assert.ok(Math.abs(corrections[1]+6)<0.13);
+  assert.ok(Math.abs(corrections[2]+4)<0.09);
+  for(let band=1;band<24;++band){
+    assert.ok(corrections[band]>=corrections[band-1]);
+    assert.ok(corrections[band]-corrections[band-1]<2.13);
+    if(band>=7) assert.equal(corrections[band],0);
+  }
+  // Equal neighboring input levels expose the previous artificial ledge.
+  // Test the actual nonlinear display curve across the usable input range.
+  for(const sensitivity of [50,100,150,200]) for(const db of [-55,-40,-30,-24,-18,-12,-6]){
+    const third=production.bandDisplayLevel(db,2,sensitivity);
+    const fourth=production.bandDisplayLevel(db,3,sensitivity);
+    const oldThird=production.displayLevel(db-4,sensitivity);
+    const oldFourth=production.displayLevel(db,sensitivity);
+    assert.ok(fourth>=third);
+    assert.ok(fourth-third<=oldFourth-oldThird+1e-9);
+    if(sensitivity===100) assert.ok(fourth-third<255*0.05);
   }
 });
 

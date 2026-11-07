@@ -53,7 +53,7 @@ Add a dashboard resource. Use a versioned URL so the browser cannot keep serving
 an older cached card script:
 
 ```yaml
-url: /local/simple-radio-card.js?v=12
+url: /local/simple-radio-card.js?v=13
 type: module
 ```
 
@@ -94,7 +94,7 @@ Home Assistant over HTTPS, the browser must also be able to load the image URL
 If you see an error such as `extra keys not allowed @ data['target']`, Home
 Assistant is still running an older cached card version. The `v2` card type and
 the versioned resource URL are there specifically to avoid that. Increase the
-query-string version after replacing the card file, for example `?v=12`.
+query-string version after replacing the card file, for example `?v=13`.
 
 ## Manual MQTT test
 
@@ -166,7 +166,7 @@ automatikusan közzéteszi a discovery-adatokat. A kártya telepítéséhez más
 add hozzá erőforrásként, például:
 
 ```yaml
-url: /local/simple-radio-card.js?v=12
+url: /local/simple-radio-card.js?v=13
 type: module
 ```
 
@@ -181,3 +181,25 @@ a képet, a lista újraépítése nélkül.
 
 Ha frissítés után régi felület jelenik meg, növeld az URL végén a `?v=` értéket,
 majd töltsd újra a dashboardot.
+
+### Kijelző és kártya színszinkronja
+
+A kártya konfigurációjában opcionálisan bekapcsolható:
+
+```yaml
+sync_theme: true
+```
+
+A kártya kiemelőszínei (lejátszásgomb, hangerőcsúszka, állomásszámok,
+kijelölések és a háttér színezése) a rádió elmentett kijelzőtémáját követik.
+Az összes beépített téma és a teljes, hatjegyű hexadecimális egyedi szín
+támogatott. A gombikonok kontrasztja automatikusan igazodik a színhez.
+Kihagyva vagy `false` értékkel a kártya a megszokott Home Assistant színeket
+használja. Más kártyák színe nem változik.
+
+Ehhez a témamezőket továbbító firmware-t is fel kell tölteni a rádióra,
+valamint frissíteni kell a HA kártyafájlt és annak erőforrás-URL-jét (`?v=13`).
+Új entitás vagy MQTT discovery-beállítás nem szükséges: a `station_entity`
+attribútumai között érkezik a `themeAccent` és a `themeCustomColor`.
+A mentett témaváltás leállított lejátszásnál is továbbításra kerül MQTT-n.
+Régebbi firmware vagy hiányzó témaadat esetén a HA alapértelmezett színe marad.

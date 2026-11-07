@@ -70,3 +70,8 @@ constexpr bool malformedSegmentsAreBounded() {
   return true;
 }
 static_assert(malformedSegmentsAreBounded());
+
+// Exact RAM figures from the reported PNG failure: retain the PNG guard,
+// while the same source's JPEG rendition fits the existing JPEG reserve.
+static_assert(!internalReady(Format::Png, 31388, 10228));
+static_assert(internalReady(Format::Jpeg, 31388, 10228));

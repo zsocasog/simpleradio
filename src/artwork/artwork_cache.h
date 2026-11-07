@@ -68,6 +68,11 @@ private:
   struct AlbumArtworkSearch {
     AlbumSearchPolicy::MusicBrainzRound musicBrainz;
     bool retryReleaseGroup = false;
+    // Per-song identity proof, never a guessed acronym or a global alias map.
+    String artistMbid;
+    std::vector<String> artistAliases;
+    bool artistIdentityAmbiguous = false;
+    bool artistAliasLookupAttempted = false;
     struct DeferredAlbum {
       String mbid;
       String artist;

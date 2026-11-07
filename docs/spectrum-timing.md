@@ -1,5 +1,87 @@
 # Spektrum: mérés és mozgás
 
+## Jelenlegi próba: rhythm v6, nyugodtabb teljes oszlop
+
+Az ERB-felosztás, a nyers mérés, a hangkimeneti óra és a mélykorrekció
+megmarad. A teljes látható magasság, tehát a ritmuskiemelés is, egységesen
+25 ms-os exponenciális felfutást és 95 ms-os lecsengést kap mind a 24 sávon.
+Nincs nagy változásra nyíló kerülőút, új képkockapuffer vagy csúcstartás.
+A korábbi v5 20/35 ms-os beállítása túl gyors maradt: 33 ms alatt az esés
+61%-a megtörtént; az újban csak kb. 29%-a. A felfutás továbbra is gyors.
+
+Visszakerestük a hibrid próba mozgás v2/v3 megoldását is. Az legfeljebb
+60 ms-mal simította a kis emelkedéseket és kerekítési hiszterézist használt,
+de a nagy ugrások és az esések nagyrészt átmentek rajta. A mostani, külön
+ritmuskiemelést is tartalmazó láncra ez önmagában nem elég; ezért az egész
+magasságot kell kezelni. A pufferelt, köztes törlés nélküli oszloprajzolás
+megmarad. A háttér közvetlen kitöltése 65 grafikai hívást vált ki oszloponként;
+a pixeltesztek azonos képet és színsorrendet igazolnak. Ennek valós időnyereségét
+a készüléken kell mérni. A hagyományos VU módok változatlanok.
+
+Az azonos 24 másodperces telefonfelvétel egyszeri csúcsnormalizálással
+feldolgozott hangján a szomszédos képkockák abszolút magasságváltozásainak
+összege v5-höz képest kb. 29%-kal kisebb (34159 helyett 24207). Mind a
+24 sávon kisebb lett ez az érték. Ez offline összevetés a mikrofonhanggal,
+nem az LCD eredeti digitális bemenete és nem szubjektív minőségszázalék.
+
+A 44,1/48 kHz-es, 125/250 ms-onkénti erős/halk váltott ütések próbájában
+mind a 19 korábban legalább két félmagassági pixeles halkabb ütés látható
+maradt. Az öt, korábban csupán egy pixeles határeset viszont összeolvadt.
+Az egyenletes alap fölötti halk dob az első oszlopban alig mozdulhat, míg a
+második/harmadik oszlopban megmarad a két teljes pixeles kontraszt. Ezek
+valós korlátok: a csillapítás csökkenti a nagyon halk, sűrű részleteket is.
+A tesztek ezt külön jelentik; nem állítják, hogy minden korábbi csúcs megmarad.
+
+Ismételhető vizsgálat: `node tools/spectrum_rhythm_audit.cjs`. A próbák a
+termelési Q31/Hann/FFT/ERB képleteket és LCD-frissítő függvényt futtatják.
+A készüléken érzett változás további meghallgatást/megfigyelést igényel.
+**Csak firmware szükséges, a data nem változott.**
+
+## Naplózás
+
+A `src/config/diagnostics.h` alapbeállítása:
+- `SIMPLE_RADIO_SPECTRUM_DIAGNOSTICS=0`: nincs ötmásodpercenkénti PCM,
+  sávonkénti dB-, FFT-, szinkron- és DMA-jelentés. A rövid indulási információk
+  és a hibák megmaradnak. A beállítást jelző rhythm v6 sor csak egyszer jelenik
+  meg indulás után, nem minden szám-, képernyő- vagy borítóváltáskor.
+- `SIMPLE_RADIO_ALBUM_ART_DETAILS=1`: a borító hibakeresése egyelőre részletes.
+  Később 0-ra állítva csak a keresés indulása, eredménye és leállási oka marad.
+  A szolgáltatói találatok és részidők már most is ebben a kapcsolható ágban vannak.
+
+A naplóíró továbbra is elkülönítve, korlátozott sorral működik. A lezárt soros
+monitorra a hang és a kijelző nem vár. Részletes diagnosztika szükség esetén
+fordítási kapcsolóval visszakapcsolható; könyvtárfrissítés nem történt.
+
+## ERB: fokozatos mélykorrekció, törés nélkül
+
+A `bass taper v3 -8..0dB over 8 bars` azonosító az induló ERB-sor végén
+jelzi ezt a próbát. A korábbi −8/−6/−4/0 dB korrekció a harmadik és negyedik
+oszlop között 4 dB-es lépcsőt hozott létre. Az új görbe az ERB-tengely mentén
+fokozatosan, négyzetes lefutással közelíti meg a változatlan közép/magas skálát.
+
+| Oszlop | Középfrekvencia | Képi korrekció |
+| --- | --- | --- |
+| 1 | 67 Hz | −8,00 dB |
+| 2 | 122 Hz | −5,88 dB |
+| 3 | 188 Hz | −4,08 dB |
+| 4 | 266 Hz | −2,61 dB |
+| 5 | 358 Hz | −1,47 dB |
+| 6 | 469 Hz | −0,65 dB |
+| 7 | 599 Hz | −0,16 dB |
+| 8–24 | 754 Hz-től | 0 dB |
+
+Az első három oszlop visszafogása 0,13 dB-en belül megmarad. A harmadik és
+negyedik között már csak kb. 1,47 dB az eltérés. A görbe nem átlagolja össze
+a szomszédos oszlopokat, és nem késlelteti a mozgást. Mindegyik a saját mért
+sávenergiáját követi. Nincs új AGC vagy dinamikus erősítés.
+
+A nyers `bands-dB` naplósor ezt a korrekciót nem tartalmazza. Ez kizárólag képi
+súlyozás; nem dobütés-felismerés, és a kitartott mély hangokat sem távolítja el.
+
+Ez a statikus görbe önmagában csak a magasságra alakítást változtatja meg.
+Az erre épülő ritmuskiemelést a fenti rész írja le. A hosszú LCD-rajzolási
+szünetek külön vizsgálandók.
+
 ## Belsőmemória-tartalék a borítókereséshez
 
 A valós adókkal végzett próba ismételt `task stack unavailable` üzenetet

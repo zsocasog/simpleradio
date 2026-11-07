@@ -311,6 +311,7 @@ function applyThemeAccent(theme) {
   const root = document.documentElement;
   root.style.setProperty("--accent", preset.accent);
   root.style.setProperty("--accent-strong", preset.strong);
+  root.style.setProperty("--lcd-accent", normalized === "custom" ? customColor : preset.strong);
   root.style.setProperty("--accent-rgb", preset.accentRgb);
   root.style.setProperty("--accent-strong-rgb", preset.strongRgb);
   if ($("themeAccent") && $("themeAccent").value !== normalized) $("themeAccent").value = normalized;

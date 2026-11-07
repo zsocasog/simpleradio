@@ -7,6 +7,7 @@ class SimpleRadioCard extends HTMLElement {
     this.config = {
       command_topic: "simpleradio/command",
       show_stations: true,
+      sync_theme: false,
       ...config
     };
     this._rendered = false;
@@ -31,6 +32,39 @@ class SimpleRadioCard extends HTMLElement {
 
   entity(id) {
     return id ? this._hass?.states?.[id] : undefined;
+  }
+
+  themeColor() {
+    if (this.config.sync_theme !== true) return "";
+    const attrs = this.entity(this.config.station_entity)?.attributes || {};
+    // Match the LCD accent palette, including the legacy ruby name.
+    const colors = {
+      green: "#69e58d", amber: "#dca84f", blue: "#5d8df0",
+      cyan: "#42c8d8", red: "#f20202", ruby: "#f20202"
+    };
+    if (attrs.themeAccent === "custom") {
+      const color = String(attrs.themeCustomColor || "").trim();
+      return /^#[0-9a-f]{6}$/i.test(color) ? color : "";
+    }
+    return Object.hasOwn(colors, attrs.themeAccent) ? colors[attrs.themeAccent] : "";
+  }
+
+  updateTheme() {
+    const card = this.querySelector("ha-card");
+    if (!card) return;
+    const color = this.themeColor();
+    if (!color) {
+      card.style.removeProperty("--primary-color");
+      card.style.removeProperty("--text-primary-color");
+      return;
+    }
+    card.style.setProperty("--primary-color", color);
+    const channels = [1, 3, 5].map((offset) => {
+      const value = parseInt(color.slice(offset, offset + 2), 16) / 255;
+      return value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4;
+    });
+    const luminance = channels[0] * 0.2126 + channels[1] * 0.7152 + channels[2] * 0.0722;
+    card.style.setProperty("--text-primary-color", luminance > 0.179 ? "#000000" : "#ffffff");
   }
 
   escape(value) {
@@ -285,6 +319,7 @@ class SimpleRadioCard extends HTMLElement {
     const state = this.captureInteractiveState();
     const model = this.currentViewModel();
 
+    this.updateTheme();
     this.updateArtwork();
 
     this.updateText(".sr-status-text", model.statusText);
@@ -780,6 +815,7 @@ class SimpleRadioCard extends HTMLElement {
 
     this.attachStationRowHandlers();
     this.updateStationArtwork();
+    this.updateTheme();
     this.updateArtwork();
     this.restoreInteractiveState(interactiveState);
     this._rendered = true;

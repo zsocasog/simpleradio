@@ -1,4 +1,5 @@
 #include "player_state.h"
+#include "../config/app_config.h"
 #include "../stations/station_manager.h"
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
@@ -388,6 +389,8 @@ String PlayerState::toJson() const {
   doc["albumArtworkPath"] = s.albumArtworkPath;
   doc["embeddedArtworkKey"] = s.embeddedArtworkKey;
   doc["hasStreamImage"] = s.hasStreamImage;
+  doc["themeAccent"] = AppConfig::instance().themeAccent;
+  doc["themeCustomColor"] = AppConfig::instance().themeCustomColor;
 
   String out;
   serializeJson(doc, out);

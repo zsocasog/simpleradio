@@ -198,6 +198,10 @@ static const LcdFont* currentUiFont = &kLcdFontSmall;
 static uint8_t vuBars[VU_BAR_COUNT] = {0};
 static uint8_t renderedVuBars[VU_BAR_COUNT] = {0};
 static std::array<float, SpectrumMath::BAND_COUNT> spectrumEnvelope{};
+static std::array<SpectrumDynamics::RhythmBand, SpectrumMath::BAND_COUNT> spectrumRhythm{};
+static uint32_t lastSpectrumSampleMs = 0;
+static uint32_t lastSpectrumGeneration = 0;
+static bool hasSpectrumMeasurement = false;
 static unsigned long lastSpectrumEnvelopeMs = 0;
 static bool spectrumDisplayVisible = false;
 static bool vuRendered = false;
@@ -939,6 +943,18 @@ static bool readImageSize(const String& path, ImageSize& size) {
   return false;
 }
 
+static uint16_t playerSurfaceColorAtY(int32_t y) {
+  if (y < sy(78)) {
+    uint8_t alpha = 54 - y / max<int32_t>(1, sy(2));
+    return blend565(cPanelAlt, cBg, alpha);
+  }
+  if (y >= SCREEN_H - sy(96)) {
+    uint8_t alpha = 14 + (y - (SCREEN_H - sy(96))) / max<int32_t>(1, sy(3));
+    return blend565(cPanel, cBg, alpha);
+  }
+  return cBg;
+}
+
 static void drawPlayerSurfaceRegion(int32_t x, int32_t y, int32_t w, int32_t h) {
   if (w <= 0 || h <= 0) return;
 
@@ -950,15 +966,7 @@ static void drawPlayerSurfaceRegion(int32_t x, int32_t y, int32_t w, int32_t h) 
 
   lcd.startWrite();
   for (int32_t yy = y0; yy < y1; ++yy) {
-    uint16_t color = cBg;
-    if (yy < sy(78)) {
-      uint8_t alpha = 54 - yy / max<int32_t>(1, sy(2));
-      color = blend565(cPanelAlt, cBg, alpha);
-    } else if (yy >= SCREEN_H - sy(96)) {
-      uint8_t alpha = 14 + (yy - (SCREEN_H - sy(96))) / max<int32_t>(1, sy(3));
-      color = blend565(cPanel, cBg, alpha);
-    }
-    lcd.drawFastHLine(x0, yy, x1 - x0, color);
+    lcd.drawFastHLine(x0, yy, x1 - x0, playerSurfaceColorAtY(yy));
   }
 
   lcd.endWrite();
@@ -1293,6 +1301,10 @@ static void clearVuBars() {
     vuBars[i] = 0;
   }
   spectrumEnvelope.fill(0);
+  spectrumRhythm.fill({});
+  hasSpectrumMeasurement = false;
+  lastSpectrumSampleMs = 0;
+  lastSpectrumGeneration = 0;
   lastSpectrumEnvelopeMs = 0;
 }
 
@@ -1524,20 +1536,40 @@ static bool updateSpectrumBars(bool playing, AudioSpectrumSnapshot& spectrum) {
   spectrum = AudioSpectrum::instance().snapshot();
   const unsigned long now = millis();
   const bool fresh = playing && SpectrumMath::usableFrame(spectrum.active, now, spectrum.updatedMs);
+  const bool initializeEnvelope = !lastSpectrumEnvelopeMs;
   uint32_t elapsedMs = lastSpectrumEnvelopeMs ? now - lastSpectrumEnvelopeMs : SPECTRUM_RENDER_MS;
+  const bool rhythmHistoryExpired = elapsedMs > SpectrumMath::FRAME_HOLD_MS;
+  const float accentDecay = SpectrumDynamics::accentDecayFactor(elapsedMs);
+  const float smallMotionDecay = SpectrumDynamics::smallMotionDecayFactor(elapsedMs);
   // A delayed LCD frame is not a visibility change. Preserve the envelope
   // through a drawing stall instead of clearing every bar at once.
   elapsedMs = min<uint32_t>(elapsedMs, 100);
   lastSpectrumEnvelopeMs = now;
   const uint16_t sensitivity = constrain(AppConfig::instance().displayVuSensitivity, 50, 200);
+  const bool initializeRhythm = fresh && (rhythmHistoryExpired || !hasSpectrumMeasurement || spectrum.generation != lastSpectrumGeneration);
+  const bool newMeasurement = fresh && (initializeRhythm || spectrum.updatedMs != lastSpectrumSampleMs);
   bool changed = false;
   for (size_t i = 0; i < SpectrumMath::BAND_COUNT; ++i) {
-    const float level = fresh ? SpectrumDynamics::bandDisplayLevel(spectrum.bandDb[i], i, sensitivity) : 0;
-    spectrumEnvelope[i] = SpectrumMath::smoothLevel(spectrumEnvelope[i], level, elapsedMs);
-    const uint8_t next = static_cast<uint8_t>(lroundf(spectrumEnvelope[i] * VU_SYMMETRIC_MAX_H / 255.0f));
+    // Detect before sensitivity and pixel rounding; never alter measured dB.
+    const float inputLevel = fresh ? SpectrumDynamics::bandDisplayLevel(spectrum.bandDb[i], i, 100) : 0;
+    spectrumRhythm[i].update(inputLevel, newMeasurement, initializeRhythm, accentDecay, smallMotionDecay);
+    // The same conditioned level drives BOTH the steady envelope and onset
+    // detector, uniformly across all bands. Stop still releases towards zero.
+    const float level = SpectrumDynamics::steadyLevel(fresh ? spectrumRhythm[i].previousLevel : 0) + spectrumRhythm[i].accent;
+    // Reuse the existing fractional envelope for the full visible height.
+    // Accents now receive the same short smoothing as the steady component;
+    // there is no second, independent steady-envelope release in this path.
+    spectrumEnvelope[i] = initializeEnvelope ? level : SpectrumDynamics::smoothRhythmLevel(spectrumEnvelope[i], level, elapsedMs);
+    const float displayed = SpectrumDynamics::rhythmicDisplayLevel(spectrumEnvelope[i], 0, sensitivity);
+    const uint8_t next = static_cast<uint8_t>(lroundf(displayed * VU_SYMMETRIC_MAX_H / 255.0f));
     const uint8_t current = vuBars[i];
     vuBars[i] = next;
     changed = changed || next != current;
+  }
+  hasSpectrumMeasurement = fresh;
+  if (fresh) {
+    lastSpectrumSampleMs = spectrum.updatedMs;
+    lastSpectrumGeneration = spectrum.generation;
   }
   for (size_t i = SpectrumMath::BAND_COUNT; i < VU_BAR_COUNT; ++i) vuBars[i] = 0;
   return changed || fresh;
@@ -1638,6 +1670,34 @@ static void drawVuBaselineInLayout(const VuLayout& layout, int x, int w) {
   lcd.drawFastHLine(x, layout.axisY, w, base);
 }
 
+static void drawSpectrumBarBuffered(const VuLayout& layout, int index, int height) {
+  // Compose ONE column off-screen. Erasing a shrinking cap directly on the
+  // LCD briefly blanked pixels that the new rounded cap immediately restored.
+  // A fixed stack buffer avoids heap/PSRAM allocation and full-screen sprites.
+  constexpr int bufferH = VU_SYMMETRIC_MAX_H * 2 + 1;
+  uint16_t pixels[VU_BAR_W * bufferH + 1];
+  lgfx::LGFX_Sprite bar(&lcd);
+  bar.setBuffer(pixels, VU_BAR_W, bufferH, 16);
+  const int top = layout.axisY - VU_SYMMETRIC_MAX_H;
+  for (int row = 0; row < bufferH; ++row) {
+    const uint16_t color = playerSurfaceColorAtY(top + row);
+    const uint16_t wire = (color << 8) | (color >> 8);
+    // This buffer already belongs to us. Fill it directly rather than call
+    // the graphics engine 65 times per column (1560 calls per full frame).
+    // Keep its wire byte order: the rounded cap and LCD transfer use it too.
+    for (int x = 0; x < VU_BAR_W; ++x) pixels[row * VU_BAR_W + x] = wire;
+  }
+  bar.drawFastHLine(0, VU_SYMMETRIC_MAX_H, VU_BAR_W, blend565(cLine, cBg, 150));
+  height = constrain(height, 0, VU_SYMMETRIC_MAX_H);
+  if (height > 0) {
+    bar.fillRoundRect(0, VU_SYMMETRIC_MAX_H - height, VU_BAR_W, height * 2 + 1, 3, vuBarColor());
+  }
+  // Sprite pixels are already in wire RGB565 order. A synchronous transfer
+  // sends the final background + baseline + cap, with no intermediate erase.
+  lcd.setAddrWindow(vuBarXInLayout(layout, index), top, VU_BAR_W, bufferH);
+  lcd.writePixels(pixels, VU_BAR_W * bufferH, false);
+}
+
 static void clearRenderedVuArea(const VuLayout& layout) {
   lcd.startWrite();
   if (vuRendered && vuRenderedClearH > 0) {
@@ -1690,6 +1750,11 @@ static void drawVuMeter(const DisplayModel& m, bool forceFull = false) {
   lcd.startWrite();
   for (int i = 0; i < layout.barCount; ++i) {
     if (renderedVuBars[i] == vuBars[i]) continue;
+    if (footerMode() == DisplayFooterMode::Spectrum) {
+      drawSpectrumBarBuffered(layout, i, vuBars[i]);
+      renderedVuBars[i] = vuBars[i];
+      continue;
+    }
     restoreShrinkingVuBar(layout, i, renderedVuBars[i], vuBars[i]);
     int x = vuBarXInLayout(layout, i);
     if (!layout.classic) {

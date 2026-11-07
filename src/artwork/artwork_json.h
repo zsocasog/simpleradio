@@ -61,7 +61,8 @@ private:
 // countries, packaging, labels, identifiers and unrelated release metadata.
 inline bool musicBrainzFilter(JsonDocument& filter) {
   static constexpr const char* schema = R"json({
-    "id":true,"title":true,"status":true,
+    "id":true,"title":true,"status":true,"name":true,
+    "aliases":[{"name":true,"type":true}],
     "artist-credit":true,
     "release-group":{"id":true,"primary-type":true,"secondary-types":true},
     "recordings":[{

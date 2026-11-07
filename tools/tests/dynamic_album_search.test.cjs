@@ -16,16 +16,17 @@ function block(source, marker) {
   }
   throw new Error(marker);
 }
-const roundBody = policy.slice(policy.indexOf('public:') + 7, policy.indexOf('private:'))
+const roundSource = policy.slice(policy.indexOf('class MusicBrainzRound'));
+const roundBody = roundSource.slice(roundSource.indexOf('public:') + 7, roundSource.indexOf('private:'))
   .replace(/constexpr bool (\w+)\(\) const/g, '$1()')
   .replace(/constexpr (?:bool|void) (\w+)\(\)/g, '$1()')
   .replace(/\b(deferred_|retrying_|retryConsumed_)\b/g, 'this.$1');
 const Round = new Function(`return class { deferred_=false; retrying_=false; retryConsumed_=false; ${roundBody} }`)();
 const fetchBody = block(cpp, 'auto fetchMusicBrainz =')
   .replace('int status = 0;', 'let status = 0;')
-  .replace('const bool ok = fetchArtworkJson(url, doc, deadlineMs, cancelled, &status);',
+  .replace('const bool ok = fetchArtworkJson(url, target ? *target : doc, deadlineMs, cancelled, &status, requestDeadlineMs);',
     'const ok = fetchApi(url, value => status = value);');
-const fetchMb = new Function('search', 'waitForMusicBrainz', 'fetchApi', 'albumArtTrace', 'url', fetchBody);
+const fetchMb = new Function('search', 'waitForMusicBrainz', 'fetchApi', 'albumArtTrace', 'url', 'target = null', fetchBody);
 test('503 suppresses all intermediate MusicBrainz calls, including Last.fm verification; retry is bounded', () => {
   const search = { musicBrainz: new Round(), retryReleaseGroup: false };
   const calls = []; let waits = 0;
@@ -53,7 +54,18 @@ test('a failed release-group query is remembered, and a new song has a fresh pol
   assert.equal(search.retryReleaseGroup, true); assert.equal(new Round().canRequest(), true);
 });
 
+const budgetClass = policy.slice(policy.indexOf('class Budget'), policy.indexOf('// One song'));
+const budgetBody = budgetClass.slice(budgetClass.indexOf('public:') + 7, budgetClass.indexOf('private:'))
+  .replace('constexpr explicit Budget(uint32_t started) : started_(started) {}', 'constructor(started) { this.started_=started; }')
+  .replace(/constexpr (?:uint32_t|bool) (\w+)\(uint32_t now\) const/g, '$1(now)')
+  .replace(/const uint32_t /g, 'const ').replace(/metadataRemaining\(/g, 'metadataRemaining(')
+  .replace(/return remaining\(/g, 'return this.remaining(')
+  .replace(/= metadataRemaining\(/g, '= this.metadataRemaining(')
+  .replace(/return now \+ metadataRemaining\(/g, 'return now + this.metadataRemaining(')
+  .replace(/return metadataRemaining\(/g, 'return this.metadataRemaining(');
+const Budget = new Function('LOOKUP_BUDGET_MS','IMAGE_BUDGET_MS','PROVIDER_BUDGET_MS','MIN_PROVIDER_BUDGET_MS',`return class { ${budgetBody} remaining(now,limit) { const elapsed=(now-this.started_)>>>0; return elapsed>=limit?0:limit-elapsed; } }`)(35000,12000,12000,3000);
 const searchBody = block(cpp, 'bool ArtworkCache::resolveAndDownloadAlbumArtwork(')
+  .replace('const AlbumSearchPolicy::Budget budget(searchStartedMs);', 'const budget = new Budget(searchStartedMs);')
   .replace('AlbumArtworkFallbacks fallbacks;', 'const fallbacks = { singles:[], artistCollections:[], unverified:[], compilations:[] };')
   .replace('AlbumArtworkSearch search;', 'const search = { musicBrainz:new Round() };')
   .replace(/const AlbumArtworkProvider providers\[\] = \{([\s\S]*?)\};/, 'const providers = [$1];')
@@ -76,19 +88,20 @@ const searchBody = block(cpp, 'bool ArtworkCache::resolveAndDownloadAlbumArtwork
   .replace(/&memoryUnavailable/g, 'memoryUnavailable')
   .replace(/const (?:unsigned long|uint32_t|size_t|bool) /g, 'const ')
   .replace(/\b(?:unsigned long|uint32_t|size_t|bool) /g, 'let ');
-function runSearch({ initial503 = true, retryCover = false, earlyCover = false, single = false, cancel = false, elapsed = 0 } = {}) {
-  const calls = [], downloads = [];
+function runSearch({ initial503 = true, retryCover = false, earlyCover = false, single = false, cancel = false, elapsed = 0, providerAction, captureBudgets = false } = {}) {
+  const calls = [], downloads = [], imageBudgets = [];
   let now = 0, title = { c_str: () => 'song' };
   const image = name => ({ name, c_str: () => name });
   const context = {
-    Round, Provider: { MusicBrainz:'MB', LastFm:'Last.fm', ITunes:'iTunes', Deezer:'Deezer' },
+    Round, Budget, Provider: { MusicBrainz:'MB', LastFm:'Last.fm', ITunes:'iTunes', Deezer:'Deezer' },
     millis: () => now, ALBUM_ART_LOOKUP_BUDGET_MS:35000, ALBUM_ART_IMAGE_BUDGET_MS:12000,
     artist: { c_str: () => 'artist' }, title, key:'key', outPath:{ c_str: () => 'ready' }, albumArtTrace() {},
     player: { snapshot: () => ({ playing:true, artist:context.artist, title }) },
     idlePrewarmCancellationRequested: () => false, lastDownloadStatus: () => ({ c_str: () => '' }),
-    download: candidate => { downloads.push(candidate.name); return true; },
+    download: (candidate, _path, budget) => { downloads.push(candidate.name); imageBudgets.push(budget); return true; },
     resolveAlbumArtworkUrls: (_a, _t, provider, _deadline, fallbacks, search) => {
       calls.push(provider + (search.musicBrainz.retrying() ? '-retry' : ''));
+      if (providerAction) return providerAction({provider, deadline:_deadline, now, advance:ms=>now+=ms, image, fallbacks});
       if (provider === 'MB') {
         search.musicBrainz.requestStarted();
         if (search.musicBrainz.retrying()) return retryCover ? [image('retry-cover')] : [];
@@ -103,7 +116,8 @@ function runSearch({ initial503 = true, retryCover = false, earlyCover = false, 
     }
   };
   const run = new Function(...Object.keys(context), searchBody);
-  return { result:run(...Object.values(context)), calls, downloads };
+  const result = run(...Object.values(context));
+  return { result, calls, downloads, ...(captureBudgets ? { imageBudgets, elapsed:now } : {}) };
 }
 test('production search retries MusicBrainz after other providers and before saved fallback images', () => {
   assert.deepEqual(runSearch({ retryCover:true }), {
@@ -128,6 +142,59 @@ test('track change, total deadline and reserved fallback time prevent unnecessar
   assert.equal(reserved.calls.includes('MB-retry'), false); assert.deepEqual(reserved.downloads, ['single']);
 });
 
+test('a slow first provider leaves another source and the FULL 12-second image window', () => {
+  const result = runSearch({ captureBudgets:true, providerAction:({provider,deadline,now,advance,image}) => {
+    assert.ok(deadline <= 23000);
+    if (provider === 'MB') { assert.equal(deadline,23000); advance(12000); return []; }
+    if (provider === 'Last.fm') { advance(5000); return []; }
+    assert.equal(provider,'iTunes'); assert.equal(deadline,23000);
+    advance(6000); return [image('own-album')];
+  }});
+  assert.equal(result.result,true); assert.deepEqual(result.downloads,['own-album']);
+  assert.deepEqual(result.imageBudgets,[12000]); assert.equal(result.elapsed,23000);
+});
+test('a provider that reaches its local deadline can still return an already verified candidate', () => {
+  const result=runSearch({captureBudgets:true,providerAction:({deadline,now,advance,image})=>{
+    advance(deadline-now); return [image('verified-before-deadline')];
+  }});
+  assert.equal(result.result,true); assert.deepEqual(result.calls,['MB']);
+  assert.deepEqual(result.imageBudgets,[12000]);
+});
+test('metadata exhaustion skips remaining providers even without a stored fallback', () => {
+  const result=runSearch({captureBudgets:true,providerAction:({deadline,now,advance})=>{
+    advance(Math.min(deadline-now,12000)); return [];
+  }});
+  assert.equal(result.result,false); assert.deepEqual(result.calls,['MB','Last.fm']);
+  assert.equal(result.elapsed,23000); assert.deepEqual(result.downloads,[]);
+});
+
+test('the logged 11.5s MusicBrainz response still reaches its own album at recording 12', () => {
+  const fixture=JSON.parse(read('tools/tests/fixtures/artwork-rob-n-raz.json'));
+  let examined=0;
+  const result=runSearch({captureBudgets:true,providerAction:({provider,deadline,now,advance,image})=>{
+    assert.equal(provider,'MB');
+    let clock=now+11500;advance(11500);const covers=[];
+    for(const recording of fixture.recordings){
+      if(clock>=deadline)break;
+      ++examined;clock+=300;advance(300);
+      if(recording.score<80)continue;
+      for(const album of recording.albums) if(album.title==='Circus') covers.push(image(album.title));
+    }
+    return covers;
+  }});
+  assert.equal(examined,16);assert.equal(result.result,true);
+  assert.deepEqual(result.downloads,['Circus']);assert.deepEqual(result.calls,['MB']);
+  assert.deepEqual(result.imageBudgets,[12000]);
+});
+test('too little time for a new provider goes directly to the known fallback', () => {
+  const result=runSearch({captureBudgets:true,providerAction:({provider,advance,fallbacks,image})=>{
+    if(provider==='MB'){advance(12000);return [];}
+    assert.equal(provider,'Last.fm');advance(9500);fallbacks.unverified.push(image('known-cover'));return [];
+  }});
+  assert.equal(result.result,true);assert.deepEqual(result.calls,['MB','Last.fm']);
+  assert.deepEqual(result.downloads,['known-cover']);assert.deepEqual(result.imageBudgets,[12000]);
+});
+
 function viewCode(code) {
   return code.replace(/\.size\(\)/g, '.length').replace(/const (?:char|size_t) /g, 'const ')
     .replace(/\bsize_t /g, 'let ').replace('char stack[8] = {};', 'const stack=Array(8).fill(0);')
@@ -139,7 +206,19 @@ function viewCode(code) {
 }
 const wordChar = new Function('c', block(titles, 'bool wordChar('));
 const hasWord = new Function('wordChar', 'text', 'word', viewCode(block(titles, 'bool hasWord('))).bind(null, wordChar);
-const splitSubtitle = new Function('trim', 'text', viewCode(block(titles, 'TitleParts splitSubtitle('))).bind(null, value => value.trim());
+function standardVersion(text) {
+  // Use the same explicit list as the constexpr implementation, including case.
+  const versions = block(titles, 'bool standardVersion(').match(/"[a-z ]+"/g).map(value => JSON.parse(value));
+  return versions.includes(text.trim().toLowerCase());
+}
+const versionCode = block(titles, 'std::string_view withoutStandardVersions(')
+  .replace(/const (?:char|size_t) /g, 'const ').replace(/size_t count/g, 'let count')
+  .replace(/text\.empty\(\)/g, '!text.length').replace(/text\.back\(\)/g, 'text.at(-1)')
+  .replace(/text\.find_last_of\(open\)/g, 'text.lastIndexOf(open)')
+  .replace(/std::string_view::npos/g, '-1').replace(/text\.size\(\)/g, 'text.length');
+const withoutStandardVersions = new Function('trim', 'standardVersion', 'text', versionCode).bind(null, value => value.trim(), standardVersion);
+const splitSubtitle = new Function('trim', 'withoutStandardVersions', 'text', viewCode(block(titles, 'TitleParts splitSubtitle(')))
+  .bind(null, value => value.trim(), withoutStandardVersions);
 const protectedCode = block(titles, 'bool protectedSubtitle(')
   .replace('for (char c : normalized)', 'for (const c of normalized)')
   .replace(/for \(const char\* marker : \{([\s\S]*?)\}\)/, 'for (const marker of [$1])');
@@ -163,6 +242,16 @@ function subtitleMatch(foundArtist, foundTitle, wantedArtist = 'Shinedown', want
 test('production title matching accepts Shinedown subtitle spelling and punctuation variants', () => {
   for (const title of ['Diamond Eyes (Boom-Lay Boom-Lay Boom)', 'Diamond Eyes (Boom‐Lay Boom‐Lay Boom)', 'Diamond Eyes (Boom-Lay...)']) {
     assert.equal(subtitleMatch('Shinedown', title), true, title);
+  }
+});
+test('a standard store version after an optional subtitle is accepted only as a weak title match', () => {
+  const match = title => subtitleMatch('ATC', title, 'ATC', 'Around the World');
+  assert.equal(match('Around the World (La La La La La) [Radio Version]'), true);
+  assert.equal(match('Around the World (La La La La La) (Radio Edit)'), true);
+  for (const title of ['Around the World (La La La La La) [Live] [Radio Version]',
+    'Around the World (La La Remix) [Radio Version]', 'Around the World (La La) [Extended Version]',
+    'Around the World (La La) [Karaoke Version]', 'Around the World Part II [Radio Version]']) {
+    assert.equal(match(title), false, title);
   }
 });
 test('live/demo/remix markers in later or nested groups, other artists and changed main titles stay rejected', () => {

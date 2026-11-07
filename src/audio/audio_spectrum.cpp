@@ -1,5 +1,6 @@
 #include "audio_spectrum.h"
 #include "spectrum_log.h"
+#include "../config/diagnostics.h"
 #include "audio_output.h"
 
 #include <esp_dsp.h>
@@ -125,12 +126,14 @@ bool AudioSpectrum::begin() {
   initialized_ = true;
   portEXIT_CRITICAL(&mux_);
   SpectrumLog::printf("[spectrum] ready: 24 ERB bands, 1024-point FFT, sent I2S Q31, 40 Hz output clock, PSRAM FFT queue/weights/results, async diagnostics\n");
+#if SIMPLE_RADIO_SPECTRUM_DIAGNOSTICS
   char memoryLine[192];
   snprintf(memoryLine, sizeof(memoryLine),
       "[spectrum] memory v1: FFT tables=PSRAM work=internal; internal=%u largest=%u\n",
       static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)),
       static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)));
   SpectrumLog::postEvent(memoryLine);
+#endif
   return true;
 }
 
@@ -420,14 +423,26 @@ void AudioSpectrum::processFrame(uint8_t index) {
     firstFrame_ = false;
   }
   portEXIT_CRITICAL(&mux_);
+  static bool configurationLogged = false;
+#if !SIMPLE_RADIO_SPECTRUM_DIAGNOSTICS
+  report = report && !configurationLogged;
+#endif
+  if (report) {
+    configurationLogged = true;
+#if SIMPLE_RADIO_SPECTRUM_DIAGNOSTICS
   if (report) SpectrumLog::printf("[spectrum] first frame: %lu Hz, processing %lu us\n"
-                            "[spectrum] ERB v1: 24 overlapping bands, 20..%lu Hz, 1024-point FFT; fixed display scale, volume-compensated, no AGC; LCD-timed results, 33ms peak merge\n"
-                            "[spectrum] motion v1: immediate attack, 45ms exponential release\n"
+                            "[spectrum] ERB v1: 24 overlapping bands, 20..%lu Hz, 1024-point FFT; fixed display scale, volume-compensated, no AGC; LCD-timed results, 33ms peak merge; bass taper v3 -8..0dB over 8 bars\n"
+                            "[spectrum] motion v2: one combined envelope\n"
+                            "[spectrum] rhythm v6: all bands, attack=25ms release=95ms\n"
                             "[spectrum] sync v2: actual sent DMA samples; decoder packet timing ignored; 4KB internal hand-off, no PSRAM/FFT in ISR\n",
                             static_cast<unsigned long>(frame.sampleRate),
                             static_cast<unsigned long>(micros() - startedUs),
                             static_cast<unsigned long>(SpectrumMath::bandUpperHz(SpectrumMath::BAND_COUNT - 1,
                                                                                frame.sampleRate)));
+#else
+    SpectrumLog::postEvent("[spectrum] ERB v1: 24 bands, 1024 FFT, sent-DMA; rhythm v6: attack=25ms release=95ms\n");
+#endif
+  }
 }
 
 void AudioSpectrum::taskEntry(void* parameter) {
@@ -481,6 +496,7 @@ void AudioSpectrum::reportDiagnostics() {
   if (published_.active) outputAge = static_cast<long>(now - published_.updatedMs);
   portEXIT_CRITICAL(&mux_);
   lastDiagnosticsMs_ = now;
+#if SIMPLE_RADIO_SPECTRUM_DIAGNOSTICS
   SpectrumLog::Message message;
   const int header = snprintf(message.text, sizeof(message.text), "[spectrum] pcm=%lu queued=%lu fft=%lu busy=%lu stale=%lu resets=%lu queue-max=%lums fft-max=%luus input-age=%ldms output-age=%ldms dB=%.1f..%.1f copy-max=%luus near-clip=%lu output-rms=%.1f music-rms=%.1f pcm-frames=%lu presented=%lu merged=%lu log-write-max=%luus log-skipped=%lu\n",
                 static_cast<unsigned long>(stats.callbacks), static_cast<unsigned long>(stats.captured),
@@ -533,6 +549,7 @@ void AudioSpectrum::reportDiagnostics() {
       static_cast<unsigned long>(output.expired), static_cast<unsigned long>(output.copyMaxUs),
       static_cast<unsigned long>(output.handoffMaxMs));
   SpectrumLog::postEvent(line);
+#endif
 }
 
 void AudioSpectrum::noteDisplayFrame(const AudioSpectrumSnapshot& sample, uint32_t startedUs,

@@ -79,7 +79,7 @@ test("analyzer sleeps until PCM arrives and retains the fractional display envel
   assert.match(analyzer, /ulTaskNotifyTake\(pdTRUE, active \? pdMS_TO_TICKS\(1000\) : portMAX_DELAY\)/);
   assert.match(analyzer, /if \(ready && task_\) xTaskNotifyGive\(task_\)/);
   assert.match(display, /std::array<float, SpectrumMath::BAND_COUNT> spectrumEnvelope/);
-  assert.match(display, /SpectrumMath::smoothLevel\(spectrumEnvelope\[i\], level, elapsedMs\)/);
+  assert.match(display, /SpectrumDynamics::smoothRhythmLevel\(spectrumEnvelope\[i\], level, elapsedMs\)/);
 });
 
 test("FFT is below audio priority but not idle, and self-tests the linked backend", () => {
@@ -96,7 +96,9 @@ test("drawing stalls do not clear the envelope, and sensitivity preserves spectr
   const update = display.match(/static bool updateSpectrumBars\(bool playing, AudioSpectrumSnapshot& spectrum\) \{[\s\S]*?\n\}/)[0];
   assert.doesNotMatch(update, /spectrumEnvelope\.fill\(0\)/);
   assert.match(update, /SpectrumMath::usableFrame/);
-  assert.match(update, /SpectrumDynamics::bandDisplayLevel\(spectrum.bandDb\[i\], i, sensitivity\)/);
+  assert.match(update, /SpectrumDynamics::bandDisplayLevel\(spectrum.bandDb\[i\], i, 100\)/);
+  assert.match(update, /steadyLevel\(fresh \? spectrumRhythm\[i\].previousLevel : 0\) \+ spectrumRhythm\[i\].accent/);
+  assert.match(update, /rhythmicDisplayLevel\(spectrumEnvelope\[i\], 0, sensitivity\)/);
   assert.doesNotMatch(update, /spectrumLevelTracker|gainDb/);
   assert.doesNotMatch(update, /log10f\(sensitivity/);
   assert.doesNotMatch(update, /spectrum\.bands\[i\] \* sensitivity/);
