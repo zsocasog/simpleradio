@@ -9,6 +9,7 @@
 #include "album_search_policy.h"
 
 struct PlayerStateSnapshot;
+struct ArtworkDownloadJob;
 
 class ArtworkCache {
 public:
@@ -84,7 +85,8 @@ private:
 
   bool download(const String& url, String& outPath, uint32_t budgetMs = 0, bool allowSecureFallback = true, const String& cacheKey = "",
                 bool* memoryUnavailable = nullptr);
-  bool prepareAlbumMemory(uint8_t*& data, size_t length, const String& key, String& outPath, bool& unavailable);
+  bool prepareAlbumMemory(uint8_t*& data, size_t length, const String& key, String& outPath, bool& unavailable,
+                          uint32_t deadlineMs);
   bool resolveAndDownloadAlbumArtwork(const String& artist, const String& title, const String& key, String& outPath);
   bool downloadEmbedded(const String& url, const std::vector<uint32_t>& segments, const String& key, String& outPath);
   bool appendHttpRange(const String& url, uint32_t offset, uint32_t length, File& outFile,
@@ -98,7 +100,8 @@ private:
   String cachePath(const String& url, const String& extension) const;
   String detectDownloadedExtension(const String& tempPath) const;
   String currentArtworkUrl() const;
-  bool startDownloadTask(const String& url, bool idlePrewarm = false, bool allowSecureFallback = true);
+  bool startDownloadTask(const String& url, bool idlePrewarm = false, bool allowSecureFallback = true,
+                          uint32_t deadlineMs = 0);
   bool startAlbumArtworkTask(const String& artist, const String& title, const String& key);
   std::vector<String> resolveAlbumArtworkUrls(const String& artist, const String& title, AlbumArtworkProvider provider,
                                             uint32_t deadlineMs, AlbumArtworkFallbacks& fallbacks,
@@ -106,6 +109,7 @@ private:
   void removeCachedArtworkFamily(const String& imagePath);
   bool startEmbeddedDownloadTask(const String& key, const String& url, const std::vector<uint32_t>& segments);
   bool startThumbnailTask(const String& imagePath, bool idlePrewarm = false, bool fillFrame = false);
+  void processPendingPickerLogo();
   bool startBrowserArtworkImportTask(const String& url, const String& tempPath);
   void processPrewarmQueue(const PlayerStateSnapshot& state);
   void processPendingBrowserImport();
@@ -122,8 +126,9 @@ private:
   void clearThumbnailReady(const String& imagePath = "");
   bool stateUsesArtworkPath(const PlayerStateSnapshot& state, const String& imagePath) const;
   bool refreshArtworkIfThumbnailReady(const String& imagePath, const PlayerStateSnapshot& state, bool fillFrame = false);
-  bool markDownloadStarted(const String& label, TaskHandle_t handle = nullptr, bool idlePrewarm = false);
-  void setDownloadTaskHandle(TaskHandle_t handle);
+  bool markDownloadStarted(const String& label, bool idlePrewarm = false);
+  bool startWorker();
+  bool queueDownloadJob(ArtworkDownloadJob* job);
   void markDownloadFinished();
   bool idlePrewarmCancellationRequested();
   bool writeBufferYielding(File& file, const uint8_t* data, size_t length);
@@ -137,6 +142,7 @@ private:
   void notePrewarmFailure(const String& source);
   bool takePendingEmbedded(String& key, String& url, std::vector<uint32_t>& segments);
   static void downloadTask(void* param);
+  static void runDownloadJob(ArtworkDownloadJob* job);
 
   String lastUrl;
   unsigned long lastAttemptMs = 0;
@@ -147,7 +153,6 @@ private:
   String downloadLabel;
   String downloadStatus;
   unsigned long downloadStatusMs = 0;
-  TaskHandle_t downloadTaskHandle = nullptr;
   SemaphoreHandle_t resultMutex = nullptr;
   SemaphoreHandle_t pendingMutex = nullptr;
   SemaphoreHandle_t downloadMutex = nullptr;

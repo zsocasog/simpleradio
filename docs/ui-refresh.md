@@ -103,8 +103,9 @@ együtt küldi a kijelzőre, a fejléc és az alsó súgó helyén marad.
 A 32×32-es logók állomáshoz kötött, tízelemű gyorsítótárban maradnak; a közelmúltban
 látott állomás képe visszalépéskor is újrahasználható. Rövid nyugalmi időben a lista
 közvetlen szomszédainak kis képe is előkészülhet a meglévő helyi képfájlokból.
-A hiányzó kis képek előkészítése rövid részletekben folytatódik, a rajzolás nem
-nyit képfájlokat és nem indít letöltést. A később elkészülő logó csak a saját kis
+A hiányzó kis képek előkészítése a képfeldolgozó háttérfeladatban folytatódik;
+a kijelző feladata nem nyit képfájlokat és nem végez átméretezést. A lista nem
+indít letöltést. A később elkészülő logó csak a saját kis
 területét frissíti. Az automatikus lejátszás késleltetése csak akkor telhet le, ha
 az aktuális kiválasztás már megjelent a kijelzőn.
 
@@ -128,3 +129,127 @@ a megállt feladattól akkor is, ha a soros monitor nem ad új sorokat.
 
 Ez az optimalizálás firmware-feltöltést igényel. A korábbi webes előnézet
 módosításaihoz a data/LittleFS csomag is kell, ha azt még nem töltötted fel.
+
+### Kis logók előkészítése a háttérben (2026-11-07)
+
+A kész SR56 állomásképek feloldása, ellenőrzése, fájlolvasása és RGB565
+csatornánkénti átlagolása a meglévő, egyszerre egy képfeladatot fogadó
+háttérkezelőn fut. Megmarad a 0-s prioritás és a `tskNO_AFFINITY`: a szabad
+mag dolgozhat, az audió mindkettőn előrébb való. A kis logó feladata ugyanazt
+a 8192 bájtos stackméretet kapja, mint az eddigi LCD-képelőkészítés; nem indul
+külön párhuzamos képfeldolgozó az aktív albumborító vagy logóletöltés mellé.
+Az elkészítés két kimeneti soronként átengedi a futást.
+
+A kijelző egyetlen, korlátos postaládán keresztül kér képet, és kizárólag a
+teljes eredményt veszi át. A folyamatban levő kép saját PSRAM-puffert használ;
+a látható tízelemű gyorsítótárat csak a kijelző feladata módosítja. A normál
+32×32-es képnél az átmeneti puffer 2 KiB, új flashfájl nem keletkezik.
+A megváltozatlan útvonal/időbélyeg nem indít új átméretezést vagy kirajzolást.
+
+Görgetéskor a kérés az állomásával együtt mozog. Egyedi kérésazonosító védi
+az átadást: bezárás vagy elavult kérés után a munkafolyamat felszabadítja a
+saját pufferét, és nem írhat felül új sort. Memóriahiány, hibás SR56-fejléc
+vagy rövid olvasás nem publikál részleges képet; a már kész azonos logó
+látható marad. Sikertelen feladatindítás később újrapróbálható. A kis logó
+eredménye nem használja az albumborító/állomásképek közös eredményrekeszét.
+
+Ha éppen albumborító-keresés fut, egy még nem gyorsítótárazott kis logó arra
+várhat, hogy a közös munkafeladat felszabaduljon. A szöveges lista, kijelölés,
+görgetés és a meglévő kis képek ettől függetlenül használhatók. Ez a választás
+megőrzi a működő borítókeresés belsőmemória-tartalékát. A változáshoz csak
+firmware-feltöltés szükséges; az élő enkóderes próba a feltöltés után következik.
+
+### Állomáslisták logóbetöltése (2026-11-07)
+
+Az állomássorok és az online találatok először a dokumentumon kívül épülnek
+fel. A leválasztott elemeket védő ellenőrzés ezért túl korán leállította a
+képkérést; a megjegyzett azonosító miatt a későbbi állapotfrissítés sem indította
+újra. A még be nem illesztett sorok képkérése most az összerakás utáni
+mikrofeladatban indul. A közben eltávolított sorok és az elavult képválaszok
+továbbra sem töltenek vagy írnak felül képet.
+
+A hibát a korábbi kóddal Chrome-ban reprodukáltuk. A javított változatban
+1440, 820, 390 és 320 pixeles nézeten ellenőriztük az állomáslistát, a lejátszó
+listáját, a szűrést, a rendezési módot, az állomásváltást és az online találatok
+logóit helyi tesztadatokkal. Három új teszt védi a beillesztés előtti kéréseket.
+Ehhez a javításhoz csak data/LittleFS-frissítés kell; a firmware változatlan.
+
+### Állomásmentés lejátszás alatt (2026-11-07)
+
+A logó méretezése és PNG-vé alakítása továbbra is a böngészőben történik,
+lejátszás közben is. Az első mentés jelzi, hogy ezt a képet a böngésző tölti
+fel; a rádió nem indít vele párhuzamosan saját letöltést. Sikertelen böngészős
+átalakítás, feltöltés vagy a helyi kép hozzárendelése után a mentett eredeti
+URL a rádió meglévő tartalékútjára kerül. A régebbi kliensek mentési kérései
+továbbra is automatikusan kérik a logó előkészítését.
+
+Az állomás JSON-mentése és az egyedi PNG kiírása közös, egyszerre egy munkát
+fogadó, 0-s prioritású háttérfeladatra került. A 6 KiB-os verem csak a munka
+idejére kell. A HTTP-kérés gyenge folytatási hivatkozással vár, és csak a
+tényleges fájlmentés után kap sikeres választ. A PNG fogadása legfeljebb
+120 KiB PSRAM-ot használ; egyszerre egy fogadás és egy mentési feladat lehet
+folyamatban. Belső RAM-ra nincs visszaesés. Hiányos, túlméretes, hibás sorrendű
+és hibás aláírású adat nem kerül kiírásra; megszakításkor a megfelelő tulajdonos
+felszabadítja a puffert.
+
+Az állomásmentés saját dokumentumpéldányt ír ki, az olvasási zárolás nélkül.
+A látható lista és revízió csak sikeres, atomikus fájlcserét követően változik.
+A logó-előkészítés bejárata is csak sorba állít: fájlrendszeri ellenőrzés nem
+fut a hálózati kérésben. A meglévő audió-, FFT- és albumborító-feldolgozás
+változatlan. A mentési napló egy rövid sorban jelzi a művelet idejét.
+
+A célzott tesztek a kérés megszakítását, a foglaltságot, a memória- és írási
+hibákat, a PNG-részleteket, az olvasási zárolást és a böngészős tartalékutat
+ellenőrzik. Chrome-os helyi próbában futó és megállított állapotnál is a
+böngésző készítette a 150×150-es PNG-t; hibás kép esetén a rádiós tartalékút
+indult. Ehhez a változáshoz firmware és data/LittleFS is szükséges; az élő
+lejátszás alatti hangpróba a feltöltés után következik.
+
+Az állomáslista frissítése megtartja a meglévő logóelemeket és a folyamatban
+lévő képkéréseiket. Új állomás mentése, rendezés vagy kiválasztás ezért nem
+üríti ki a korábban betöltött képeket. A lista lekérése nem változtatja meg
+az összes helyi kép gyorsítótár-azonosítóját; sikeres egyedi PNG-feltöltéskor
+csak a felülírt kép kap új azonosítót. A csoportos logófeltöltés továbbra is
+frissíti a helyi képeket. A sorok neve, számozása és gombjai frissülnek.
+
+A nyitott kereső melletti mentést késleltetett képkérésekkel is ellenőriztük:
+a korábbi változat négy betöltött logója eltűnt, a javított változat mind a
+négyet megtartotta, és csak az új képet kérte le. Az asztali, tablet- és
+mobilpróba a szerkesztést, azonos útvonalra történő képcserét, szűrést és
+törlést is lefedte. Ez külön webes javítás; csak data/LittleFS-frissítést igényel.
+
+A hangerő hullámsávja egérrel rámutatva halvány témaszínnel mutatja a várható
+értéket a meglévő százalékos jelzés mellett. Ez nem küld vezérlési parancsot;
+az egér távozásakor a tényleges hangerő jelenik meg újra. Érintéskor nincs
+beragadó előnézet. A fejléc inaktív menüpontjai finom témaszínt kapnak
+rámutatáskor és billentyűzetes fókusznál, az aktív oldal erősebb jelölése
+megmarad. Csökkentett mozgás beállításnál nincs színátmenet.
+
+A főoldal és a WiFi-beállító oldal közös lapfülikonja négy lekerekített,
+eltérő magasságú, a középvonalra fel-le tükrözött borostyánszínű oszlopot használ.
+A helyi SVG a meglévő
+webes verzió- és gyorsítótárkezelést használja; külső képszolgáltatás nem kell.
+
+## Logók megőrzése data-frissítéskor (2026-11-08)
+
+A korábbi OTA csak a négy JSON-állományt mentette: a megmaradó állomáslisták
+olyan `/logos/station-*.png` fájlokra is hivatkoztak, amelyeket az új LittleFS
+image már nem tartalmazott. A javított firmware a JSON-okkal és tartalékaikkal
+együtt a `/logos` könyvtár kész fájljait is elmenti, binárisan, PSRAM-ba.
+A cache továbbra is újragenerálódik. A legfeljebb 128 fájlos, 4 MiB-os mentés
+memória-/olvasási hibája az eredeti fájlrendszer leválasztása és az OTA indulása
+előtt leállítja a frissítést. A visszaírás ellenőrzött; sikertelen visszaállítás
+nem jelent sikeres frissítést, és a RAM-példány megmarad az ismételt data-kísérlethez.
+
+A régebben elveszett automatikus PNG-ket a böngésző pontos streamcím alapján,
+egyszer, sorban próbálja helyreállítani. Érvényes képek, egyedi fájlnevek,
+szándékosan üres logók és privát vagy aláírt streamcímek kimaradnak. Az eredeti
+és a HTTP/HTTPS-változat azonos host/path/query mellett egyezhet. Név alapján
+nincs találgatás. A böngésző készíti a PNG-t, és csak a fájlt tölti fel: az
+állomások sorszámát, nevét és adáscímét nem írja át. Aki közben a csatornát
+szerkeszti, annál a helyreállítás nem indul el. Az adatbázisban nem szereplő
+vagy saját készítésű, már törölt képet ez nem tudja rekonstruálni.
+
+Ezt először firmware-frissítésként kell telepíteni, és csak utána következzen
+a data-csomag, mert a fájlok megőrzését a feltöltést fogadó firmware végzi.
+Az eljárás futás közbeni RAM-mentés, nem áramszünetet átvészelő tartalék.

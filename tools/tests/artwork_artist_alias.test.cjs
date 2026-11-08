@@ -2,6 +2,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const test = require('node:test');
+const titlePolicy = require('./helpers/artwork_title_policy.cjs');
 const cpp = fs.readFileSync(path.join(__dirname, '../../src/artwork/artwork_cache.cpp'), 'utf8');
 const jsonHeader = fs.readFileSync(path.join(__dirname, '../../src/artwork/artwork_json.h'), 'utf8');
 function block(marker) {
@@ -21,6 +22,8 @@ function strings(code) {
     .replace(/static_cast<(?:int|unsigned)>\(([^)]+)\)/g, '$1')
     .replace(/\b(\w+)\.trim\(\);/g, '$1 = $1.trim();')
     .replace('value.replace(separator, ",");', 'value = value.split(separator).join(",");')
+    .replace('value.replace(" + ", " & ");', 'value = value.split(" + ").join(" & ");')
+    .replace('credit.remove(0, 4);', 'credit = credit.substring(4);')
     .replace(/auto (\w+) = \[&?\]\(([^)]*)\)/g, 'const $1 = ($2) =>')
     .replace(/std::vector<String>& |const String& |const String |String& |String |JsonArray |JsonObject /g, '')
     .replace(/\bconst (?:bool|int|size_t) /g, 'const ').replace(/\b(?:bool|int|size_t) /g, 'let ')
@@ -37,10 +40,13 @@ let artistsCode = block('static bool artworkArtistsMatch(')
   .replace('std::vector<bool> matched(foundCredits.size(), false);', 'const matched = Array(foundCredits.size()).fill(false);')
   .replace('return std::vector<String>{(*verifiedAliases)[0]};', 'return [verifiedAliases[0]];')
   .replace('std::sort(words.begin(), words.end());', 'words.sort();')
+  .replace(/\bconst String (\w+) =/g, 'const $1 =')
+  .replace('artworkArtistsMatch(foundArtist, wantedArtist)', 'plainArtistMatch(foundArtist, wantedArtist)')
   .replace(/\bString (\w+) =/g, 'let $1 =');
 artistsCode = strings(artistsCode);
-const artistsMatch = new Function('normalizeArtworkText', 'foundArtist', 'wantedArtist', 'verifiedAliases = null', artistsCode)
-  .bind(null, normalizeArtworkText);
+const runArtistsMatch = new Function('normalizeArtworkText', 'plainArtistMatch', 'foundArtist', 'wantedArtist', 'verifiedAliases', artistsCode);
+const artistsMatch = (found, wanted, aliases = null) => runArtistsMatch(normalizeArtworkText,
+  (left, right) => artistsMatch(left, right), found, wanted, aliases);
 const mbid = '408b2a33-d229-46a5-a361-0667bc616e34';
 const fixture = { id: mbid, name: 'ATC', aliases: [
   { name: 'A Touch of Class', type: null }, { name: 'A.T.C', type: null },
@@ -153,4 +159,109 @@ test('MusicBrainz JSON filtering retains the same-ID alias evidence without unre
   assert.deepEqual(schema.aliases, [{ name: true, type: true }]);
   assert.equal(schema.recordings[0]['artist-credit'], true);
   assert.equal('relations' in schema, false);
+});
+
+test('Mike and the duplicated The matches the +, & and and credits from every provider', () => {
+  const names = ['Mike and the The Mechanics', 'Mike + the Mechanics', 'Mike & the Mechanics', 'Mike and the Mechanics'];
+  for (const found of names) for (const wanted of names) {
+    assert.equal(artistsMatch(found, wanted), true, `${found} / ${wanted}`);
+  }
+});
+
+test('joiner normalization still requires all duet members and rejects tribute or karaoke artists', () => {
+  for (const found of ['Mike + the Mechanics + Paul Carrack', 'Machine Mouse', 'White Knight Instrumental',
+    'Ameritz Karaoke Band', 'Pop Music Workshop', 'Mike + the Mechanics Tribute']) {
+    assert.equal(artistsMatch(found, 'Mike and the The Mechanics'), false, found);
+  }
+  assert.equal(artistsMatch('Simon + Garfunkel', 'Simon & Garfunkel'), true);
+  assert.equal(artistsMatch('Simon + Garfunkel', 'Simon & Paul Simon'), false);
+});
+
+test('actual repeated band names and non-standalone plus signs are not rewritten as metadata mistakes', () => {
+  assert.equal(artistsMatch('The The', 'The The'), true);
+  assert.equal(artistsMatch('The The', 'The'), false);
+  assert.equal(artistsMatch('Duran Duran', 'Duran'), false);
+  assert.equal(artistsMatch('Johnny Marr & The The', 'Johnny Marr and The The'), true);
+  assert.equal(artistsMatch('R+R', 'R & R'), false);
+  assert.equal(artistsMatch('+44', '+44'), true);
+});
+
+test('same-ID aliases remain available when the canonical name itself has a plus credit', () => {
+  const aliases = ['abc', 'a b'];
+  assert.equal(artistsMatch('A + B', 'ABC', aliases), true);
+  assert.equal(artistsMatch('A + B', 'ABC'), false);
+  assert.equal(artistsMatch('A + B Tribute', 'ABC', aliases), false);
+});
+
+test('loaded aliases cannot turn a matching corrected Mike credit into a mismatch', () => {
+  assert.equal(artistsMatch('Mike + The Mechanics', 'Mike and the The Mechanics', ['mike the mechanics']), true);
+});
+
+let joinedExactCode = block('static bool exactTrackMatch(')
+  .replace(/const auto /g, 'const ')
+  .replace('ArtworkTitleMatch::withoutFeatureCredit', 'withoutFeatureCredit')
+  .replace('String(stripped.data(), stripped.size())', 'stripped')
+  .replace(/\bconst String (\w+) =/g, 'const $1 =')
+  .replace(/const char\* (\w+)\[\] = \{([^}]+)\};/g, 'const $1 = [$2];')
+  .replace(/for \(const char\* (\w+) : \{([^}]+)\}\)/g, 'for (const $1 of [$2])')
+  .replace(/for \(const char\* (\w+) : (\w+)\)/g, 'for (const $1 of $2)')
+  .replace(/\bString (\w+) =/g, 'let $1 =')
+  .replace(/value.remove\(([^)]+)\);/g, 'value = value.substring(0, $1);')
+  .replace(/strlen\(([^)]+)\)/g, '$1.length')
+  .replace('ArtworkTitleMatch::minorTypo', 'minorTypo');
+joinedExactCode = strings(joinedExactCode);
+const joinedExact = new Function('normalizeArtworkText', 'artworkArtistsMatch', 'minorTypo', 'withoutFeatureCredit', 'foundArtist', 'foundTitle',
+  'wantedArtist', 'wantedTitle', 'allowStudioMix', 'allowTitleTypos', joinedExactCode)
+  .bind(null, normalizeArtworkText, artistsMatch, () => false, titlePolicy.withoutFeatureCredit);
+
+test('the supplied Mike track is accepted while acoustic, cover and numbered remaster recordings remain rejected', () => {
+  const wanted = 'Mike and the The Mechanics', title = 'Another Cup Of Coffee';
+  for (const artist of ['Mike & the Mechanics', 'Mike + The Mechanics']) {
+    assert.equal(joinedExact(artist, 'Another Cup of Coffee', wanted, title, false, false), true);
+    for (const suffix of [' (Acoustic)', ' (acoustic version)', ' (2005 Remaster)', ' (Live)', ' (Remix)', ' (Karaoke Version)']) {
+      assert.equal(joinedExact(artist, title + suffix, wanted, title, false, false), false, suffix);
+    }
+  }
+  assert.equal(joinedExact('Machine Mouse', title + ' (Mike and the Mechanics Cover)', wanted, title, false, false), false);
+  assert.equal(joinedExact('Mike + The Mechanics', 'Poor Boy Down', wanted, title, false, false), false);
+});
+
+test('Ofenbach vs. and versus credits accept the original single and still require requested participants', () => {
+  for (const found of ['Ofenbach vs. Nick Waterhouse', 'Ofenbach versus Nick Waterhouse', 'Ofenbach & Nick Waterhouse']) {
+    assert.equal(artistsMatch(found, 'Ofenbach'), true);
+    assert.equal(artistsMatch(found, 'Ofenbach feat. Nick Waterhouse'), true);
+    assert.equal(joinedExact(found, 'Katchi', 'Ofenbach', 'Katchi feat. Nick Waterhouse', false, false), true);
+    assert.equal(artistsMatch(found, 'Ofenbach & Another Guest'), false);
+  }
+  assert.equal(artistsMatch('Nick Waterhouse', 'Ofenbach'), false);
+  assert.equal(artistsMatch('Ofenbach Tribute', 'Ofenbach'), false);
+  assert.equal(joinedExact('Ofenbach & Nick Waterhouse', 'Katchi feat Nick Waterhouse Remix', 'Ofenbach', 'Katchi', false, false), false);
+  assert.equal(joinedExact('Ofenbach & Nick Waterhouse', 'Katchi feat Nick Waterhouse Radio Edit', 'Ofenbach', 'Katchi', false, false), true);
+});
+
+let creditTitleCode = block('static bool artistCreditTitleMatch(')
+  .replace(/ArtworkTitleMatch::/g, 'policy.')
+  .replace(/std::string_view\((\w+)\.c_str\(\)\)/g, '$1')
+  .replace(/String\((\w+)\.(subtitle|main)\.data\(\), \1\.\2.size\(\)\)/g, '$1.$2')
+  .replace(/String\(feature.data\(\), feature.size\(\)\)/g, 'feature')
+  .replace(/\.c_str\(\)/g, '').replace(/([\w.]+)\.empty\(\)/g, '($1.length === 0)')
+  .replace(/\bconst (?:auto|String) /g, 'const ');
+function creditTitleMatch(foundArtist, foundTitle, wantedArtist, wantedTitle) {
+  const splitSubtitle = title => {
+    const match = title.match(/^([^()[\]]+?)(\s+\([^()[\]]+\))?$/);
+    return match ? { valid: true, main: match[1].trim(), subtitle: (match[2] || '').trim() } : { valid: false };
+  };
+  return new Function('artworkArtistsMatch','normalizeArtworkText','policy','foundArtist','foundTitle','wantedArtist','wantedTitle',creditTitleCode)
+    (artistsMatch,normalizeArtworkText,{...titlePolicy,splitSubtitle},foundArtist,foundTitle,wantedArtist,wantedTitle);
+}
+test('the iTunes Katchi artist-credit title is a strong match while wrong guests, remixes and covers are rejected', () => {
+  const found = 'Ofenbach & Nick Waterhouse', wanted = 'Ofenbach', title = 'Katchi feat. Nick Waterhouse';
+  assert.equal(creditTitleMatch(found, 'Katchi (Ofenbach vs. Nick Waterhouse)', wanted, title), true);
+  for (const suffix of ['Remix', 'Live', 'Acoustic', '2017 Remaster', 'Karaoke', 'Extended Mix']) {
+    assert.equal(creditTitleMatch(found, 'Katchi (Ofenbach vs. Nick Waterhouse ' + suffix + ')', wanted, title), false);
+    assert.equal(creditTitleMatch(found, 'Katchi (Ofenbach vs. Nick Waterhouse)', wanted, title + ' ' + suffix), false);
+  }
+  assert.equal(creditTitleMatch(found, 'Katchi (Ofenbach vs. Nick Waterhouse)', wanted, 'Katchi feat. Another Guest'), false);
+  assert.equal(creditTitleMatch('James Major', 'Katchi (Ofenbach vs. Nick Waterhouse)', wanted, title), false);
+  assert.equal(creditTitleMatch(found, 'Different Song (Ofenbach vs. Nick Waterhouse)', wanted, title), false);
 });

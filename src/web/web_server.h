@@ -7,3 +7,4 @@ void webServerLoop();
 bool queuePlayerCommand(const JsonDocument& cmd);
 void requestStateSave();
 bool broadcastState(bool forceDisplay = false);
+void notifyStationArtworkReady();

@@ -1,6 +1,10 @@
 #include "../../src/artwork/artwork_title_match.h"
 
 using ArtworkTitleMatch::minorTypo;
+static_assert(ArtworkTitleMatch::featureCredit("katchi feat nick waterhouse") == "nick waterhouse");
+static_assert(ArtworkTitleMatch::withoutFeatureCredit("katchi feat nick waterhouse") == "katchi");
+static_assert(ArtworkTitleMatch::withoutFeatureCredit("katchi feat nick waterhouse remix") == "katchi feat nick waterhouse remix");
+static_assert(ArtworkTitleMatch::featureCredit("katchi feat nick waterhouse 2017 remaster").empty());
 static_assert(minorTypo("this ain t a scene, it an arms race", "this ain t a scene, it s an arms race"));
 static_assert(minorTypo("blinding lights", "blindig lights"));
 static_assert(minorTypo("blinding lights", "blidnig lights"));
@@ -55,3 +59,23 @@ static_assert(splitSubtitle("Around the World (La La) [Extended Version]").subti
 static_assert(!splitSubtitle("Around the World (Live [Radio Version]").valid);
 static_assert(splitSubtitle("Around the World (La La) [Radio Version] Live").valid == false);
 static_assert(ArtworkTitleMatch::withoutStandardVersions("Song [Radio Version] [Album Version]") == "Song");
+
+using ArtworkTitleMatch::withoutBroadcastYear;
+static_assert(withoutBroadcastYear("Love Sensation [2026]") == "Love Sensation");
+static_assert(withoutBroadcastYear("Love Sensation (Radio Edit) [2026]") == "Love Sensation (Radio Edit)");
+static_assert(withoutBroadcastYear("Love Sensation (Floorplan Mix) [2026]") == "Love Sensation (Floorplan Mix)");
+static_assert(withoutBroadcastYear("Song [Live 2026]") == "Song [Live 2026]");
+static_assert(withoutBroadcastYear("Song [2026 Remix]") == "Song [2026 Remix]");
+static_assert(withoutBroadcastYear("Song [Remastered 2026]") == "Song [Remastered 2026]");
+static_assert(withoutBroadcastYear("1999") == "1999");
+static_assert(withoutBroadcastYear("Song 2026") == "Song 2026");
+static_assert(withoutBroadcastYear("Song[2026]") == "Song[2026]");
+static_assert(withoutBroadcastYear("[2026]") == "[2026]");
+static_assert(withoutBroadcastYear(" [2026] ") == "[2026]");
+static_assert(withoutBroadcastYear("Song [1900]") == "Song");
+static_assert(withoutBroadcastYear("Song [2099]") == "Song");
+static_assert(withoutBroadcastYear("Song [1899]") == "Song [1899]");
+static_assert(withoutBroadcastYear("Song [2100]") == "Song [2100]");
+static_assert(withoutBroadcastYear("Song [202x]") == "Song [202x]");
+static_assert(withoutBroadcastYear("Song [2026] Live") == "Song [2026] Live");
+static_assert(withoutBroadcastYear("Song [2026") == "Song [2026");

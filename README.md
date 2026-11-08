@@ -2,7 +2,7 @@
 
 [Magyar](README.hu.md)
 
-> Current version: **1.2.07** · ESP32-S3 N16R8 · English and Hungarian UI
+> Current version: **1.2.08** · ESP32-S3 N16R8 · English and Hungarian UI
 
 <a href="https://ko-fi.com/zsoltsogorka" target="_blank" rel="noopener noreferrer"><img src="https://ko-fi.com/img/githubbutton_sm.svg" alt="Support me on Ko-fi"></a>
 

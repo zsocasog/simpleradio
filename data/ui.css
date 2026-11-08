@@ -25,7 +25,12 @@ button.primary:hover { background: var(--accent-strong); border-color: var(--acc
 .brand-mark { width: 42px; height: 42px; }
 .brand small { max-width: 165px; }
 .tabs { background: transparent; border: 0; gap: 8px; padding: 0; overflow-x: auto; scrollbar-width: thin; }
-.tabs button { background: transparent; border: 1px solid transparent; border-radius: 8px; color: var(--muted); white-space: nowrap; padding: 9px 14px; font-size: 18px; }
+.tabs button { background: transparent; border: 1px solid transparent; border-radius: 8px; color: var(--muted); white-space: nowrap; padding: 9px 14px; font-size: 18px; transition: color .16s ease, background-color .16s ease, border-color .16s ease; }
+.tabs button:not(.active):focus-visible { background: rgba(var(--accent-rgb), .045); border-color: rgba(var(--accent-rgb), .18); color: rgba(var(--accent-rgb), .8); }
+@media (hover: hover) and (pointer: fine) {
+  .tabs button:not(.active):hover { background: rgba(var(--accent-rgb), .045); border-color: rgba(var(--accent-rgb), .18); color: rgba(var(--accent-rgb), .8); }
+}
+@media (prefers-reduced-motion: reduce) { .tabs button { transition: none; } }
 .tabs button.active { background: rgba(var(--accent-rgb), .07); border-color: rgba(var(--accent-rgb), .4); color: var(--accent); }
 .top-play-btn { min-width: 90px; }
 .main { flex: 1 0 auto; width: 100%; max-width: 1240px; padding: 34px 28px 0; margin: 0 auto; }
@@ -390,7 +395,8 @@ body[data-view=player] .station-playing:not([hidden]) .station-activity-bar { an
 .signature-volume { position: absolute; left: var(--wave-inset); right: var(--wave-inset); top: 0; height: 52px; min-width: 56px; }
 .volume-pattern { display: flex; align-items: center; justify-content: space-between; position: absolute; top: 8px; left: 0; right: 0; height: 36px; pointer-events: none; }
 .volume-pill { display: block; position: relative; flex: 0 0 4px; width: 4px; overflow: hidden; border-radius: 999px; background: var(--line); }
-.volume-pill::after { content: ''; position: absolute; left: 0; top: 0; width: var(--fill, 0%); height: 100%; background: var(--accent); }
+.volume-pill::after { content: ''; position: absolute; left: 0; top: 0; width: var(--hover-fill, var(--fill, 0%)); height: 100%; background: var(--accent); }
+.signature-volume.is-previewing .volume-pill::after { background: rgba(var(--accent-rgb), .45); }
 .volume-control-row .signature-volume input[type=range] { appearance: none; -webkit-appearance: none; position: absolute; inset: 0; width: 100%; min-width: 0; height: 52px; margin: 0; padding: 0; border: 0; opacity: 0; cursor: pointer; }
 /* A zero-width invisible thumb makes the native click value match the wave's
    full 0..100% width and its hover prediction in both browser engines. */

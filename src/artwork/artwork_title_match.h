@@ -33,6 +33,21 @@ struct TitleParts {
   bool valid = true;
 };
 
+// Radio metadata can append a release year. Strip ONLY a separate final
+// [1900..2099] group, never plain title numbers, remixes, or descriptive groups.
+// Store titles and the displayed/original metadata keep their own identities.
+constexpr std::string_view withoutBroadcastYear(std::string_view text) {
+  text = trim(text);
+  if (text.size() < 8 || text.back() != ']') return text;
+  const size_t at = text.size() - 6;
+  if (text[at] != '[' || (text[at - 1] != ' ' && text[at - 1] != '\t')) return text;
+  const auto year = text.substr(at + 1, 4);
+  if (!((year[0] == '1' && year[1] == '9') || (year[0] == '2' && year[1] == '0'))) return text;
+  for (char c : year) if (c < '0' || c > '9') return text;
+  const auto main = trim(text.substr(0, at));
+  return main.empty() ? text : main;
+}
+
 constexpr bool standardVersion(std::string_view text) {
   text = trim(text);
   for (const char* version : {"radio version", "radio edit", "album version", "album edit",
@@ -104,6 +119,35 @@ constexpr bool protectedSubtitle(std::string_view normalized) {
     if (hasWord(normalized, marker)) return true;
   }
   return false;
+}
+
+// These inputs are normalized text. Preserve version markers after a featured
+// credit: "feat guest remix" must never become a plain studio title.
+constexpr std::string_view featureCredit(std::string_view text) {
+  size_t first = text.size();
+  size_t creditAt = 0;
+  for (const char* marker : {" feat ", " ft ", " featuring ", " with "}) {
+    const std::string_view separator(marker);
+    const size_t at = text.find(separator);
+    if (at != std::string_view::npos && at && at < first) {
+      first = at;
+      creditAt = at + separator.size();
+    }
+  }
+  if (first == text.size()) return {};
+  const auto credit = trim(text.substr(creditAt));
+  return !credit.empty() && !protectedSubtitle(credit) ? credit : std::string_view{};
+}
+
+constexpr std::string_view withoutFeatureCredit(std::string_view text) {
+  const auto credit = featureCredit(text);
+  if (credit.empty()) return text;
+  size_t first = text.size();
+  for (const char* marker : {" feat ", " ft ", " featuring ", " with "}) {
+    const auto at = text.find(marker);
+    if (at != std::string_view::npos && at && at < first) first = at;
+  }
+  return trim(text.substr(0, first));
 }
 
 // Inputs have already passed the existing accent/case/feature normalization.

@@ -16,12 +16,13 @@ function body(source, marker) {
 }
 const tick = () => new Promise(resolve => setImmediate(resolve));
 function browser() {
-  const requests = [], pending = [], statuses = new Map();
+  const requests = [], pending = [], statuses = new Map(), nodes = [];
   const c = vm.createContext({ stationAssetRevision: 1, now: 1000,
     Date: { now: () => c.now },
-    setTimeout: () => 1, clearTimeout() {},
+    setTimeout: () => 1, clearTimeout() {}, queueMicrotask,
     remoteUrl: p => /^https?:\/\//i.test(p),
     logoUrl: p => p,
+    document: { querySelectorAll: () => nodes.filter(node => node.isConnected !== false) },
     Image: class {
       set src(url) { requests.push(url); pending.push({ image: this, url }); }
     }
@@ -29,7 +30,12 @@ function browser() {
   const code = app.slice(app.indexOf('function stationLogoPaths('), app.indexOf('\nfunction updateCover('));
   vm.runInContext(code, c);
   return { c, requests, pending, statuses,
-    node: () => ({ dataset: {}, style: {}, textContent: '', classList: { add() {}, remove() {} } }),
+    node: () => {
+      const classes = new Set();
+      const node = { dataset: {}, style: {}, textContent: '', isConnected: true,
+        classList: { add: name => classes.add(name), remove: name => classes.delete(name), contains: name => classes.has(name) } };
+      nodes.push(node); return node;
+    },
     async finish() {
       for (let turn = 0; turn < 10; ++turn) {
         for (const { image, url } of pending.splice(0)) (statuses.get(url) ? image.onload : image.onerror)();
@@ -50,6 +56,34 @@ test('a cached station logo displays even when the external original is gone', a
   assert.equal(h.requests.length, 1); // Stable updates never reload a good image.
 });
 
+test('a station badge created off-DOM loads after its row is appended', async () => {
+  const h = browser(), n = h.node(), local = '/api/artwork/station?id=5&sr=s5';
+  n.isConnected = false;
+  h.c.applyArtworkNode(n, '/api/artwork/station?id=5', 's5', 'DA');
+  n.isConnected = true; // stationRow() returns, then renderStations() appends it.
+  h.statuses.set(local, true); await tick(); await h.finish();
+  assert.deepEqual(h.requests, [local]);
+  assert.equal(n.style.backgroundImage, `url("${local}")`);
+  assert.equal(n.textContent, ''); assert.ok(n.classList.contains('has-logo'));
+});
+
+test('an off-DOM row discarded before mounting never starts an image request', async () => {
+  const h = browser(), n = h.node(); n.isConnected = false;
+  h.c.applyArtworkNode(n, '/api/artwork/station?id=5', 's5', 'DA');
+  await tick(); await h.finish();
+  assert.deepEqual(h.requests, []); assert.equal(n.textContent, 'DA');
+});
+
+test('an off-DOM badge changed before mounting requests only its final image', async () => {
+  const h = browser(), n = h.node(); n.isConnected = false;
+  h.c.applyArtworkNode(n, '/old.png', 'old', 'OL');
+  h.c.applyArtworkNode(n, '/new.png', 'new', 'NE');
+  n.isConnected = true; h.statuses.set('/new.png?sr=new', true);
+  await tick(); await h.finish();
+  assert.deepEqual(h.requests, ['/new.png?sr=new']);
+  assert.equal(n.style.backgroundImage, 'url("/new.png?sr=new")');
+});
+
 test('a missing local thumbnail falls back to the advertised original without altering its URL', async () => {
   const h = browser(), n = h.node(), remote = 'https://origin.example/logo.png?token=signed';
   h.statuses.set(remote, true);
@@ -65,6 +99,68 @@ test('missing logos show initials and retry when idle prewarming has completed',
   h.c.now += 5001; h.statuses.set(local, true);
   h.c.applyArtworkNode(n, '/api/artwork/station?id=5', 's5', 'DA'); await h.finish();
   assert.equal(n.style.backgroundImage, `url("${local}")`);
+});
+
+test('cache-ready notification refreshes a missing saved logo immediately without a player-state change', async () => {
+  const h = browser(), n = h.node(), local = '/api/artwork/station?id=5&sr=s5';
+  h.c.applyArtworkNode(n, '/api/artwork/station?id=5', 's5', 'DA'); await h.finish();
+  assert.equal(n.textContent, 'DA'); assert.ok(n.dataset.artworkRetryAt > h.c.now);
+  h.statuses.set(local, true);
+  h.c.refreshMissingStationArtwork(); await h.finish();
+  assert.equal(n.style.backgroundImage, `url("${local}")`); assert.equal(h.requests.length, 2);
+});
+
+test('a ready notification preserves visible images and does not retry unsaved search results', async () => {
+  const h = browser(), good = h.node(), missing = h.node(), search = h.node();
+  h.statuses.set('/api/artwork/station?id=1&sr=s1', true);
+  h.c.applyArtworkNode(good, '/api/artwork/station?id=1', 's1', 'OK');
+  h.c.applyArtworkNode(missing, '/api/artwork/station?id=2', 's2', 'NO');
+  h.c.applyArtworkNode(search, 'https://missing.example/search.png', 'search', 'SE');
+  await h.finish();
+  const generation = good.dataset.artworkGeneration;
+  h.statuses.set('/api/artwork/station?id=2&sr=s2', true);
+  h.c.refreshMissingStationArtwork(); await h.finish();
+  assert.equal(h.requests.length, 4); assert.equal(good.dataset.artworkGeneration, generation);
+  assert.equal(good.style.backgroundImage, 'url("/api/artwork/station?id=1&sr=s1")');
+  assert.equal(missing.style.backgroundImage, 'url("/api/artwork/station?id=2&sr=s2")');
+  assert.equal(search.textContent, 'SE');
+});
+
+test('an old pending request for the SAME station cannot replace a notification-refreshed image', async () => {
+  const h = browser(), n = h.node(), local = '/api/artwork/station?id=5&sr=s5';
+  h.c.applyArtworkNode(n, '/api/artwork/station?id=5', 's5', 'DA', ['https://old.example/logo.png']);
+  const old = h.pending.shift();
+  h.c.refreshMissingStationArtwork();
+  h.statuses.set(local, true); await h.finish();
+  old.image.onerror(); await tick();
+  assert.equal(n.style.backgroundImage, `url("${local}")`);
+  assert.deepEqual(h.requests, [local, local]);
+});
+
+test('cache notifications and late image responses leave detached list rows alone', async () => {
+  const h = browser(), n = h.node();
+  h.c.applyArtworkNode(n, '/api/artwork/station?id=5', 's5', 'DA');
+  const old = h.pending.shift(); n.isConnected = false;
+  h.c.refreshMissingStationArtwork(); old.image.onload(); await tick();
+  assert.equal(n.style.backgroundImage, ''); assert.equal(h.requests.length, 1);
+});
+
+test('cache-ready messages include an ordinary complete player snapshot for older WebUIs', () => {
+  const web = fs.readFileSync(path.join(root, 'src/web/web_server.cpp'), 'utf8');
+  const functionText = web.match(/void notifyStationArtworkReady\(\) \{[^]*?\n\}/)[0];
+  const code = functionText.slice(functionText.indexOf('{'))
+    .replace('String state', 'let state').replace('PlayerState::instance().toJson()', 'snapshot()')
+    .replace('state.remove(state.length() - 1);', 'state = state.slice(0, -1);');
+  const frames = [], state = { playing: true, volume: 35, stationId: 2, artist: 'Madonna', title: 'Love Sensation [2026]' };
+  let snapshots = 0;
+  const notify = new Function('ws', 'snapshot', code);
+  const snapshot = () => { ++snapshots; return JSON.stringify(state); };
+  notify({ count: () => 0, textAll: s => frames.push(s) }, snapshot);
+  assert.equal(snapshots, 0);
+  notify({ count: () => 1, textAll: s => frames.push(s) }, snapshot);
+  const parsed = JSON.parse(frames[0]); assert.equal(parsed.stationArtworkReady, true);
+  delete parsed.stationArtworkReady; assert.deepEqual(parsed, state);
+  assert.doesNotMatch(code, /Display|render\(/);
 });
 
 test('a late old station image cannot overwrite the new station', async () => {

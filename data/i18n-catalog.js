@@ -4,7 +4,7 @@ window.SR_TEXT_KEYS = {
   "0 mentve": "text.cda6d76a2b8f",
   "0 állomás": "text.3460cb87a6ba",
   "A bal és jobb csatorna aránya": "text.32fdcc7f1ec6",
-  "A firmware frissítés után az ESP újraindul. A data frissítés teljes LittleFS cserét végez; a WiFi, config,\n            állapot és állomáslista mentésre kerül. A cache újragenerálódik, a kézzel feltöltött logók akkor maradnak\n            meg, ha benne vannak a feltöltött data image-ben.": "text.024e9d132502",
+  "A data-frissítés lecseréli a webfelületet. A beállítások, az állomáslista és a feltöltött logók megmaradnak; a képek gyorsítótára újraépül.": "text.024e9d132502",
   "A fájlok a /logos mappába kerülnek.": "text.dec15b5dffab",
   "A főképernyőn és a webes lejátszón megjelenő kép": "text.778473d517a6",
   "A hangerőszabályzás érzetének beállítása": "text.d7634fbd68c7",

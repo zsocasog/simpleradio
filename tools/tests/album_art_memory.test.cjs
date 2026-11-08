@@ -14,7 +14,7 @@ const web = read("src/web/web_server.cpp");
 
 test("album response branches into RAM before ANY filesystem preparation", () => {
   const download = cache.slice(cache.indexOf("bool ArtworkCache::download(const String&"));
-  const ram = download.indexOf("prepareAlbumMemory(response.data, written, cacheKey, outPath, unavailable)");
+  const ram = download.indexOf("prepareAlbumMemory(response.data, written, cacheKey, outPath, unavailable, deadlineMs)");
   assert.ok(ram > 0);
   assert.ok(ram < download.indexOf("enforceCacheBudget(written +"));
   assert.match(download.slice(ram), /return ready; \/\/ No filesystem fallback/);
@@ -61,7 +61,7 @@ test("all album cache/readiness/cleanup paths bypass file operations", () => {
 test("stale tracks are checked after decoding and before publishing web/LCD together", () => {
   const prepare = cache.slice(cache.indexOf("bool ArtworkCache::prepareAlbumMemory("), cache.indexOf("bool ArtworkCache::download(const String&"));
   assert.match(prepare, /current.playing &&\s*key == String\(ALBUM_ART_CACHE_PREFIX\) \+ current.artist \+ "\|" \+ current.title/);
-  assert.ok(prepare.indexOf("if (!drawn || !stillCurrent())") < prepare.indexOf("AlbumArtStore::instance().publish(frame)"));
+  assert.ok(prepare.indexOf("if (!drawn || !stillCurrent() || deadlineReached(deadlineMs))") < prepare.indexOf("AlbumArtStore::instance().publish(frame)"));
   assert.match(store, /frame->ready = true;\s*published_ =/);
 });
 

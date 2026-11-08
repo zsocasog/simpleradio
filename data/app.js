@@ -53,6 +53,9 @@ let hardwareCapabilities = {
 let selectedIrAction = "";
 let configLoaded = false;
 let stationAssetRevision = Date.now();
+const stationLogoRevisions = new Map();
+const stationLogoRepairAttempts = new Set();
+let stationLogoRepairRunning = false;
 let draggedStationId = null;
 let uploadedLogos = [];
 let savedStationFilter = "";
@@ -432,6 +435,7 @@ function connectWS() {
       lastWsMessageAt = Date.now();
       const payload = JSON.parse(event.data);
       if (payload && payload.pong) return;
+      if (payload && payload.stationArtworkReady) refreshMissingStationArtwork();
       updateUI(payload);
     } catch (err) {
       console.warn("Bad websocket payload", err);
@@ -860,11 +864,11 @@ function logoUrl(path, key = "") {
   if (/^https?:\/\//i.test(value)) return value;
 
   const separator = value.includes("?") ? "&" : "?";
-  const cacheKey = [key, stationAssetRevision].filter(Boolean).join("|");
+  const cacheKey = [key, stationAssetRevision, stationLogoRevisions.get(value)].filter(Boolean).join("|");
   return `${value}${separator}sr=${encodeURIComponent(cacheKey || stationAssetRevision)}`;
 }
 
-function stationRow(station, compact = false, index = 0, total = 0) {
+function stationRow(station, compact = false, index = 0, total = 0, existingBadge = null) {
   const row = document.createElement("div");
   row.className = `station-item${station.id === currentStationId ? " active" : ""}`;
   row.dataset.stationId = station.id;
@@ -924,8 +928,8 @@ function stationRow(station, compact = false, index = 0, total = 0) {
     });
   }
 
-  const badge = document.createElement("span");
-  badge.className = "station-badge";
+  const badge = existingBadge || document.createElement("span");
+  badge.classList.add("station-badge");
   const badgePaths = stationLogoPaths(station.id, station.logo);
   applyArtworkNode(badge, badgePaths[0], `${station.id}|${station.logo}`,
     stationInitial(station.name), badgePaths.slice(1));
@@ -1053,6 +1057,12 @@ function renderStations(force = false) {
 
   const quick = $("stations");
   const manager = $("stationManager");
+  // Reuse each list's artwork nodes, including any in-flight image request.
+  // The surrounding rows are rebuilt so names, actions and ordering stay fresh.
+  const badges = list => new Map([...(list?.querySelectorAll(".station-item[data-station-id]") || [])]
+    .map(row => [row.dataset.stationId, row.querySelector(".station-badge")]));
+  const quickBadges = badges(quick);
+  const managerBadges = badges(manager);
   if (quick) quick.innerHTML = "";
   if (manager) manager.innerHTML = "";
   setText("stationCount", t("stations.savedCount", "{count} mentve", { count: stations.length }));
@@ -1064,13 +1074,13 @@ function renderStations(force = false) {
     : stations;
 
   stations.forEach((station, index) => {
-    if (quick) quick.appendChild(stationRow(station, true, index, stations.length));
+    if (quick) quick.appendChild(stationRow(station, true, index, stations.length, quickBadges.get(String(station.id))));
   });
 
   if (manager) {
     visibleStations.forEach(station => {
       const originalIndex = stations.findIndex(item => item.id === station.id);
-      manager.appendChild(stationRow(station, false, originalIndex, stations.length));
+      manager.appendChild(stationRow(station, false, originalIndex, stations.length, managerBadges.get(String(station.id))));
     });
     if (!visibleStations.length) {
       const empty = document.createElement("div");
@@ -1168,6 +1178,7 @@ async function uploadStationLogo(stationId, logoUrl) {
     });
     if (!response.ok) return "";
     const data = await response.json();
+    if (data.path) stationLogoRevisions.set(data.path, (stationLogoRevisions.get(data.path) || 0) + 1);
     return data.path || "";
   } catch (err) {
     console.warn("Logo normalization failed", err);
@@ -1281,7 +1292,7 @@ async function uploadBulkLogos(fileList) {
     const data = await response.json().catch(() => ({}));
     if (!response.ok || !data.ok) throw new Error(data.error || t("logos.uploadStatusError", "Feltöltési hiba: {status}", { status: response.status }));
     stationAssetRevision = Date.now();
-    renderStations();
+    renderStations(true);
     await loadLogoChoices();
     const count = Number(data.count || 0);
     const label = count !== files.length
@@ -1469,12 +1480,32 @@ async function postStation(data) {
 }
 
 async function saveStationData(data) {
-  const saved = await postStation(data);
+  const normalizeLogo = remoteUrl(data.logo);
+  const saved = await postStation({ ...data, prepareLogo: normalizeLogo ? "0" : "1" });
   if (!saved) return null;
 
+  // Keep conversion in the browser, but let it supply the image before the
+  // radio starts its own fallback download of the same logo.
   const localLogo = await uploadStationLogo(saved.id, data.logo);
+  let logoLinked = false;
   if (localLogo && localLogo !== data.logo) {
-    await postStation({ ...data, id: String(saved.id), logo: localLogo });
+    try {
+      logoLinked = !!await postStation({ ...data, id: String(saved.id), logo: localLogo });
+    } catch (err) {
+      console.warn("Station logo link failed", err);
+    }
+  }
+  if (normalizeLogo && !logoLinked) {
+    // CORS or a broken original must not disable the radio's working fallback.
+    try {
+      await fetch("/api/station/logo/prepare", {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({ id: String(saved.id) })
+      });
+    } catch (err) {
+      console.warn("Station logo preparation request failed", err);
+    }
   }
 
   return saved;
@@ -2495,8 +2526,81 @@ async function loadStations() {
   const response = await fetch("/api/stations");
   const data = await response.json();
   stations = data.stations || [];
-  stationAssetRevision = Date.now();
   renderStations(true);
+  setTimeout(repairMissingStationLogos, 1500);
+}
+
+function stationLogoLookupUrl(value) {
+  try {
+    const url = new URL(value);
+    if (!/^https?:$/.test(url.protocol) || url.username || url.password ||
+        !url.hostname.includes(".") || /^[\d.:]+$/.test(url.hostname) ||
+        /\.(local|lan|home|internal|localhost|test|invalid)$/.test(url.hostname) ||
+        [...url.searchParams.keys()].some(key => /token|auth|pass|secret|sig|credential|key/i.test(key))) return "";
+    url.hash = "";
+    return url.href;
+  } catch (_) { return ""; }
+}
+
+async function repairMissingStationLogos() {
+  // Older data updates could leave generated /logos/station-*.png references
+  // without the files. Recover only an EXACT stream match, once per page and
+  // sequentially; custom filenames and valid local logos are left untouched.
+  if (stationLogoRepairRunning || window.SRUI?.otaBusy) return;
+  const candidates = stations.filter(s => /^\/logos\/station-\d+(?:-[^/]+)?\.png$/i.test(s.logo || "") &&
+    !stationLogoRepairAttempts.has(`${s.id}|${s.logo}`) && stationLogoLookupUrl(s.url));
+  if (!candidates.length) return;
+  stationLogoRepairRunning = true;
+  try {
+    const response = await fetch("/api/logos", { cache: "no-store" });
+    if (!response.ok) return;
+    const data = await response.json();
+    if (!Array.isArray(data.logos)) return;
+    const present = new Set(data.logos.map(logo => logo.path));
+    for (const station of candidates) {
+      if (window.SRUI?.otaBusy) break;
+      if (present.has(station.logo)) continue;
+      stationLogoRepairAttempts.add(`${station.id}|${station.logo}`);
+      const original = { ...station };
+      const stream = stationLogoLookupUrl(original.url);
+      const alternate = new URL(stream);
+      alternate.protocol = alternate.protocol === "http:" ? "https:" : "http:";
+      const equivalent = url => {
+        const value = new URL(url); value.protocol = "http:"; return value.href;
+      };
+      let source = "";
+      for (const query of [...new Set([stream, alternate.href])]) {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 6000);
+        try {
+          const endpoint = RADIO_BROWSER_SEARCH_URL.replace(/\/search$/, "/byurl");
+          const found = await fetch(`${endpoint}?${new URLSearchParams({ url: query })}`, { signal: controller.signal });
+          if (!found.ok) continue;
+          const results = await found.json();
+          if (!Array.isArray(results)) continue;
+          const match = results.find(result => remoteUrl(result.favicon) &&
+            [result.url, result.url_resolved].some(url => stationLogoLookupUrl(url) && equivalent(url) === equivalent(stream)));
+          if (match) { source = match.favicon; break; }
+        } catch (_) { /* Keep the saved station intact if the directory is unavailable. */ }
+        finally { clearTimeout(timeout); }
+      }
+      const current = stations.find(s => s.id === original.id);
+      if (!source || !current || ["name", "url", "logo"].some(key => current[key] !== original[key]) ||
+          String($("editId")?.value || "") === String(original.id) || window.SRUI?.otaBusy) continue;
+      // Restore just the missing file. Never rewrite station identity/name/URL
+      // from a background lookup, even if the user edits them concurrently.
+      let restored = await uploadStationLogo(original.id, source);
+      if (!restored) {
+        const thumbnail = onlineStationLogoThumbnail(source);
+        if (thumbnail) restored = await uploadStationLogo(original.id, thumbnail);
+      }
+      if (restored === original.logo) await loadStations();
+    }
+  } catch (err) {
+    console.warn("Missing station logo recovery deferred", err);
+  } finally {
+    stationLogoRepairRunning = false;
+  }
 }
 
 function stationLogoPaths(stationId, logo) {
@@ -2532,6 +2636,9 @@ function applyArtworkNode(node, path, key, fallbackText = "SR", fallbackPaths = 
   if (node.dataset.artworkKey === nextKey &&
       (!node.dataset.artworkRetryAt || Date.now() < Number(node.dataset.artworkRetryAt))) return;
   node.dataset.artworkKey = nextKey;
+  const generation = String(Number(node.dataset.artworkGeneration || 0) + 1);
+  node.dataset.artworkGeneration = generation;
+  node.artworkRefresh = null;
   delete node.dataset.artworkRetryAt;
   // Keep the established RAM album-art route direct. Station fallback probing
   // must not add a preload or change how an already found album is displayed.
@@ -2547,8 +2654,18 @@ function applyArtworkNode(node, path, key, fallbackText = "SR", fallbackPaths = 
   node.classList.remove("has-logo");
   if (!paths.length) return;
 
+  const isCurrent = () => node.isConnected !== false &&
+    node.dataset.artworkKey === nextKey && node.dataset.artworkGeneration === generation;
+  if (paths.some(candidate => String(candidate).startsWith("/api/artwork/station?"))) {
+    node.artworkRefresh = () => {
+      if (!isCurrent()) return;
+      delete node.dataset.artworkKey;
+      applyArtworkNode(node, path, key, fallbackText, fallbackPaths);
+    };
+  }
+
   const tryPath = async index => {
-    if (node.dataset.artworkKey !== nextKey) return;
+    if (!isCurrent()) return;
     if (index >= paths.length) { node.dataset.artworkRetryAt = Date.now() + 5000; return; }
     const path = paths[index];
     const separator = String(path).includes("?") ? "&" : "?";
@@ -2556,12 +2673,27 @@ function applyArtworkNode(node, path, key, fallbackText = "SR", fallbackPaths = 
     const cacheSafePath = remoteUrl(path) ? path :
       `${path}${separator}sr=${encodeURIComponent(key || stationAssetRevision)}`;
     if (!await artworkImageReady(cacheSafePath)) return tryPath(index + 1);
-    if (node.dataset.artworkKey !== nextKey) return;
+    if (!isCurrent()) return;
     node.style.backgroundImage = `url("${String(cacheSafePath).replace(/"/g, "%22")}")`;
     node.textContent = "";
     node.classList.add("has-logo");
   };
-  tryPath(0);
+  // Rows (including search results) are built off-DOM, then appended by the
+  // caller. Start after that synchronous step so the connected-node guard
+  // accepts new rows while still rejecting removed rows and stale requests.
+  if (node.isConnected === false) queueMicrotask(() => tryPath(0));
+  else tryPath(0);
+}
+
+function refreshMissingStationArtwork() {
+  // Retry only missing saved-station images, once the radio says its cache is
+  // ready. No periodic polling and no reload/flicker for already visible art.
+  for (const [url, entry] of artworkImageRequests) {
+    if (!entry.ok) artworkImageRequests.delete(url);
+  }
+  document.querySelectorAll(".station-badge, #webCoverArt, #brandMark").forEach(node => {
+    if (!node.classList.contains("has-logo") && node.artworkRefresh) node.artworkRefresh();
+  });
 }
 
 function updateCover(state) {

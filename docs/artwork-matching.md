@@ -1,5 +1,21 @@
 # Album artwork matching
 
+## Ofenbach / Katchi (2026-11-08)
+
+- A `vs.` és `versus` előadó-kapcsolat az `&`-hez hasonlóan külön krediteket
+  jelöl. A kért közreműködők ellenőrzése továbbra is kötelező, nincs fuzzy
+  előadókeresés. A korábban elutasított `Ofenbach vs. Nick Waterhouse` kredit
+  így már nem ejti ki a saját Katchi kislemezt és az Ofenbach EP-t.
+- Az iTunes `Katchi (Ofenbach vs. Nick Waterhouse)` címe erős egyezés lehet
+  a rádiós `Katchi feat. Nick Waterhouse` címmel, ha a zárójel tartalma pontosan
+  a szolgáltató teljes előadói kreditjét adja, és a rádiós közreműködő is szerepel
+  benne. Ez a bizonyított kredit egy Single/EP esetén is használható.
+- Az általános opcionális alcím továbbra is gyenge egyezés, saját albumot
+  igényel. A remix/live/karaoke/extended/idegen előadó védelmek megmaradnak;
+  a feature-szöveg után álló verziójelölés sem tűnhet el levágáskor.
+- A szolgáltatók sorrendje, a saját album elsőbbsége, a tartalékok sorrendje,
+  a RAM-képek és a spektrum működése változatlan.
+
 - Prefer a verified album owned by the performer. Single/EP, artist collection,
   unverified release and compilation images remain later fallbacks.
 - Exact titles rank ahead of small spelling corrections and optional subtitles.
@@ -125,3 +141,113 @@ keresés és képelőkészítés 7,237 s, 8,369 s (Green Day – Bang Bang) és
 6,128 s (Fish! – Mi Vagyunk Itt) volt. Az utóbbi két kép RAM-dekódolása
 455 és 445 ms alatt végzett. A felhasználó gyors, megfelelő működést
 igazolt vissza; ez az 1.2.07-es mentés funkcionális alapja.
+
+## Évszám a rádiós számcím végén (2026-11-07)
+
+A `MADONNA - Love Sensation [2026]` naplóban az iTunes és a Deezer több
+előadó-/főcím-egyezést adott, de a rádiós címben maradó `2026` miatt az
+ellenőrzés elutasította őket. A feloldás most külön keresési címet használ:
+csak a végén álló, szóközzel/tabbal elválasztott `[1900..2099]` csoportot
+hagyja el. Ugyanez a cím megy minden szolgáltatóhoz és a találatok
+ellenőrzéséhez. Az eredeti teljes cím továbbra is megmarad a kijelzésben,
+a cachekulcsban és a számváltási megszakítás ellenőrzésében.
+
+A szó szerinti teljes címegyezés elsőbbsége megmarad, ha a szolgáltató is
+évszámmal nevezi a számot. A sima `1999`, a címbe írt szám, a `[Live 2026]`,
+`[2026 Remix]` és a zárójel nélküli cím nem válik levágott keresési címmé.
+A más előadó, duett, remix, élő vagy instrumentális felvétel ellenőrzése
+változatlan. Az eddigi gyenge stúdiómix-egyezés továbbra is tulajdonosi
+albumellenőrzést igényel; az évszám eltávolítása nem emeli pontos egyezéssé.
+
+## Mentett állomáslogók lejátszás közben (2026-11-07)
+
+A lejátszás korábban a teljes előkészítési sort letiltotta, így egy újonnan
+mentett adó logója is várakozott a megállításig. A már sorba tett kérések most
+stabil lejátszás mellett is feldolgozhatók. Az automatikus teljes listaellenőrzés
+csak megállított rádiónál fut. A hangkapcsolat elkészülése után megmarad az
+5 s-os TLS-türelmi idő, a 3 s-os munkaköz és az egyszerre egy képfeladat.
+Lejátszás alatti távoli logófeladat 12 s-os közös letöltési keretet kap; egy
+hangkapcsolat/kijelölt állomás által megszakított előkészítés visszakerül a sorba.
+
+A kész logó után a rádió egyszeri WebSocket-jelzést küld. A teljes szokásos
+lejátszóállapotot tartalmazza egy opcionális `stationArtworkReady` jelöléssel,
+így korábbi webfelületek is biztonságosan feldolgozhatják. Az új WebUI csak
+a még hiányzó mentett állomásképeket próbálja újra: nincs időzített lekérdezés,
+a már látható kép nem töltődik újra, és egy régi azonos URL-es kérés sem írhatja
+felül az új eredményt. A közvetlen RAM-albumborító megjelenítése változatlan.
+Ehhez a körhöz a firmware és a data/LittleFS frissítése is szükséges.
+
+## Átmeneti belsőmemória-hiány a borító letöltése után (2026-11-07)
+
+A letöltött kép megmarad a PSRAM-ban, amíg a képpuffer foglalása rövid ideig
+újrapróbálkozik. A foglalt képslot és az átmenetileg kevés belső memória
+legfeljebb 1500 ms-os, 25 ms-onkénti várakozást kap. A meglévő kép-/keresési
+határidő ennél korábban is megszakíthatja; számváltás és leállítás szintén
+érvényes marad. Nem indul új letöltés ugyanazon foglalási kísérletek miatt.
+Más foglalási hibát az újrapróbálkozás nem fed el.
+
+A belső tartalék JPEG-nél 24 KiB és 6 KiB összefüggő blokk, PNG-nél 32 KiB
+és 8 KiB marad. A képekhez továbbra is két PSRAM-slot áll rendelkezésre, és
+egy megjelenített vagy olvasók által használt képet nem használunk munkapuffernek.
+Tartós memóriahiánynál továbbra is az állomáslogó a biztonságos tartalék.
+
+Egy közös, foglalásmentes állapotjelző összehangolja a borító RAM-foglalását
+és dekódolását az állomás-/PNG-mentés átmeneti 6 KiB-os feladatvermével.
+A mentési kérés addig a már létező, egyhelyes sorban vár, nem foglal új vermet.
+Egy folyamatban levő mentés után a várakozó borító megelőzi a következő mentést.
+A jelző minden sikeres, hibás és megszakított úton felszabadul. A FreeRTOS által
+később visszaadott veremmemóriát is kivárhatja a fenti rövid újrapróbálkozás.
+
+A napló várakozáskor egyszer `RAM wait`, sikeres helyreálláskor egyszer
+`RAM recovered` sort ír. Normál, azonnali foglalás nem kap új naplósorokat.
+
+## Előadói névváltozatok és duplázott névelő (2026-11-07)
+
+Az előadónévben a külön álló ` + ` ugyanazt a szerepet kapja, mint az `&`
+vagy az `and`. Egy kapcsolás utáni `the the <név>` elejéről egyetlen hibásan
+ismételt névelő marad el: a rádiós `Mike and the The Mechanics` ezért egyezik
+a szolgáltatók `Mike + The Mechanics` és `Mike & the Mechanics` neveivel.
+A valódi `The The`, a `Duran Duran` és a névhez tapadó pluszjel nem változik.
+A már igazolt, azonos MusicBrainz-azonosítóhoz tartozó névváltozatok megtartják
+az elsőbbségüket; a javított közvetlen egyezést egy aliaslista nem ronthatja el.
+
+Minden kért előadói részt továbbra is ellenőrzünk. A plusz Paul Carrack-kredit,
+a Machine Mouse-feldolgozás, a karaoke-előadók, az akusztikus/élő/remix-változatok
+és az eltérő számcím nem válnak elfogadott találattá. Az eredeti kijelzett név,
+a cachekulcs és a számváltás ellenőrzése változatlan; a szűk javítás csak az
+előadó-egyeztetésben fut. A webfelület változatlan, ehhez a körhöz firmware-frissítés kell.
+
+## Keresésindítás és a képfeladatok memóriája (2026-11-08)
+
+A hibás naplóban 44 744 bájt szabad belső RAM mellett a legnagyobb egybefüggő
+blokk csak 12 276 bájt volt. A kereső 12 288 bájtos feladatverme ezért nem
+jött létre; a szolgáltatók lekérdezéséig sem jutott el. A három másodpercenkénti
+újrapróbálkozás nem változtatott ezen. A november 7-i működő és a november 8-i
+csomagban az indítás és a veremméret azonos; a rendelkezésre álló napló nem
+azonosítja, pontosan mely foglalások alakították ki ezt a memóriaelrendezést.
+
+A régi feladatban a `vTaskDelete(nullptr)` a külső hatókör `String`-jeinek és
+szegmensvektorának megsemmisítése előtt futott. A FreeRTOS a feladat saját
+heap-puffereit nem szabadítja fel, így ezek hosszabb logó-/számváltási sorozatok
+alatt megmaradhattak. Ez külön, korábban is meglévő erőforrás-kezelési hiba.
+
+Mind a hat képfeladat ugyanazt az induláskor létrehozott háttérmunkást használja:
+borítókeresés, logóletöltés, beágyazott kép, LCD-bélyegkép, csatornaválasztó
+kis logója és böngészőből importált kép. Az egyhelyes sor statikus tárolót
+használ, a küldés nem várakozik. Az eddigi közös foglaltsági jelző továbbra
+is csak egy képmunkát enged be. Minden munka normál függvényvisszatéréssel
+fejeződik be; a helyi pufferek felszabadulnak, mielőtt a foglaltság megszűnik.
+Hibás kép és megszakított letöltés után is visszatér a várakozó munkás.
+
+A verem marad 12 KiB, belső DRAM-ban; nem kerül PSRAM-ba és nem lesz kisebb.
+A fordított programban a verem, feladatvezérlő és sor együtt kb. 12,5 KiB
+állandó helyet foglal. Ez üresjáratban is foglalt, cserébe futáskor nem kell
+új nagy memóriablokkot keresni. Albumkeresés közben a korábbi feladat ugyanekkora
+vermet és vezérlőt foglalt a heapből; a kisebb logómunkák az eddigi 8 KiB helyett
+ugyanezt a 12 KiB-os vermet használják. Nincs második képfeldolgozó vagy új
+egyidejű képfeladat. Az alapprioritás 0, a létrehozás `tskNO_AFFINITY` marad.
+
+A JPEG/PNG belsőmemória-tartalékai, PSRAM-képslotjai, keresési határidői és
+számváltási/megszakítási feltételei változatlanok. A spektrum és a hangkimenet
+kódja nem módosul. Ehhez a javításhoz csak firmware-frissítés szükséges;
+a meglévő 1.2.07 webfelület és adatcsomag használható.

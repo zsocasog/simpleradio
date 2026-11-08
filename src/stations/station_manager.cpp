@@ -8,6 +8,21 @@
 #include "../storage/atomic_file.h"
 
 static SemaphoreHandle_t stationMutex = nullptr;
+static SemaphoreHandle_t stationWriteMutex = nullptr;
+
+// Readers only need stationMutex. A network reader must never inherit its
+// high priority into a low-priority flash writer via that mutex.
+class StationWriteLock {
+public:
+  StationWriteLock() {
+    if (!stationWriteMutex) stationWriteMutex = xSemaphoreCreateMutex();
+    locked = stationWriteMutex && xSemaphoreTake(stationWriteMutex, 0) == pdTRUE;
+  }
+  ~StationWriteLock() { if (locked) xSemaphoreGive(stationWriteMutex); }
+  bool ok() const { return locked; }
+private:
+  bool locked = false;
+};
 
 static String cleanLogoValue(const String& value) {
   String cleaned = value;
@@ -27,9 +42,9 @@ static SemaphoreHandle_t stationLockHandle() {
 
 class StationLock {
 public:
-  StationLock() {
+  explicit StationLock(TickType_t waitTicks = pdMS_TO_TICKS(1000)) {
     SemaphoreHandle_t mutex = stationLockHandle();
-    locked = mutex && xSemaphoreTakeRecursive(mutex, pdMS_TO_TICKS(1000)) == pdTRUE;
+    locked = mutex && xSemaphoreTakeRecursive(mutex, waitTicks) == pdTRUE;
   }
 
   ~StationLock() {
@@ -50,6 +65,8 @@ StationManager& StationManager::instance() {
 }
 
 bool StationManager::begin() {
+  StationWriteLock writeLock;
+  if (!writeLock.ok()) return false;
   StationLock lock;
   if (!lock.ok()) return false;
 
@@ -132,36 +149,54 @@ bool StationManager::saveFile() {
 }
 
 bool StationManager::saveStation(int id, const String& name, const String& url, const String& logo, int& outId) {
-  StationLock lock;
-  if (!lock.ok()) return false;
-
+  StationWriteLock writeLock;
+  if (!writeLock.ok()) return false;
   if (!name.length() || !url.length()) return false;
 
-  JsonArray stations = _doc["stations"].as<JsonArray>();
-  if (stations.isNull()) {
-    stations = _doc["stations"].to<JsonArray>();
+  JsonDocument next;
+  int savedId = id;
+  {
+    StationLock lock;
+    if (!lock.ok()) return false;
+    if (!next.set(_doc)) return false;
+    if (savedId < 0) savedId = nextId();
   }
 
-  outId = id >= 0 ? id : nextId();
+  JsonArray stations = next["stations"].as<JsonArray>();
+  if (stations.isNull()) {
+    stations = next["stations"].to<JsonArray>();
+  }
 
+  JsonObject target;
   for (JsonObject s : stations) {
-    if (s["id"].as<int>() == outId) {
-      s["name"] = name;
-      s["url"] = url;
-      s["logo"] = cleanLogoValue(logo);
-      return saveFile();
+    if (s["id"].as<int>() == savedId) {
+      target = s;
+      break;
     }
   }
+  if (target.isNull()) target = stations.add<JsonObject>();
+  target["id"] = savedId;
+  target["name"] = name;
+  target["url"] = url;
+  target["logo"] = cleanLogoValue(logo);
+  if (next.overflowed()) return false;
 
-  JsonObject s = stations.add<JsonObject>();
-  s["id"] = outId;
-  s["name"] = name;
-  s["url"] = url;
-  s["logo"] = cleanLogoValue(logo);
-  return saveFile();
+  // Persist a private snapshot without holding the reader lock. Keep the old
+  // list and revision live on I/O failure; publish only a durable full result.
+  if (!writeJsonAtomic("/stations.json", next, true)) return false;
+  {
+    StationLock lock(portMAX_DELAY);
+    if (!lock.ok()) return false;
+    swap(_doc, next);
+    ++_revision;
+    outId = savedId;
+  }
+  return true;
 }
 
 bool StationManager::deleteStation(int id) {
+  StationWriteLock writeLock;
+  if (!writeLock.ok()) return false;
   StationLock lock;
   if (!lock.ok()) return false;
 
@@ -179,6 +214,8 @@ bool StationManager::deleteStation(int id) {
 }
 
 bool StationManager::moveStation(int id, int direction) {
+  StationWriteLock writeLock;
+  if (!writeLock.ok()) return false;
   StationLock lock;
   if (!lock.ok()) return false;
 
@@ -242,6 +279,8 @@ static bool parseStationOrder(const String& orderCsv, std::vector<int>& ids) {
 }
 
 bool StationManager::reorderStations(const String& orderCsv) {
+  StationWriteLock writeLock;
+  if (!writeLock.ok()) return false;
   StationLock lock;
   if (!lock.ok()) return false;
 

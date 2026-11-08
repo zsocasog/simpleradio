@@ -8,6 +8,15 @@ static_assert(internalReady(Format::Jpeg, 30 * 1024, 8 * 1024));
 static_assert(!internalReady(Format::Png, 30 * 1024, 8 * 1024));
 static_assert(!internalReady(Format::Jpeg, 23 * 1024, 8 * 1024));
 static_assert(!internalReady(Format::Jpeg, 30 * 1024, 3900));
+static_assert(!internalReady(Format::Jpeg, 22988, 7668)); // The reported Nickelback log.
+static_assert(ramRetryRemaining(100, 100, 0) == 1500);
+static_assert(ramRetryRemaining(100, 1599, 0) == 1);
+static_assert(ramRetryRemaining(100, 1600, 0) == 0);
+static_assert(ramRetryRemaining(100, 200, 220) == 20);
+static_assert(ramRetryRemaining(100, 220, 220) == 0);
+static_assert(ramRetryRemaining(100, 221, 220) == 0);
+static_assert(ramRetryRemaining(0xfffffff0, 0x20, 0) == 1452);
+static_assert(ramRetryRemaining(0xfffffff0, 0x20, 0x30) == 16);
 static_assert(internalReady(Format::Png, 32 * 1024, 8 * 1024));
 static_assert(internalHeadroom(Format::Jpeg) - 3900 > 20 * 1024);
 static_assert(reusable(false, 1));

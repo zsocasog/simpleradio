@@ -13,6 +13,8 @@ const scheduler = body("processPrewarmQueue")
   .replace(/String (\w+);/g, 'let $1 = "";')
   .replace(/String (\w+) =/g, "let $1 =")
   .replace(/unsigned long now =/g, "const now =")
+  .replace(/const uint32_t /g, 'const ')
+  .replace(/static_cast<uint32_t>\(([^)]+)\)/g, 'u32($1)')
   .replace(/takePrewarmItem\(source\)/g, "(source = takeItem())")
   .replace(/findExistingLcdArtworkPath\(source, lcdPath\)/g, "(lcdPath = findLcd(source))")
   .replace(/findExistingCachePath\(source, existingPath\)/g, "(existingPath = findOriginal(source))")
@@ -21,8 +23,10 @@ const scheduler = body("processPrewarmQueue")
 function schedulerHarness({ queued = [], auto = [], playing = false, active = false, originals = {}, ready = [] } = {}) {
   const jobs = [], scans = [];
   const queue = [...queued], candidates = [...auto];
-  const context = vm.createContext({
+  const context = vm.createContext({ u32: value => value >>> 0,
     state: { playing }, nowMs: 10000, active, lastPrewarmWorkMs: 0, PREWARM_IDLE_SPACING_MS: 3000,
+    audioConnectionReady: true, audioConnectionReadyMs: 1000, CURRENT_ARTWORK_TLS_GRACE_MS: 5000,
+    ALBUM_ART_IMAGE_BUDGET_MS: 12000,
     millis: () => context.nowMs, isDownloadActive: () => context.active,
     takeItem: () => queue.shift() || "",
     queueNextStationPrewarmCandidate: () => { scans.push(context.nowMs); const p = candidates.shift(); if (p) queue.push(p); return !!p; },
@@ -34,7 +38,7 @@ function schedulerHarness({ queued = [], auto = [], playing = false, active = fa
     queuePrewarmItem: p => { queue.unshift(p); return true; },
     preferredLocalArtworkPath: p => p, supportedArtworkFile: p => p.endsWith(".png"),
     LittleFS: { exists: () => true }, Serial: { printf() {} }, artworkTraceSerial: { printf() {} },
-    startDownloadTask: (p, idle) => { jobs.push({ kind: "download", p, idle }); context.active = true; return true; },
+    startDownloadTask: (p, idle, secure, deadline) => { jobs.push({ kind: "download", p, idle, secure, deadline }); context.active = true; return true; },
     requestLcdThumbnail: (p, idle) => { jobs.push({ kind: "thumbnail", p, idle }); context.active = true; return true; }
   });
   vm.runInContext(`function run(state) ${scheduler}`, context);
@@ -49,11 +53,45 @@ test("stopped radio automatically preloads saved logos serially with a gap betwe
   assert.equal(h.jobs[1].p, "https://two.example/logo.png");
 });
 
-test("playback suppresses idle scanning, and explicit selected-station work stays ahead of the scan", () => {
+test("a saved logo is downloaded during stable playback without scanning other stations", () => {
   const h = schedulerHarness({ playing: true, queued: ["https://selected.example/logo.png"], auto: ["https://other.example/logo.png"] });
-  h.run(); assert.equal(h.jobs.length, 0); assert.equal(h.scans.length, 0);
-  h.context.state.playing = false; h.run();
+  h.run(); assert.equal(h.jobs.length, 1); assert.equal(h.scans.length, 0);
   assert.equal(h.jobs[0].p, "https://selected.example/logo.png"); assert.equal(h.scans.length, 0);
+  assert.equal(h.jobs[0].deadline, 22000);
+});
+
+test("playback with no queued logo never scans the complete saved-station list", () => {
+  const h = schedulerHarness({ playing: true, auto: ["https://other.example/logo.png"] });
+  h.run(); h.context.nowMs += 5000; h.run();
+  assert.equal(h.jobs.length, 0); assert.equal(h.scans.length, 0);
+});
+
+test("queued logos wait for the audio connection and TLS grace without being lost", () => {
+  const h = schedulerHarness({ playing: true, queued: ["https://new.example/logo.png"] });
+  h.context.audioConnectionReady = false; h.run(); assert.equal(h.jobs.length, 0);
+  h.context.audioConnectionReady = true; h.context.audioConnectionReadyMs = 9000;
+  h.run(); assert.equal(h.jobs.length, 0);
+  h.context.nowMs = 14000; h.run(); assert.equal(h.jobs.length, 1);
+});
+
+test("an active album/artwork worker retains priority over a newly saved station logo", () => {
+  const h = schedulerHarness({ playing: true, active: true, queued: ["https://new.example/logo.png"] });
+  h.run(); assert.equal(h.jobs.length, 0); assert.equal(h.scans.length, 0);
+  h.context.active = false; h.run(); assert.equal(h.jobs.length, 1);
+});
+
+test("a local logo is prepared during playback too, without another download", () => {
+  const h = schedulerHarness({ playing: true, queued: ["https://new.example/logo.png"],
+    originals: { "https://new.example/logo.png": "/cache/local.png" } });
+  h.run(); assert.equal(h.jobs.length, 0); h.run();
+  assert.equal(h.jobs[0].kind, "thumbnail"); assert.equal(h.scans.length, 0);
+});
+
+test("the stable-playback guard handles millis rollover", () => {
+  const h = schedulerHarness({ playing: true, queued: ["https://new.example/logo.png"] });
+  h.context.audioConnectionReadyMs = 0xffffff00; h.context.nowMs = 20;
+  h.run(); assert.equal(h.jobs.length, 0);
+  h.context.nowMs = 5000; h.run(); assert.equal(h.jobs.length, 1);
 });
 
 test("all-ready/empty scans are throttled instead of walking the filesystem every Arduino loop", () => {

@@ -38,6 +38,8 @@ static constexpr const char* OTA_LITTLEFS_REMOUNT_FAILED = "LittleFS remount fai
 static constexpr const char* OTA_NOT_FIRMWARE_BIN = "This does not look like a firmware .bin";
 static constexpr const char* OTA_WRITE_FAILED = "OTA write failed";
 static constexpr const char* OTA_UPLOAD_INCOMPLETE = "OTA upload did not finish";
+static constexpr const char* OTA_BACKUP_FAILED = "Cannot preserve settings and logos; filesystem update has not started";
+static constexpr const char* OTA_RESTORE_FAILED = "Cannot restore settings or logos; retry the filesystem update without rebooting";
 
 static constexpr const char* RESET_POWERON = "Power-on reset";
 static constexpr const char* RESET_EXTERNAL = "External reset";

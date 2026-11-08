@@ -113,9 +113,11 @@ test('JPEG accepts the constrained-memory case while retaining PNG and contiguou
   assert.equal(ready(1,30000,8000),true);assert.equal(ready(2,30000,8000),false);
   assert.equal(ready(1,23000,8000),false);assert.equal(ready(1,30000,3900),false);
 });
-test('temporary slot contention retries existing bytes only, with bounded wait and precise reasons',()=>{
+test('temporary slot or internal-memory contention retries existing bytes only, within the image deadline',()=>{
   const p=body(cache,'bool ArtworkCache::prepareAlbumMemory(');
-  assert.match(p,/retryUntil = millis\(\) \+ 250/);assert.match(p,/failure != AlbumArtStore::ReserveFailure::SlotsBusy/);
+  assert.match(p,/AlbumArtPolicy::ramRetryRemaining\(retryStartedMs, millis\(\), deadlineMs\)/);
+  assert.match(p,/failure != AlbumArtStore::ReserveFailure::SlotsBusy/);
+  assert.match(p,/failure != AlbumArtStore::ReserveFailure::InternalLow/);
   assert.match(p,/RAM reserve failed: %s; internal=%u largest=%u need=%u; PSRAM=%u largest=%u; slots=%ld,%ld published=%d/);
   assert.doesNotMatch(p,/LittleFS|download\(/);
 });

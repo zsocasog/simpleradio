@@ -38,6 +38,8 @@ static constexpr const char* OTA_LITTLEFS_REMOUNT_FAILED = "LittleFS visszacsato
 static constexpr const char* OTA_NOT_FIRMWARE_BIN = "Ez nem firmware .bin fájlnak tűnik";
 static constexpr const char* OTA_WRITE_FAILED = "OTA írási hiba";
 static constexpr const char* OTA_UPLOAD_INCOMPLETE = "OTA feltöltés nem fejeződött be";
+static constexpr const char* OTA_BACKUP_FAILED = "A beállítások és logók mentése nem sikerült; a data frissítés nem indult el";
+static constexpr const char* OTA_RESTORE_FAILED = "A beállítások vagy logók visszaállítása nem sikerült; próbáld újra a data frissítést újraindítás nélkül";
 
 static constexpr const char* RESET_POWERON = "Bekapcsolás";
 static constexpr const char* RESET_EXTERNAL = "Külső újraindítás";

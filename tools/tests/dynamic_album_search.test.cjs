@@ -2,6 +2,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const test = require('node:test');
+const { withoutFeatureCredit } = require('./helpers/artwork_title_policy.cjs');
 const root = path.resolve(__dirname, '../..');
 const read = p => fs.readFileSync(path.join(root, p), 'utf8');
 const cpp = read('src/artwork/artwork_cache.cpp');
@@ -237,7 +238,7 @@ function subtitleMatch(foundArtist, foundTitle, wantedArtist = 'Shinedown', want
   const normalize = value => cppString(value.c_str().toLowerCase().normalize('NFD').replace(/\p{M}/gu, '').replace(/[^a-z0-9&,]+/g, ' ').trim());
   return new Function('foundArtist','foundTitle','wantedArtist','wantedTitle','artworkArtistsMatch', 'policy', 'normalizeArtworkText','String', subtitleBody)(
     foundArtist, cppString(foundTitle), wantedArtist, cppString(wantedTitle), (a,b) => a.toLowerCase() === b.toLowerCase(),
-    { splitSubtitle, protectedSubtitle, minorTypo: () => false }, normalize, cppString);
+    { splitSubtitle, protectedSubtitle, withoutFeatureCredit, minorTypo: () => false }, normalize, cppString);
 }
 test('production title matching accepts Shinedown subtitle spelling and punctuation variants', () => {
   for (const title of ['Diamond Eyes (Boom-Lay Boom-Lay Boom)', 'Diamond Eyes (Boom‐Lay Boom‐Lay Boom)', 'Diamond Eyes (Boom-Lay...)']) {

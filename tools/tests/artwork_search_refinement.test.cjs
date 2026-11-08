@@ -95,7 +95,7 @@ test('minor title spelling differences cannot bypass the existing strict artist 
 test('exact title matches rank ahead of minor typos and provider order stays intact', () => {
   const quality = block(cache, 'auto titleQuality =')
     .replace(/const String& /g, '').replace(/\bartist\b/g, 'wantedArtist').replace(/\btitle\b/g, 'wantedTitle');
-  const rank = new Function('exactTrackMatch', 'subtitleTrackMatch', `const foundArtist='',foundTitle='',wantedArtist='',wantedTitle=''; ${quality}`);
+  const rank = new Function('exactTrackMatch', 'subtitleTrackMatch', `const artistCreditTitleMatch=()=>false; const foundArtist='',foundTitle='',wantedArtist='',wantedTitle='',lookupTitle=''; ${quality}`);
   assert.equal(rank((_a, _t, _wa, _wt, studio, typos) => !studio && !typos, () => true), 4);
   assert.equal(rank((_a, _t, _wa, _wt, studio, typos) => !studio && typos, () => true), 3);
   assert.equal(rank((_a, _t, _wa, _wt, studio) => !!studio, () => true), 2);

@@ -6,6 +6,7 @@
 #include "../audio/spectrum_dynamics.h"
 #include "../artwork/artwork_cache.h"
 #include "../artwork/album_art_store.h"
+#include "../artwork/picker_logo_loader.h"
 #include "../config/app_config.h"
 #include "../config/hardware_config.h"
 #include "../config/logging.h"
@@ -2039,26 +2040,24 @@ static bool pickerViewportValid = false;
 static uint32_t pickerRenderedRevision = 0;
 
 struct PickerLogoJob {
-  File file;
-  String path;
   String source;
   int row = -1;
   int station = -1;
-  int nextY = 0;
-  time_t modified = 0;
+  uint32_t ticket = 0;
 };
 static PickerLogoJob pickerLogoJob;
 
 static void cancelPickerLogoJob() {
-  pickerLogoJob.file.close();
+  PickerLogoLoader::cancel();
   pickerLogoJob.row = -1;
-  pickerLogoJob.nextY = 0;
+  pickerLogoJob.ticket = 0;
 }
 
 static void swapPickerLogos(int a, int b) {
   if (a == b) return;
   std::swap(pickerLogos[a], pickerLogos[b]);
-  // A partially converted image follows its buffer when visible rows move.
+  // The request follows its station when visible rows move; the worker owns
+  // separate unpublished pixels, never a live cache entry or its row number.
   if (pickerLogoJob.row == a) pickerLogoJob.row = b;
   else if (pickerLogoJob.row == b) pickerLogoJob.row = a;
 }
@@ -2073,7 +2072,7 @@ static int reservePickerLogo(const Station& station) {
     if (pickerLogos[i].station < 0) { slot = i; break; }
   }
   if (slot < 0) slot = PICKER_VISIBLE_ROWS + nextSpare++ % PICKER_VISIBLE_ROWS;
-  // Do not close an in-flight file or evict its buffer on the drawing path.
+  // Retain the requested station while it moves through the visible/spare rows.
   if (pickerLogoJob.row == slot)
     slot = PICKER_VISIBLE_ROWS + (slot - PICKER_VISIBLE_ROWS + 1) % PICKER_VISIBLE_ROWS;
   PickerLogo& entry = pickerLogos[slot];
@@ -2093,68 +2092,24 @@ static bool pickerLogoReady(int row, const Station& station) {
   return entry.ready && entry.pixels;
 }
 
-static uint16_t thumbnailRgb565(const uint8_t* row, int column) {
-  // SR56 contains LovyanGFX sprite bytes (high byte first), not native uint16_t.
-  return (static_cast<uint16_t>(row[column * 2]) << 8) | row[column * 2 + 1];
-}
-
-// Reuse the prepared station bitmap, only after the encoder has settled.
-// Reading/conversion then advances in short slices between display requests.
+// Queue metadata only. All cache probes, file reads and averaging run on the
+// existing artwork worker; an unchanged ready tile stays visible meanwhile.
 static bool beginPickerLogo(int row, const Station& station, unsigned long now) {
   pickerLogoReady(row, station);
   PickerLogo& entry = pickerLogos[row];
   const unsigned long retryMs = entry.ready ? StationPickerPolicy::READY_LOGO_RECHECK_MS
                                            : StationPickerPolicy::MISSING_LOGO_RECHECK_MS;
   if (entry.probed && !StationPickerPolicy::elapsedAtLeast(now, entry.checkedMs, retryMs)) return false;
+  if (!station.logo.length()) return false;
+  const uint32_t ticket = PickerLogoLoader::request(station.logo, entry.path, entry.modified,
+      entry.ready && entry.pixels, ART_SIZE, PICKER_LOGO_SIZE);
+  if (!ticket) return false;
   entry.probed = true;
   entry.checkedMs = now;
-  if (!station.logo.length()) return false;
-  String source;
-  if (!ArtworkCache::instance().stationArtworkReady(station.id, &source) || !source.length()) {
-    return false;
-  }
-  const String path = ArtworkCache::instance().lcdThumbnailPath(source);
-  File file = LittleFS.open(path, "r");
-  if (!file) return false;
-  const time_t modified = file.getLastWrite();
-  if (entry.ready && entry.path == path && entry.modified == modified) return false;
-  uint8_t header[8];
-  if (file.read(header, 8) != 8 || memcmp(header, "SR56", 4) ||
-      (header[4] | (header[5] << 8)) != ART_SIZE ||
-      (header[6] | (header[7] << 8)) != ART_SIZE ||
-      file.size() != 8 + ART_SIZE * ART_SIZE * sizeof(uint16_t)) return false;
-  if (!entry.pixels) entry.pixels = static_cast<uint16_t*>(heap_caps_malloc(
-      PICKER_LOGO_SIZE * PICKER_LOGO_SIZE * sizeof(uint16_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
-  if (!entry.pixels) return false;
-  entry.ready = false;
-  pickerLogoJob.file = file;
-  pickerLogoJob.path = path;
   pickerLogoJob.source = station.logo;
   pickerLogoJob.station = station.id;
-  pickerLogoJob.modified = modified;
-  pickerLogoJob.nextY = 0;
+  pickerLogoJob.ticket = ticket;
   pickerLogoJob.row = row;
-  return true;
-}
-
-static bool readPickerLogoRow(File& file, uint16_t* pixels, int y) {
-  uint8_t sourceRow[ART_SIZE * sizeof(uint16_t)];
-    uint32_t red[PICKER_LOGO_SIZE] = {}, green[PICKER_LOGO_SIZE] = {}, blue[PICKER_LOGO_SIZE] = {};
-    const int y0 = y * ART_SIZE / PICKER_LOGO_SIZE;
-    const int y1 = (y + 1) * ART_SIZE / PICKER_LOGO_SIZE;
-    for (int sourceY = y0; sourceY < y1; ++sourceY) {
-      if (file.read(sourceRow, sizeof(sourceRow)) != sizeof(sourceRow)) return false;
-      for (int x = 0; x < PICKER_LOGO_SIZE; ++x) {
-        for (int sourceX = x * ART_SIZE / PICKER_LOGO_SIZE; sourceX < (x + 1) * ART_SIZE / PICKER_LOGO_SIZE; ++sourceX) {
-          uint16_t pixel = thumbnailRgb565(sourceRow, sourceX);
-          red[x] += pixel >> 11; green[x] += (pixel >> 5) & 63; blue[x] += pixel & 31;
-        }
-      }
-    }
-    for (int x = 0; x < PICKER_LOGO_SIZE; ++x) {
-      const unsigned count = (y1 - y0) * ((x + 1) * ART_SIZE / PICKER_LOGO_SIZE - x * ART_SIZE / PICKER_LOGO_SIZE);
-      pixels[y * PICKER_LOGO_SIZE + x] = ((red[x] / count) << 11) | ((green[x] / count) << 5) | (blue[x] / count);
-    }
   return true;
 }
 
@@ -2164,25 +2119,22 @@ static int advancePickerLogo() {
   if (entry.station != pickerLogoJob.station || entry.source != pickerLogoJob.source) {
     cancelPickerLogoJob(); return -1;
   }
-  const unsigned long started = micros();
-  int rows = 0;
-  do {
-    if (!readPickerLogoRow(pickerLogoJob.file, entry.pixels, pickerLogoJob.nextY)) {
-      cancelPickerLogoJob(); return -1;
-    }
-    ++pickerLogoJob.nextY;
-    ++rows;
-  } while (pickerLogoJob.nextY < PICKER_LOGO_SIZE &&
-           rows < StationPickerPolicy::LOGO_ROWS_PER_STEP &&
-           micros() - started < StationPickerPolicy::LOGO_STEP_US && !pickerSelectionPending());
-  if (pickerLogoJob.nextY < PICKER_LOGO_SIZE) return -1;
-  const int row = pickerLogoJob.row;
-  entry.path = pickerLogoJob.path;
-  entry.modified = pickerLogoJob.modified;
-  entry.ready = true;
+  PickerLogoLoader::Result result;
+  if (!PickerLogoLoader::take(pickerLogoJob.ticket, result)) return -1;
+  int readyRow = -1;
+  if (result.pixels) {
+    // Ownership crosses only after the whole image is ready. The worker never
+    // mutates pixels that the LCD or the viewport cache can still be drawing.
+    free(entry.pixels);
+    entry.pixels = result.releasePixels();
+    entry.path = std::move(result.path);
+    entry.modified = result.modified;
+    entry.ready = true;
+    readyRow = pickerLogoJob.row;
+  }
   entry.checkedMs = millis();
   cancelPickerLogoJob();
-  return row;
+  return readyRow;
 }
 
 static lgfx::LGFX_Sprite* pickerCanvas() {

@@ -4,18 +4,23 @@
 #include <Update.h>
 #include <WiFi.h>
 #include <esp_system.h>
+#include <esp_heap_caps.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
 #include <freertos/task.h>
 #include "../state/player_state.h"
 #include "../state/state_storage.h"
+#include "../storage/ota_backup.h"
 #include "../config/app_config.h"
 #include "../config/hardware_capabilities.h"
 #include "../stations/station_manager.h"
 #include "../artwork/artwork_cache.h"
 #include "../artwork/album_art_store.h"
+#include "../artwork/artwork_memory_gate.h"
 #include "../artwork/lcd_bmp_stream.h"
 #include <memory>
+#include <algorithm>
+#include <new>
 #include "../display/display.h"
 #include "../display/display_presenter.h"
 #include "../i18n/i18n.h"
@@ -151,6 +156,7 @@ static bool otaUploadOk = false;
 static bool otaFilesystemTarget = false;
 static bool otaFilesystemUnmounted = false;
 static size_t otaUploadedBytes = 0;
+static uint32_t otaUploadGeneration = 0;
 static unsigned long otaUploadLastMs = 0;
 static String otaUploadError;
 
@@ -179,18 +185,10 @@ static void sendRecoveryPage(AsyncWebServerRequest* request) {
   request->send(response);
 }
 
-struct OtaBackupFile {
-  const char* path;
-  bool exists = false;
-  String data;
-};
-
-static OtaBackupFile otaBackupFiles[] = {
-  {"/wifi.json", false, ""},
-  {"/config.json", false, ""},
-  {"/state.json", false, ""},
-  {"/stations.json", false, ""}
-};
+static OtaBackup::Snapshot otaRuntimeBackup(
+  [](size_t bytes) { return static_cast<uint8_t*>(heap_caps_malloc(bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT)); },
+  heap_caps_free);
+static bool otaRuntimeBackupReady = false;
 
 static constexpr unsigned long OTA_UPLOAD_STALE_MS = 30000;
 
@@ -239,54 +237,85 @@ static void stopPlaybackForMaintenance() {
   broadcastState(true);
 }
 
-static String readWholeFile(const char* path) {
-  File file = LittleFS.open(path, "r");
-  if (!file) return "";
-  String out;
-  out.reserve(file.size());
-  while (file.available()) {
-    out += static_cast<char>(file.read());
-  }
-  file.close();
-  return out;
-}
-
-static void backupOtaRuntimeFiles() {
-  for (auto& item : otaBackupFiles) {
-    item.exists = LittleFS.exists(item.path);
-    item.data = item.exists ? readWholeFile(item.path) : "";
-  }
-}
-
-static void restoreOtaRuntimeFiles() {
-  for (auto& item : otaBackupFiles) {
-    if (!item.exists) continue;
-    File file = LittleFS.open(item.path, "w");
-    if (!file) {
-      Serial.printf("[ota] failed to restore %s\n", item.path);
-      continue;
-    }
-    file.print(item.data);
-    file.close();
-  }
-}
-
 static void clearOtaRuntimeBackups() {
-  for (auto& item : otaBackupFiles) {
-    item.exists = false;
-    item.data = "";
+  otaRuntimeBackup.clear();
+  otaRuntimeBackupReady = false;
+}
+
+static bool backupOtaRuntimeFiles() {
+  // Keep a previous snapshot if an interrupted update still needs recovery.
+  if (otaRuntimeBackupReady) return true;
+  clearOtaRuntimeBackups();
+  auto capture = [](const char* path) {
+    File file = LittleFS.open(path, "r");
+    if (!file || file.isDirectory()) return false;
+    return otaRuntimeBackup.add(path, file.size(), [&](uint8_t* data, size_t size) {
+      size_t offset = 0;
+      while (offset < size) {
+        const size_t count = file.read(data + offset, std::min(size - offset, size_t(4096)));
+        if (!count) return false;
+        offset += count;
+        delay(0);
+      }
+      return true;
+    });
+  };
+  for (const char* path : {"/wifi.json", "/config.json", "/state.json", "/stations.json",
+                           "/wifi.json.bak", "/config.json.bak", "/state.json.bak", "/stations.json.bak"}) {
+    if (LittleFS.exists(path) && !capture(path)) { clearOtaRuntimeBackups(); return false; }
   }
+  if (LittleFS.exists("/logos")) {
+    File root = LittleFS.open("/logos");
+    if (!root || !root.isDirectory()) { clearOtaRuntimeBackups(); return false; }
+    for (File file = root.openNextFile(); file; file = root.openNextFile()) {
+      String name = file.name();
+      const int slash = name.lastIndexOf('/');
+      if (slash >= 0) name.remove(0, slash + 1);
+      if (file.isDirectory()) { clearOtaRuntimeBackups(); return false; }
+      if (name.endsWith(".tmp") || name.endsWith(".bak")) continue;
+      const String path = "/logos/" + name;
+      file.close();
+      if (!capture(path.c_str())) { clearOtaRuntimeBackups(); return false; }
+    }
+  }
+  otaRuntimeBackupReady = true;
+  Serial.printf("[ota] preserved runtime files: %u, bytes=%u\n",
+                unsigned(otaRuntimeBackup.count()), unsigned(otaRuntimeBackup.bytes()));
+  return true;
+}
+
+static bool restoreOtaRuntimeFiles() {
+  if (!otaRuntimeBackupReady) return true;
+  return otaRuntimeBackup.restore([](const char* path, const uint8_t* data, size_t size) {
+    if (strncmp(path, "/logos/", 7) == 0 && !LittleFS.exists("/logos") && !LittleFS.mkdir("/logos")) return false;
+    File file = LittleFS.open(path, "w");
+    if (!file) return false;
+    size_t offset = 0;
+    while (offset < size) {
+      const size_t count = file.write(data + offset, std::min(size - offset, size_t(4096)));
+      if (!count) return false;
+      offset += count;
+      delay(0);
+    }
+    file.flush();
+    const bool complete = file.size() == size && !file.getWriteError();
+    file.close();
+    if (!complete) Serial.printf("[ota] failed to restore %s\n", path);
+    return complete;
+  });
 }
 
 static void remountLittleFsAfterFailedOta() {
-  if (!otaFilesystemUnmounted) return;
-  LittleFS.begin(false);
-  otaFilesystemUnmounted = false;
+  if (otaFilesystemUnmounted) {
+    if (!LittleFS.begin(false)) return;
+    otaFilesystemUnmounted = false;
+  }
+  if (!otaFilesystemUnmounted && restoreOtaRuntimeFiles()) clearOtaRuntimeBackups();
 }
 
 static String otaErrorText(const String& fallback) {
   const char* updateError = Update.errorString();
-  if (updateError && updateError[0]) return String(updateError);
+  if (Update.hasError() && updateError && updateError[0]) return String(updateError);
   return fallback.length() ? fallback : I18n::OTA_FAILED;
 }
 
@@ -296,7 +325,6 @@ static void failOtaUpload(AsyncWebServerRequest* request, const String& error) {
   request->setAttribute("error", otaUploadError.c_str());
   if (Update.isRunning()) Update.abort();
   remountLittleFsAfterFailedOta();
-  clearOtaRuntimeBackups();
   otaUploadActive = false;
 }
 
@@ -318,8 +346,17 @@ static bool beginOtaUpload(AsyncWebServerRequest* request, size_t total, int com
   if (otaUploadActive && millis() - otaUploadLastMs > OTA_UPLOAD_STALE_MS) {
     if (Update.isRunning()) Update.abort();
     remountLittleFsAfterFailedOta();
-    clearOtaRuntimeBackups();
     otaUploadActive = false;
+  }
+
+  request->setAttribute("otaAccepted", "0");
+  if (otaUploadActive) {
+    request->setAttribute("error", I18n::OTA_BUSY);
+    return false;
+  }
+  if (!filesystemTarget && otaRuntimeBackupReady) {
+    request->setAttribute("error", I18n::OTA_RESTORE_FAILED);
+    return false;
   }
 
   otaUploadFailed = false;
@@ -330,12 +367,6 @@ static bool beginOtaUpload(AsyncWebServerRequest* request, size_t total, int com
   otaFilesystemUnmounted = false;
   otaUploadLastMs = millis();
   request->setAttribute("otaOk", "0");
-
-  if (otaUploadActive) {
-    request->setAttribute("error", I18n::OTA_BUSY);
-    otaUploadFailed = true;
-    return false;
-  }
 
   if (!request->hasParam("confirm") || request->getParam("confirm")->value() != "1") {
     request->setAttribute("error", I18n::OTA_MISSING_CONFIRM);
@@ -359,7 +390,12 @@ static bool beginOtaUpload(AsyncWebServerRequest* request, size_t total, int com
   stopPlaybackForMaintenance();
 
   if (filesystemTarget) {
-    backupOtaRuntimeFiles();
+    if (!backupOtaRuntimeFiles()) {
+      otaUploadFailed = true;
+      otaUploadActive = false;
+      request->setAttribute("error", I18n::OTA_BACKUP_FAILED);
+      return false;
+    }
     LittleFS.end();
     otaFilesystemUnmounted = true;
   } else {
@@ -370,6 +406,9 @@ static bool beginOtaUpload(AsyncWebServerRequest* request, size_t total, int com
     failOtaUpload(request, I18n::OTA_BEGIN_FAILED);
     return false;
   }
+
+  request->setAttribute("otaAccepted", "1");
+  request->setAttribute("otaGeneration", String(++otaUploadGeneration).c_str());
 
   Serial.printf("[ota] begin %s, bytes=%u\n",
                 filesystemTarget ? "littlefs" : "firmware",
@@ -394,7 +433,12 @@ static void finishOtaUpload(AsyncWebServerRequest* request) {
       return;
     }
     otaFilesystemUnmounted = false;
-    restoreOtaRuntimeFiles();
+    if (!restoreOtaRuntimeFiles()) {
+      otaUploadFailed = true;
+      otaUploadActive = false;
+      request->setAttribute("error", I18n::OTA_RESTORE_FAILED);
+      return; // Retain PSRAM originals for a subsequent filesystem retry.
+    }
     WebUiCompatibility::refresh();
   }
 
@@ -418,7 +462,9 @@ static void handleOtaChunk(AsyncWebServerRequest* request,
     return;
   }
 
-  if (otaUploadFailed) return;
+  if (request->getAttribute("otaAccepted") != "1" ||
+      request->getAttribute("otaGeneration") != String(otaUploadGeneration) ||
+      !otaUploadActive || otaUploadFailed) return;
 
   otaUploadLastMs = millis();
   if (!filesystemTarget && index == 0 && len && data[0] != 0xE9) {
@@ -903,6 +949,11 @@ static String stationLogoUploadPath(int id) {
   Station station;
   String slug;
   if (StationManager::instance().getStation(id, station)) {
+    const String prefix = "/logos/station-" + String(id);
+    if ((station.logo.startsWith(prefix + "-") || station.logo == prefix + ".png") &&
+        station.logo.endsWith(".png") && station.logo.indexOf('/', 7) < 0 && station.logo.indexOf("..") < 0) {
+      return station.logo; // Repair/replace this station's existing generated path in place.
+    }
     slug = stationNameSlug(station.name);
   }
 
@@ -1107,6 +1158,248 @@ static bool commitPendingDelete() {
   return true;
 }
 
+struct StationLogoUploadBuffer {
+  size_t size;
+  size_t received;
+  uint8_t bytes[1];
+};
+
+struct StationSaveJob {
+  AsyncWebServerRequestPtr request;
+  String name;
+  String url;
+  String logo;
+  int id = -1;
+  int outId = -1;
+  bool saved = false;
+  bool done = false;
+  bool started = false;
+  bool memoryClaimed = false;
+  int errorStatus = 500;
+  bool prepareLogo = true;
+  StationLogoUploadBuffer* upload = nullptr;
+  String error;
+  uint32_t elapsedMs = 0;
+  ~StationSaveJob() {
+    free(upload);
+    if (memoryClaimed) ArtworkMemory::gate().endStationSave();
+  }
+};
+
+static portMUX_TYPE stationSaveMux = portMUX_INITIALIZER_UNLOCKED;
+static StationSaveJob* pendingStationSave = nullptr;
+static constexpr uint32_t STATION_SAVE_TASK_STACK = 6144;
+
+static bool storeStationLogo(StationSaveJob& job) {
+  job.logo = stationLogoUploadPath(job.id);
+  const String tempPath = job.logo + ".upload";
+  if (!ensureDir("/logos")) { job.error = "Logo directory unavailable"; return false; }
+  if (LittleFS.exists(tempPath)) LittleFS.remove(tempPath);
+  File file = LittleFS.open(tempPath, "w");
+  if (!file) { job.error = "Logo file open failed"; return false; }
+  bool ok = true;
+  for (size_t offset = 0; offset < job.upload->size;) {
+    const size_t count = min(static_cast<size_t>(4096), job.upload->size - offset);
+    if (file.write(job.upload->bytes + offset, count) != count) { ok = false; break; }
+    offset += count;
+    vTaskDelay(1);
+  }
+  file.flush();
+  file.close();
+  if (!ok) {
+    LittleFS.remove(tempPath);
+    job.error = "Logo write failed";
+    return false;
+  }
+  if (!commitLogoUpload(tempPath, job.logo, job.error)) return false;
+  removeOldStationLogoUploads(job.id, job.logo);
+  return true;
+}
+
+static void stationSaveTask(void* parameter) {
+  auto* job = static_cast<StationSaveJob*>(parameter);
+  const uint32_t startedMs = millis();
+  // An aborted request which never started must not create a station. Once
+  // writing has begun, finish the atomic commit even if the browser goes away.
+  if (!job->request.expired()) {
+    if (job->upload) job->saved = storeStationLogo(*job);
+    else job->saved = StationManager::instance().saveStation(job->id, job->name, job->url, job->logo, job->outId);
+  }
+  job->elapsedMs = millis() - startedMs;
+  portENTER_CRITICAL(&stationSaveMux);
+  job->done = true;
+  portEXIT_CRITICAL(&stationSaveMux);
+  vTaskDelete(nullptr); // The main loop owns and releases the completed job.
+}
+
+static void startStationSaveJob(AsyncWebServerRequest* request, StationSaveJob* job) {
+  // Copy the request's data; only the library's weak continuation pointer may
+  // outlive its handler. At most one job/stack can be admitted at a time.
+  bool admitted = false;
+  portENTER_CRITICAL(&stationSaveMux);
+  if (!pendingStationSave) {
+    pendingStationSave = job;
+    admitted = true;
+  }
+  portEXIT_CRITICAL(&stationSaveMux);
+  if (!admitted) {
+    delete job;
+    request->send(503, "text/plain", "Another station save is in progress");
+    return;
+  }
+  job->request = request->pause();
+  // No worker stack is allocated in the request handler. The main loop starts
+  // it once album preparation has released the shared memory gate.
+}
+
+static void dispatchPendingStationSave() {
+  StationSaveJob* job = nullptr;
+  portENTER_CRITICAL(&stationSaveMux);
+  if (pendingStationSave && !pendingStationSave->started && !pendingStationSave->done) job = pendingStationSave;
+  portEXIT_CRITICAL(&stationSaveMux);
+  if (!job) return;
+  if (job->request.expired()) {
+    job->done = true;
+    return;
+  }
+  if (!ArtworkMemory::gate().beginStationSave()) return;
+  job->memoryClaimed = true;
+  job->started = true;
+  // AsyncTCP runs above the audio tasks. Flash I/O must not execute there or
+  // inherit its priority; this short-lived worker runs below audio on either CPU.
+  if (xTaskCreatePinnedToCore(stationSaveTask, "station-save", STATION_SAVE_TASK_STACK,
+                             job, 0, nullptr, tskNO_AFFINITY) != pdPASS) {
+    job->errorStatus = 503;
+    job->error = "Station save task unavailable";
+    job->done = true;
+  }
+}
+
+static void queueStationSave(AsyncWebServerRequest* request, int id, const String& name,
+                             const String& url, const String& logo, bool prepareLogo) {
+  auto* job = new (std::nothrow) StationSaveJob;
+  if (!job) { request->send(503, "text/plain", "Station save memory unavailable"); return; }
+  job->id = id;
+  job->name = name;
+  job->url = url;
+  job->logo = logo;
+  job->prepareLogo = prepareLogo;
+  startStationSaveJob(request, job);
+}
+
+static void completeStationSave() {
+  StationSaveJob* completed = nullptr;
+  portENTER_CRITICAL(&stationSaveMux);
+  if (pendingStationSave && pendingStationSave->done) {
+    completed = pendingStationSave;
+    pendingStationSave = nullptr;
+  }
+  portEXIT_CRITICAL(&stationSaveMux);
+  if (!completed) return;
+  std::unique_ptr<StationSaveJob> job(completed);
+  if (job->saved) {
+    if (job->prepareLogo && job->logo.length()) ArtworkCache::instance().requestPrewarm(job->logo, true);
+    if (!job->upload) {
+      const auto state = PlayerState::instance().snapshot();
+      if (state.stationId == job->outId) queueLoadStation(job->outId, state.streamUrl != job->url);
+    }
+    Serial.printf("[stations] %s saved #%d in %lums\n", job->upload ? "logo" : "station",
+                  job->upload ? job->id : job->outId, static_cast<unsigned long>(job->elapsedMs));
+  }
+  if (auto request = job->request.lock()) {
+    if (job->saved) {
+      JsonDocument doc;
+      if (job->upload) doc["path"] = job->logo;
+      else doc["id"] = job->outId;
+      String out;
+      serializeJson(doc, out);
+      request->send(200, "application/json", out);
+    } else {
+      request->send(job->errorStatus, "text/plain", job->error.length() ? job->error : "Failed to save station");
+    }
+  }
+}
+
+static uint32_t activeStationLogoUpload = 0;
+static uint32_t stationLogoUploadSequence = 0;
+
+static void releaseStationLogoUpload(uint32_t token) {
+  portENTER_CRITICAL(&stationSaveMux);
+  if (activeStationLogoUpload == token) activeStationLogoUpload = 0;
+  portEXIT_CRITICAL(&stationSaveMux);
+}
+
+static void receiveStationLogo(AsyncWebServerRequest* request, uint8_t* data, size_t len,
+                                size_t index, size_t total) {
+  if (request->hasAttribute("error")) return;
+  if (index == 0) {
+    static constexpr size_t MAX_LOGO_UPLOAD_BYTES = 120 * 1024;
+    if (!request->hasParam("id") || request->getParam("id")->value().toInt() < 0 ||
+        total < 8 || total > MAX_LOGO_UPLOAD_BYTES) {
+      request->setAttribute("error", "Invalid logo upload"); return;
+    }
+    uint32_t token = 0;
+    portENTER_CRITICAL(&stationSaveMux);
+    if (!activeStationLogoUpload) {
+      if (++stationLogoUploadSequence == 0) ++stationLogoUploadSequence;
+      activeStationLogoUpload = token = stationLogoUploadSequence;
+    }
+    portEXIT_CRITICAL(&stationSaveMux);
+    if (!token) { request->setAttribute("error", "Another logo upload is active"); return; }
+    auto* upload = static_cast<StationLogoUploadBuffer*>(heap_caps_malloc(
+        offsetof(StationLogoUploadBuffer, bytes) + total, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    if (!upload) {
+      releaseStationLogoUpload(token);
+      request->setAttribute("error", "Logo PSRAM unavailable"); return;
+    }
+    upload->size = total;
+    upload->received = 0;
+    // The library frees _tempObject on disconnect; transfer it to the worker
+    // only once the full, validated request body has arrived. No flash I/O here.
+    request->_tempObject = upload;
+    request->setAttribute("logoToken", String(token).c_str());
+    request->onDisconnect([token]() { releaseStationLogoUpload(token); });
+  }
+  auto* upload = static_cast<StationLogoUploadBuffer*>(request->_tempObject);
+  if (!upload || total != upload->size || index != upload->received ||
+      index > total || len > total - index) {
+    request->setAttribute("error", "Incomplete logo upload"); return;
+  }
+  memcpy(upload->bytes + index, data, len);
+  upload->received += len;
+}
+
+static void discardStationLogoUpload(AsyncWebServerRequest* request) {
+  free(request->_tempObject);
+  request->_tempObject = nullptr;
+}
+
+static void queueStationLogoUpload(AsyncWebServerRequest* request) {
+  const uint32_t token = strtoul(request->getAttribute("logoToken").c_str(), nullptr, 10);
+  releaseStationLogoUpload(token);
+  const String error = request->getAttribute("error");
+  if (error.length()) {
+    discardStationLogoUpload(request);
+    request->send(400, "text/plain", error); return;
+  }
+  auto* upload = static_cast<StationLogoUploadBuffer*>(request->_tempObject);
+  const uint8_t pngSignature[8] = {0x89, 'P', 'N', 'G', 13, 10, 26, 10};
+  if (!request->hasParam("id") || !upload || upload->size < sizeof(pngSignature) ||
+      upload->received != upload->size || memcmp(upload->bytes, pngSignature, sizeof(pngSignature)) != 0) {
+    discardStationLogoUpload(request);
+    request->send(400, "text/plain", "Invalid PNG"); return;
+  }
+  auto* job = new (std::nothrow) StationSaveJob;
+  if (!job) {
+    discardStationLogoUpload(request);
+    request->send(503, "text/plain", "Logo save memory unavailable"); return;
+  }
+  job->id = request->getParam("id")->value().toInt();
+  job->upload = upload;
+  request->_tempObject = nullptr; // The job destructor now owns the PSRAM buffer.
+  startStationSaveJob(request, job);
+}
+
 static void executeQueuedAction(const QueuedPlayerAction& action) {
   bool changed = false;
 
@@ -1158,6 +1451,8 @@ static void executeQueuedAction(const QueuedPlayerAction& action) {
 }
 
 void webServerLoop() {
+  completeStationSave();
+  dispatchPendingStationSave();
   unsigned long now = millis();
   if (now - lastWsCleanupMs >= 1000) {
     lastWsCleanupMs = now;
@@ -1275,27 +1570,19 @@ void webServerBegin() {
     String name = request->getParam("name", true)->value();
     String url = request->getParam("url", true)->value();
     String logo = request->hasParam("logo", true) ? request->getParam("logo", true)->value() : "";
-    int outId = -1;
+    const bool prepareLogo = !request->hasParam("prepareLogo", true) ||
+                             request->getParam("prepareLogo", true)->value() != "0";
+    queueStationSave(request, id, name, url, logo, prepareLogo);
+  });
 
-    if (!StationManager::instance().saveStation(id, name, url, logo, outId)) {
-      request->send(500, "text/plain", "Failed to save station");
-      return;
+  server.on("/api/station/logo/prepare", HTTP_POST, [](AsyncWebServerRequest* request) {
+    if (!request->hasParam("id", true)) { request->send(400); return; }
+    Station station;
+    if (!StationManager::instance().getStation(request->getParam("id", true)->value().toInt(), station)) {
+      request->send(404); return;
     }
-    if (logo.length()) {
-      ArtworkCache::instance().requestPrewarm(logo, true);
-    }
-
-    PlayerStateSnapshot state = PlayerState::instance().snapshot();
-    if (state.stationId == outId) {
-      bool resetMetadata = state.streamUrl != url;
-      queueLoadStation(outId, resetMetadata);
-    }
-
-    JsonDocument doc;
-    doc["id"] = outId;
-    String out;
-    serializeJson(doc, out);
-    request->send(200, "application/json", out);
+    const bool queued = ArtworkCache::instance().requestPrewarm(station.logo, true);
+    request->send(queued ? 202 : 503, "text/plain", queued ? "Queued" : "Logo queue unavailable");
   });
 
   server.on("/api/station/delete", HTTP_POST, [](AsyncWebServerRequest* request) {
@@ -1374,118 +1661,11 @@ void webServerBegin() {
   });
 
   server.on(
-    "/api/logo/upload",
-    HTTP_POST,
-    [](AsyncWebServerRequest* request) {
-      String error = request->getAttribute("error");
-      String path = request->getAttribute("path");
-      String tempPath = request->getAttribute("temp");
-
-      if (error.length()) {
-        if (tempPath.length() && LittleFS.exists(tempPath)) LittleFS.remove(tempPath);
-        request->send(400, "text/plain", error);
-        return;
-      }
-
-      if (!commitLogoUpload(tempPath, path, error)) {
-        request->send(400, "text/plain", error);
-        return;
-      }
-      ArtworkCache::instance().requestPrewarm(path, true);
-      int stationId = stationIdFromLogoUploadPath(path);
-      if (stationId >= 0) {
-        removeOldStationLogoUploads(stationId, path);
-      }
-
-      JsonDocument doc;
-      doc["path"] = path;
-      String out;
-      serializeJson(doc, out);
-      request->send(200, "application/json", out);
-    },
+    "/api/logo/upload", HTTP_POST,
+    [](AsyncWebServerRequest* request) { queueStationLogoUpload(request); },
     nullptr,
     [](AsyncWebServerRequest* request, uint8_t* data, size_t len, size_t index, size_t total) {
-      static File logoFile;
-      static String logoPath;
-      static String logoTempPath;
-      static bool failed = false;
-      static bool uploadActive = false;
-      static unsigned long uploadLastMs = 0;
-      static constexpr size_t MAX_LOGO_UPLOAD_BYTES = 120 * 1024;
-      static constexpr unsigned long UPLOAD_STALE_MS = 15000;
-
-      if (index == 0) {
-        failed = false;
-        logoPath = "";
-        logoTempPath = "";
-        if (logoFile) logoFile.close();
-
-        if (uploadActive && millis() - uploadLastMs > UPLOAD_STALE_MS) {
-          if (logoFile) logoFile.close();
-          if (logoTempPath.length() && LittleFS.exists(logoTempPath)) LittleFS.remove(logoTempPath);
-          uploadActive = false;
-        }
-
-        if (uploadActive) {
-          request->setAttribute("error", "Another logo upload is active");
-          failed = true;
-          return;
-        }
-        uploadActive = true;
-        uploadLastMs = millis();
-
-        if (!request->hasParam("id") || total == 0 || total > MAX_LOGO_UPLOAD_BYTES || !ensureDir("/logos")) {
-          request->setAttribute("error", "Invalid logo upload");
-          failed = true;
-          uploadActive = false;
-          return;
-        }
-
-        int id = request->getParam("id")->value().toInt();
-        if (id < 0) {
-          request->setAttribute("error", "Invalid station id");
-          failed = true;
-          uploadActive = false;
-          return;
-        }
-
-        logoPath = stationLogoUploadPath(id);
-        logoTempPath = logoPath + ".upload";
-        request->setAttribute("path", logoPath.c_str());
-        request->setAttribute("temp", logoTempPath.c_str());
-        if (LittleFS.exists(logoTempPath)) LittleFS.remove(logoTempPath);
-
-        logoFile = LittleFS.open(logoTempPath, "w");
-        if (!logoFile) {
-          request->setAttribute("error", "Logo file open failed");
-          failed = true;
-          uploadActive = false;
-          return;
-        }
-      }
-
-      if (failed) {
-        if (index + len >= total) {
-          if (logoFile) logoFile.close();
-          if (logoTempPath.length() && LittleFS.exists(logoTempPath)) LittleFS.remove(logoTempPath);
-          uploadActive = false;
-        }
-        return;
-      }
-
-      uploadLastMs = millis();
-
-      if (logoFile && len) {
-        if (logoFile.write(data, len) != len) {
-          request->setAttribute("error", "Logo write failed");
-          failed = true;
-        }
-      }
-
-      if (index + len == total && logoFile) {
-        logoFile.close();
-        uploadActive = false;
-      }
+      receiveStationLogo(request, data, len, index, total);
     }
   );
 
@@ -1971,4 +2151,15 @@ bool broadcastState(bool forceDisplay) {
     Display::instance().render(DisplayPresenter::build(PlayerState::instance()));
   }
   return changed;
+}
+
+void notifyStationArtworkReady() {
+  if (!ws.count()) return;
+  // Include the complete ordinary state so older WebUIs can safely ignore the
+  // extra flag. This notification does not force an LCD/player-state redraw.
+  String state = PlayerState::instance().toJson();
+  if (!state.endsWith("}")) return;
+  state.remove(state.length() - 1);
+  state += ",\"stationArtworkReady\":true}";
+  ws.textAll(state);
 }

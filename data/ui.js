@@ -336,7 +336,7 @@
     }
     pickerFileLabel();
     const fs = id("updateKind").value === "filesystem";
-    id("updateTargetHelp").textContent = fs ? tr("ui.dataHelp", "A teljes webfelület és a LittleFS cseréje. A kézzel feltöltött logókra külön korlátozás vonatkozik; lásd a tudnivalókat.") : tr("ui.firmwareHelp", "A rádió működtetőprogramjának frissítése.");
+    id("updateTargetHelp").textContent = fs ? tr("ui.dataHelp", "A webfelület cseréje a beállítások, állomások és feltöltött logók megőrzésével.") : tr("ui.firmwareHelp", "A rádió működtetőprogramjának frissítése.");
     if (fs) id("otaWarning").closest("details").open = true;
     if (!file) setOtaStatus(tr("ui.chooseFile", "Válassz .bin fájlt vagy húzd ide"), "");
     U.updateUploadButton();
@@ -459,7 +459,11 @@
     range.setAttribute("aria-label", tr("player.volume", "Hangerő"));
     const tooltip = make("output", "volume-tooltip"); tooltip.hidden = true;
     tooltip.setAttribute("aria-hidden", "true"); field.appendChild(tooltip);
-    const hideVolumeHint = () => { tooltip.hidden = true; };
+    const hideVolumeHint = () => {
+      tooltip.hidden = true;
+      field.classList.remove("is-previewing");
+      U.volumePills.forEach(bar => bar.style.removeProperty("--hover-fill"));
+    };
     const showVolumeHint = event => {
       if (event.pointerType === "touch") { hideVolumeHint(); return; }
       const bounds = range.getBoundingClientRect();
@@ -468,6 +472,8 @@
       tooltip.textContent = Math.round(fraction * 100) + "%";
       tooltip.style.setProperty("--hover-position", fraction * 100 + "%");
       tooltip.hidden = false;
+      U.volumePills.forEach((bar, index) => bar.style.setProperty("--hover-fill", Math.max(0, Math.min(100, (fraction * U.volumePills.length - index) * 100)) + "%"));
+      field.classList.add("is-previewing");
     };
     range.addEventListener("pointerenter", showVolumeHint);
     range.addEventListener("pointermove", showVolumeHint);

@@ -6,8 +6,6 @@
 
 namespace StationPickerPolicy {
 constexpr uint32_t INPUT_SETTLE_MS = 120;
-constexpr uint32_t LOGO_STEP_US = 2000;
-constexpr int LOGO_ROWS_PER_STEP = 2;
 constexpr uint32_t READY_LOGO_RECHECK_MS = 5000;
 constexpr uint32_t MISSING_LOGO_RECHECK_MS = 1000;
 

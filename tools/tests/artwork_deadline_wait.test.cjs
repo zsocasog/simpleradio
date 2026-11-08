@@ -88,11 +88,12 @@ test('a stopped transfer stays bounded across repeated timedRead calls', () => {
 test('all artwork jobs can use either core without raising their idle priority above audio', () => {
   assert.match(cache, /ARTWORK_TASK_CORE = tskNO_AFFINITY;/);
   assert.match(cache, /ARTWORK_TASK_PRIORITY = 0;/);
-  const creates = [...cache.matchAll(/xTaskCreatePinnedToCore\([\s\S]*?\);/g)];
-  assert.equal(creates.length, 5);
+  const creates = [...cache.matchAll(/xTaskCreateStaticPinnedToCore\([\s\S]*?\);/g)];
+  assert.equal(creates.length, 1);
   for (const create of creates) {
     assert.match(create[0], /ARTWORK_TASK_PRIORITY/); assert.match(create[0], /ARTWORK_TASK_CORE/);
   }
+  assert.doesNotMatch(cache, /xTaskCreatePinnedToCore\(/);
   assert.match(read('src/audio/audio_player.cpp'), /AUDIO_PUMP_TASK_PRIORITY = 2;/);
 });
 

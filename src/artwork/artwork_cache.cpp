@@ -2,12 +2,14 @@
 #include "artwork_http.h"
 #include "artwork_release_rank.h"
 #include "album_art_store.h"
+#include "artwork_memory_gate.h"
 #include "station_logo_policy.h"
 #include "lcd_image_policy.h"
 #include "artwork_title_match.h"
 #include "artwork_http_policy.h"
 #include "artwork_json.h"
 #include "artwork_json_reader.h"
+#include "picker_logo_loader.h"
 #include "../config/diagnostics.h"
 
 #include <Arduino.h>
@@ -16,6 +18,7 @@
 #include <LittleFS.h>
 #include <LovyanGFX.hpp>
 #include <esp_heap_caps.h>
+#include <freertos/queue.h>
 #include <mbedtls/base64.h>
 #include <algorithm>
 #include <ctype.h>
@@ -75,6 +78,7 @@ static constexpr uint32_t MIN_BUDGETED_HTTP_MS = 500;
 // Let FreeRTOS use either core, keeping artwork below audio on BOTH cores.
 static constexpr BaseType_t ARTWORK_TASK_CORE = tskNO_AFFINITY;
 static constexpr UBaseType_t ARTWORK_TASK_PRIORITY = 0;
+static constexpr uint32_t ARTWORK_TASK_STACK_BYTES = 12288;
 static constexpr uint16_t LCD_THUMB_BASE_SIZE = 176;
 static constexpr uint16_t LCD_THUMB_SIZE_X =
     (LCD_THUMB_BASE_SIZE * DISPLAY_WIDTH + 480 / 2) / 480;
@@ -133,6 +137,7 @@ private:
 enum class ArtworkJobKind {
   Url,
   AlbumSearch,
+  PickerLogo,
   Embedded,
   Thumbnail,
   BrowserImport
@@ -144,12 +149,24 @@ struct ArtworkDownloadJob {
   bool idlePrewarm = false;
   bool allowSecureFallback = true;
   bool fillFrame = false;
+  uint32_t deadlineMs = 0;
   String key;
   String url;
   String artist;
   String title;
   std::vector<uint32_t> segments;
 };
+
+// One serialized image pipeline already admits only one job at a time. Keep its
+// maximum stack in internal DRAM for the lifetime of the radio instead of
+// repeatedly finding a 12KB heap block after WiFi/audio have fragmented it.
+// Never put the stack in PSRAM: logo jobs can write flash with its cache off.
+alignas(16) static StackType_t artworkWorkerStack[ARTWORK_TASK_STACK_BYTES / sizeof(StackType_t)];
+static StaticTask_t artworkWorkerControl;
+static StaticQueue_t artworkQueueControl;
+static uint8_t artworkQueueStorage[sizeof(ArtworkDownloadJob*)];
+static QueueHandle_t artworkJobQueue = nullptr;
+static TaskHandle_t artworkWorkerHandle = nullptr;
 
 struct CacheEntry {
   String path;
@@ -255,6 +272,7 @@ void ArtworkCache::begin() {
   if (!prewarmMutex) {
     prewarmMutex = xSemaphoreCreateMutex();
   }
+  if (!startWorker()) albumArtTrace("search start deferred: image worker unavailable");
   enforceCacheBudget();
   Serial.println("[artwork] cache ready");
 }
@@ -312,6 +330,7 @@ void ArtworkCache::loop() {
   String completedPath;
   bool completedOk = false;
   if (takeDownloadResult(completedUrl, completedPath, completedOk)) {
+    if (completedOk && !completedUrl.startsWith("album:")) notifyStationArtworkReady();
     if (!completedOk) {
       if (completedUrl.startsWith("album:")) {
         String activeKey = String(ALBUM_ART_CACHE_PREFIX) + state.artist + "|" + state.title;
@@ -390,6 +409,7 @@ void ArtworkCache::loop() {
     }
   }
 
+  processPendingPickerLogo();
   processPendingBrowserImport();
 
   // A failed cached-image conversion may retire its unsupported source.
@@ -768,8 +788,32 @@ bool ArtworkCache::takePendingEmbedded(String& key, String& url, std::vector<uin
   return ready;
 }
 
-bool ArtworkCache::startDownloadTask(const String& url, bool idlePrewarm, bool allowSecureFallback) {
-  if (!markDownloadStarted(url, nullptr, idlePrewarm)) return false;
+bool ArtworkCache::startWorker() {
+  if (artworkWorkerHandle) return true;
+  if (!artworkJobQueue) {
+    artworkJobQueue = xQueueCreateStatic(1, sizeof(ArtworkDownloadJob*),
+        artworkQueueStorage, &artworkQueueControl);
+  }
+  if (!artworkJobQueue) return false;
+  artworkWorkerHandle = xTaskCreateStaticPinnedToCore(
+      ArtworkCache::downloadTask, "artwork", ARTWORK_TASK_STACK_BYTES, this,
+      ARTWORK_TASK_PRIORITY, artworkWorkerStack, &artworkWorkerControl, ARTWORK_TASK_CORE);
+  if (!artworkWorkerHandle) return false;
+  albumArtTrace("image worker ready: 12KB internal stack, shared album/logo jobs");
+  return true;
+}
+
+bool ArtworkCache::queueDownloadJob(ArtworkDownloadJob* job) {
+  // The caller retains ownership on failure. The single admission flag remains
+  // busy until the worker has destroyed all per-job resources, not just posted
+  // its result. Sending never waits on the UI/audio caller.
+  return job && artworkWorkerHandle && artworkJobQueue &&
+      xQueueSend(artworkJobQueue, &job, 0) == pdTRUE;
+}
+
+bool ArtworkCache::startDownloadTask(const String& url, bool idlePrewarm, bool allowSecureFallback,
+                                    uint32_t deadlineMs) {
+  if (!markDownloadStarted(url, idlePrewarm)) return false;
 
   ArtworkDownloadJob* job = new (std::nothrow) ArtworkDownloadJob();
   if (!job) {
@@ -781,27 +825,15 @@ bool ArtworkCache::startDownloadTask(const String& url, bool idlePrewarm, bool a
   job->kind = ArtworkJobKind::Url;
   job->idlePrewarm = idlePrewarm;
   job->allowSecureFallback = allowSecureFallback;
+  job->deadlineMs = deadlineMs;
   job->key = url;
   job->url = url;
-  TaskHandle_t handle = nullptr;
-
-  BaseType_t ok = xTaskCreatePinnedToCore(
-    ArtworkCache::downloadTask,
-    "artwork-dl",
-    8192,
-    job,
-    ARTWORK_TASK_PRIORITY,
-    &handle,
-    ARTWORK_TASK_CORE
-  );
-
-  if (ok != pdPASS) {
+  if (!queueDownloadJob(job)) {
     markDownloadFinished();
     delete job;
     return false;
   }
 
-  setDownloadTaskHandle(handle);
   return true;
 }
 
@@ -822,18 +854,12 @@ bool ArtworkCache::startAlbumArtworkTask(const String& artist, const String& tit
   job->key = key;
   job->artist = artist;
   job->title = title;
-  TaskHandle_t handle = nullptr;
-  BaseType_t ok = xTaskCreatePinnedToCore(ArtworkCache::downloadTask, "album-art", 12288,
-                                           job, ARTWORK_TASK_PRIORITY, &handle, ARTWORK_TASK_CORE);
-  if (ok != pdPASS) {
+  if (!queueDownloadJob(job)) {
     markDownloadFinished();
     delete job;
-    albumArtTrace("search start deferred: task stack unavailable; internal=%u largest=%u; retry in 3s",
-        static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)),
-        static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)));
+    albumArtTrace("search start deferred: image worker unavailable; retry in 3s");
     return false;
   }
-  setDownloadTaskHandle(handle);
   return true;
 }
 
@@ -851,30 +877,39 @@ bool ArtworkCache::startEmbeddedDownloadTask(const String& key, const String& ur
   job->key = key;
   job->url = url;
   job->segments = segments;
-  TaskHandle_t handle = nullptr;
-
-  BaseType_t ok = xTaskCreatePinnedToCore(
-    ArtworkCache::downloadTask,
-    "artwork-emb",
-    12288,
-    job,
-    ARTWORK_TASK_PRIORITY,
-    &handle,
-    ARTWORK_TASK_CORE
-  );
-
-  if (ok != pdPASS) {
+  if (!queueDownloadJob(job)) {
     markDownloadFinished();
     delete job;
     return false;
   }
 
-  setDownloadTaskHandle(handle);
   return true;
 }
 
+void ArtworkCache::processPendingPickerLogo() {
+  if (!PickerLogoLoader::pending() || isDownloadActive()) return;
+  static uint32_t lastFailedStartMs = 0;
+  if (lastFailedStartMs && millis() - lastFailedStartMs < 1000) return;
+  if (!markDownloadStarted("picker-logo")) return;
+  ArtworkDownloadJob* job = new (std::nothrow) ArtworkDownloadJob();
+  if (!job) {
+    markDownloadFinished();
+    lastFailedStartMs = millis();
+    return;
+  }
+  job->cache = this;
+  job->kind = ArtworkJobKind::PickerLogo;
+  if (!queueDownloadJob(job)) {
+    delete job;
+    markDownloadFinished();
+    lastFailedStartMs = millis();
+    return;
+  }
+  lastFailedStartMs = 0;
+}
+
 bool ArtworkCache::startThumbnailTask(const String& imagePath, bool idlePrewarm, bool fillFrame) {
-  if (!markDownloadStarted(String("thumb:") + imagePath, nullptr, idlePrewarm)) return false;
+  if (!markDownloadStarted(String("thumb:") + imagePath, idlePrewarm)) return false;
 
   ArtworkDownloadJob* job = new (std::nothrow) ArtworkDownloadJob();
   if (!job) {
@@ -888,25 +923,12 @@ bool ArtworkCache::startThumbnailTask(const String& imagePath, bool idlePrewarm,
   job->fillFrame = fillFrame;
   job->key = String(fillFrame ? "thumbfill:" : "thumb:") + imagePath;
   job->url = imagePath;
-  TaskHandle_t handle = nullptr;
-
-  BaseType_t ok = xTaskCreatePinnedToCore(
-    ArtworkCache::downloadTask,
-    "art-thumb",
-    8192,
-    job,
-    ARTWORK_TASK_PRIORITY,
-    &handle,
-    ARTWORK_TASK_CORE
-  );
-
-  if (ok != pdPASS) {
+  if (!queueDownloadJob(job)) {
     markDownloadFinished();
     delete job;
     return false;
   }
 
-  setDownloadTaskHandle(handle);
   return true;
 }
 
@@ -956,25 +978,12 @@ bool ArtworkCache::startBrowserArtworkImportTask(const String& url, const String
   job->kind = ArtworkJobKind::BrowserImport;
   job->key = url;
   job->url = tempPath;
-  TaskHandle_t handle = nullptr;
-
-  BaseType_t ok = xTaskCreatePinnedToCore(
-    ArtworkCache::downloadTask,
-    "art-import",
-    8192,
-    job,
-    ARTWORK_TASK_PRIORITY,
-    &handle,
-    ARTWORK_TASK_CORE
-  );
-
-  if (ok != pdPASS) {
+  if (!queueDownloadJob(job)) {
     markDownloadFinished();
     delete job;
     return false;
   }
 
-  setDownloadTaskHandle(handle);
   Serial.printf("[artwork] browser cache import start: %s\n", url.c_str());
   return true;
 }
@@ -1047,7 +1056,7 @@ void ArtworkCache::clearThumbnailReady(const String& imagePath) {
   }
 }
 
-bool ArtworkCache::markDownloadStarted(const String& label, TaskHandle_t handle, bool idlePrewarm) {
+bool ArtworkCache::markDownloadStarted(const String& label, bool idlePrewarm) {
   if (!downloadMutex) return false;
   bool started = false;
   if (xSemaphoreTake(downloadMutex, pdMS_TO_TICKS(100)) == pdTRUE) {
@@ -1055,7 +1064,6 @@ bool ArtworkCache::markDownloadStarted(const String& label, TaskHandle_t handle,
       downloadInProgress = true;
       downloadIsIdlePrewarm = idlePrewarm;
       idlePrewarmCancelRequested = false;
-      downloadTaskHandle = handle;
       downloadStartedMs = millis();
       downloadLabel = label;
       started = true;
@@ -1065,18 +1073,9 @@ bool ArtworkCache::markDownloadStarted(const String& label, TaskHandle_t handle,
   return started;
 }
 
-void ArtworkCache::setDownloadTaskHandle(TaskHandle_t handle) {
-  if (!downloadMutex) return;
-  if (xSemaphoreTake(downloadMutex, pdMS_TO_TICKS(100)) == pdTRUE) {
-    if (downloadInProgress) downloadTaskHandle = handle;
-    xSemaphoreGive(downloadMutex);
-  }
-}
-
 void ArtworkCache::markDownloadFinished() {
   if (!downloadMutex) return;
   if (xSemaphoreTake(downloadMutex, pdMS_TO_TICKS(100)) == pdTRUE) {
-    downloadTaskHandle = nullptr;
     downloadInProgress = false;
     downloadIsIdlePrewarm = false;
     idlePrewarmCancelRequested = false;
@@ -1226,18 +1225,35 @@ bool ArtworkCache::takeDownloadResult(String& url, String& path, bool& success) 
 }
 
 void ArtworkCache::downloadTask(void* param) {
-  ArtworkDownloadJob* job = static_cast<ArtworkDownloadJob*>(param);
+  ArtworkCache* cache = static_cast<ArtworkCache*>(param);
+  for (;;) {
+    ArtworkDownloadJob* job = nullptr;
+    if (xQueueReceive(artworkJobQueue, &job, portMAX_DELAY) != pdTRUE) continue;
+    runDownloadJob(job);
+    // runDownloadJob has returned: its Strings, vectors, HTTP clients and image
+    // leases are gone before another caller may enter the image pipeline.
+    cache->markDownloadFinished();
+  }
+}
+
+void ArtworkCache::runDownloadJob(ArtworkDownloadJob* job) {
   ArtworkCache* cache = job ? job->cache : nullptr;
   ArtworkJobKind kind = job ? job->kind : ArtworkJobKind::Url;
   bool idlePrewarm = job ? job->idlePrewarm : false;
   bool allowSecureFallback = job ? job->allowSecureFallback : true;
   bool fillFrame = job ? job->fillFrame : false;
+  uint32_t deadlineMs = job ? job->deadlineMs : 0;
   String key = job ? job->key : "";
   String url = job ? job->url : "";
   String artist = job ? job->artist : "";
   String title = job ? job->title : "";
   std::vector<uint32_t> segments = job ? job->segments : std::vector<uint32_t>();
   delete job;
+
+  if (cache && kind == ArtworkJobKind::PickerLogo) {
+    PickerLogoLoader::process();
+    return; // A picker result never goes through the album/station result slot.
+  }
 
   if (cache && (url.length() || kind == ArtworkJobKind::AlbumSearch)) {
     String path;
@@ -1254,10 +1270,13 @@ void ArtworkCache::downloadTask(void* param) {
     } else if (!cancelled && kind == ArtworkJobKind::AlbumSearch) {
       ok = cache->resolveAndDownloadAlbumArtwork(artist, title, key, path);
     } else if (!cancelled) {
-      ok = cache->download(url, path, 0, allowSecureFallback);
+      ok = cache->download(url, path, deadlineMs, allowSecureFallback);
     }
     cancelled = idlePrewarm && cache->idlePrewarmCancellationRequested();
     if (cancelled) {
+      // A selected station/audio connection may interrupt another queued logo.
+      // Keep that request for later; cancellation is not a missing-image failure.
+      if (url.length()) cache->queuePrewarmItem(url, false);
       Serial.println("[artwork] idle prewarm cancelled");
     } else if (ok) {
       cache->storeDownloadResult(key.length() ? key : url, path, true);
@@ -1272,10 +1291,7 @@ void ArtworkCache::downloadTask(void* param) {
         Serial.println("[artwork] download failed or unsupported image format");
       }
     }
-    cache->markDownloadFinished();
   }
-
-  vTaskDelete(nullptr);
 }
 
 String ArtworkCache::currentArtworkUrl() const {
@@ -1486,16 +1502,24 @@ static String normalizeArtworkText(const String& input) {
 
 static bool artworkArtistsMatch(const String& foundArtist, const String& wantedArtist,
                                 const std::vector<String>* verifiedAliases = nullptr) {
+  // Identity aliases are a fallback, not a reason to split a previously
+  // matching credit differently (e.g. the corrected Mike/Mechanics metadata).
+  if (verifiedAliases && !verifiedAliases->empty() && artworkArtistsMatch(foundArtist, wantedArtist)) return true;
   auto artistCredits = [&](String value) {
-    value = normalizeArtworkText(value);
-    // An authoritative alias can itself contain a credit separator ("and").
+    // Bind proven aliases before interpreting their punctuation as credits.
+    // Stored aliases use the established text normalization, including '+'.
     if (verifiedAliases && !verifiedAliases->empty()) {
+      const String aliasValue = normalizeArtworkText(value);
       for (const String& alias : *verifiedAliases) {
-        if (value == alias) return std::vector<String>{(*verifiedAliases)[0]};
+        if (aliasValue == alias) return std::vector<String>{(*verifiedAliases)[0]};
       }
     }
+    // A standalone '+' is the same credit joiner as '&' or 'and'. Keep the
+    // general title normalizer unchanged and do not rewrite names such as +44.
+    value.replace(" + ", " & ");
+    value = normalizeArtworkText(value);
     const char* separators[] = {
-      " feat ", " ft ", " featuring ", " with ", " and ", "&", ","
+      " feat ", " ft ", " featuring ", " with ", " vs ", " versus ", " and ", "&", ","
     };
     for (const char* separator : separators) value.replace(separator, ",");
 
@@ -1505,6 +1529,9 @@ static bool artworkArtistsMatch(const String& foundArtist, const String& wantedA
       int separator = value.indexOf(',', start);
       String credit = separator < 0 ? value.substring(start) : value.substring(start, separator);
       credit.trim();
+      // Correct a duplicated article after a joiner only, with a following
+      // name: "Mike and the The Mechanics". The band "The The" stays intact.
+      if (!credits.empty() && credit.startsWith("the the ") && credit.length() > 8) credit.remove(0, 4);
       if (credit.length()) credits.push_back(credit);
       if (separator < 0) break;
       start = separator + 1;
@@ -1585,15 +1612,8 @@ static bool exactTrackMatch(String foundArtist, String foundTitle,
                             bool allowStudioMix = false, bool allowTitleTypos = false) {
 
   auto stripFeature = [](String value) {
-    const char* markers[] = { " feat ", " ft ", " featuring ", " with " };
-    int cutAt = -1;
-    for (const char* marker : markers) {
-      int position = value.indexOf(marker);
-      if (position > 0 && (cutAt < 0 || position < cutAt)) cutAt = position;
-    }
-    if (cutAt >= 0) value = value.substring(0, cutAt);
-    value.trim();
-    return value;
+    const auto stripped = ArtworkTitleMatch::withoutFeatureCredit(value.c_str());
+    return String(stripped.data(), stripped.size());
   };
 
   auto baseTitle = [&](String value) {
@@ -1614,7 +1634,7 @@ static bool exactTrackMatch(String foundArtist, String foundTitle,
         }
       }
     }
-    value = stripFeature(normalizeArtworkText(value));
+    value = normalizeArtworkText(value);
     const char* versionSuffixes[] = {
       " country version", " radio version", " album version", " single version",
       " radio edit", " single edit", " album edit", " original mix",
@@ -1629,7 +1649,7 @@ static bool exactTrackMatch(String foundArtist, String foundTitle,
         break;
       }
     }
-    return value;
+    return stripFeature(value);
   };
 
   String expectedTitle = baseTitle(wantedTitle);
@@ -1653,7 +1673,32 @@ static bool subtitleTrackMatch(const String& foundArtist, const String& foundTit
   if (ArtworkTitleMatch::protectedSubtitle(normalizedAnnotation.c_str())) return false;
   const String foundMain = normalizeArtworkText(String(found.main.data(), found.main.size()));
   const String wantedMain = normalizeArtworkText(String(wanted.main.data(), wanted.main.size()));
-  return foundMain == wantedMain || ArtworkTitleMatch::minorTypo(wantedMain.c_str(), foundMain.c_str());
+  const auto foundBase = ArtworkTitleMatch::withoutFeatureCredit(foundMain.c_str());
+  const auto wantedBase = ArtworkTitleMatch::withoutFeatureCredit(wantedMain.c_str());
+  return foundBase == wantedBase || ArtworkTitleMatch::minorTypo(wantedBase, foundBase);
+}
+
+// A parenthetical containing ONLY the complete, confirmed performer credit is
+// metadata, not a guessed subtitle. This also works for a verified Single/EP.
+static bool artistCreditTitleMatch(const String& foundArtist, const String& foundTitle,
+                                   const String& wantedArtist, const String& wantedTitle) {
+  if (!artworkArtistsMatch(foundArtist, wantedArtist)) return false;
+  const auto found = ArtworkTitleMatch::splitSubtitle(foundTitle.c_str());
+  const auto wanted = ArtworkTitleMatch::splitSubtitle(wantedTitle.c_str());
+  if (!found.valid || !wanted.valid || found.subtitle.empty() || !wanted.subtitle.empty()) return false;
+  const String annotation = normalizeArtworkText(String(found.subtitle.data(), found.subtitle.size()));
+  if (ArtworkTitleMatch::protectedSubtitle(annotation.c_str()) ||
+      !artworkArtistsMatch(annotation, foundArtist) || !artworkArtistsMatch(foundArtist, annotation)) return false;
+  const String foundMain = normalizeArtworkText(String(found.main.data(), found.main.size()));
+  const String wantedMain = normalizeArtworkText(String(wanted.main.data(), wanted.main.size()));
+  const auto wantedBase = ArtworkTitleMatch::withoutFeatureCredit(wantedMain.c_str());
+  if (std::string_view(foundMain.c_str()) != wantedBase) return false;
+  const auto feature = ArtworkTitleMatch::featureCredit(wantedMain.c_str());
+  if (!feature.empty()) {
+    const String expectedCredit = wantedArtist + " & " + String(feature.data(), feature.size());
+    if (!artworkArtistsMatch(foundArtist, expectedCredit)) return false;
+  }
+  return true;
 }
 
 static bool artworkMatchNeedsVerifiedAlbum(int quality) {
@@ -1818,8 +1863,10 @@ std::vector<String> ArtworkCache::resolveAlbumArtworkUrls(const String& artist, 
   const uint32_t requestStartedMs = millis();
   const uint32_t requestDeadlineMs = deadlineRemaining(deadlineMs) > AlbumSearchPolicy::PROVIDER_BUDGET_MS
       ? requestStartedMs + AlbumSearchPolicy::PROVIDER_BUDGET_MS : deadlineMs;
+  const auto titleView = ArtworkTitleMatch::withoutBroadcastYear(std::string_view(title.c_str(), title.length()));
+  const String lookupTitle(titleView.data(), titleView.size());
   const String artistQuery = encodeArtworkQuery(artist);
-  const String titleQuery = encodeArtworkQuery(albumTitleForSearch(title));
+  const String titleQuery = encodeArtworkQuery(albumTitleForSearch(lookupTitle));
   ArtworkJson::Allocator jsonAllocator;
   JsonDocument doc(&jsonAllocator);
   auto cancelled = [&]() {
@@ -1828,9 +1875,11 @@ std::vector<String> ArtworkCache::resolveAlbumArtworkUrls(const String& artist, 
   };
   auto titleQuality = [&](const String& foundArtist, const String& foundTitle) {
     if (exactTrackMatch(foundArtist, foundTitle, artist, title)) return 4;
-    if (exactTrackMatch(foundArtist, foundTitle, artist, title, false, true)) return 3;
-    if (exactTrackMatch(foundArtist, foundTitle, artist, title, true, true)) return 2;
-    return subtitleTrackMatch(foundArtist, foundTitle, artist, title) ? 1 : 0;
+    if (lookupTitle != title && exactTrackMatch(foundArtist, foundTitle, artist, lookupTitle)) return 4;
+    if (artistCreditTitleMatch(foundArtist, foundTitle, artist, lookupTitle)) return 4;
+    if (exactTrackMatch(foundArtist, foundTitle, artist, lookupTitle, false, true)) return 3;
+    if (exactTrackMatch(foundArtist, foundTitle, artist, lookupTitle, true, true)) return 2;
+    return subtitleTrackMatch(foundArtist, foundTitle, artist, lookupTitle) ? 1 : 0;
   };
   auto addCandidate = [&](const String& url, AlbumArtworkKind kind, const String& albumTitle) {
     std::vector<String>* target = &urls;
@@ -2016,14 +2065,14 @@ std::vector<String> ArtworkCache::resolveAlbumArtworkUrls(const String& artist, 
     primaryArtist.replace('&', ' ');
     primaryArtist.replace(',', ' ');
     if (primaryArtist == "p nk") primaryArtist = "pink";
-    String ownTitle = albumTitleForSearch(title);
+    String ownTitle = albumTitleForSearch(lookupTitle);
     ownTitle.replace('"', ' ');
     const String recordingQuery = "recording:\"" + ownTitle + "\" AND artist:(" + primaryArtist + ")";
     const String mbUrl = "http://musicbrainz.org/ws/2/recording/?fmt=json&limit=16&query=" +
                          encodeArtworkQuery(recordingQuery);
     bool mbOk = false;
     if (!search.musicBrainz.retrying() || !search.retryReleaseGroup) {
-      albumArtTrace("MusicBrainz query: %s - %s", artist.c_str(), title.c_str());
+    albumArtTrace("MusicBrainz query: %s - %s", artist.c_str(), lookupTitle.c_str());
       unsigned long requestStartedMs = millis();
       mbOk = fetchMusicBrainz(mbUrl);
       albumArtTrace("MusicBrainz response: %s (%lums)", mbOk ? "ok" : "failed",
@@ -2745,25 +2794,9 @@ bool ArtworkCache::requestPrewarm(const String& source, bool highPriority) {
   String item = source;
   item.trim();
   if (!item.length()) return false;
-
-  if (!isRemoteArtworkSource(item)) {
-    item = preferredLocalArtworkPath(item);
-    if (!supportedArtworkFile(item) || !LittleFS.exists(item)) return false;
-
-    String thumbPath = lcdThumbnailPath(item);
-    if (thumbnailKnownReady(item, thumbPath) || validLcdThumbnailFile(thumbPath)) {
-      markThumbnailReady(item, thumbPath);
-      return true;
-    }
-  } else {
-    String lcdPath;
-    if (findExistingLcdArtworkPath(item, lcdPath)) return true;
-    String existingPath;
-    if (findExistingCachePath(item, existingPath)) {
-      return requestPrewarm(existingPath, highPriority);
-    }
-  }
-
+  // This entry point also runs in AsyncTCP handlers. Cache probes can wait on
+  // LittleFS while another image is being written; only enqueue here. The
+  // existing scheduler validates sources and reuses ready images afterwards.
   return queuePrewarmItem(item, highPriority);
 }
 
@@ -2844,15 +2877,20 @@ bool ArtworkCache::queueNextStationPrewarmCandidate() {
 }
 
 void ArtworkCache::processPrewarmQueue(const PlayerStateSnapshot& state) {
-  if (state.playing || isDownloadActive()) return;
+  if (isDownloadActive()) return;
 
   unsigned long now = millis();
+  if (state.playing && (!audioConnectionReady || !audioConnectionReadyMs ||
+      static_cast<uint32_t>(now - audioConnectionReadyMs) < CURRENT_ARTWORK_TLS_GRACE_MS)) return;
   if (lastPrewarmWorkMs > 0 && now - lastPrewarmWorkMs < PREWARM_IDLE_SPACING_MS) return;
 
   // Throttle empty/all-ready scans too; never walk the filesystem every loop.
   lastPrewarmWorkMs = now;
   String source;
   if (!takePrewarmItem(source)) {
+    // Saved/uploaded logo requests may run during stable playback. Automatic
+    // discovery of the other saved stations remains idle-only.
+    if (state.playing) return;
     if (!queueNextStationPrewarmCandidate() || !takePrewarmItem(source)) return;
   }
 
@@ -2871,7 +2909,8 @@ void ArtworkCache::processPrewarmQueue(const PlayerStateSnapshot& state) {
     }
 
     artworkTraceSerial.printf("[artwork] prewarm download start: %s\n", source.c_str());
-    if (!startDownloadTask(source, true)) {
+    const uint32_t deadlineMs = state.playing ? now + ALBUM_ART_IMAGE_BUDGET_MS : 0;
+    if (!startDownloadTask(source, true, true, deadlineMs)) {
       queuePrewarmItem(source, true);
     }
     return;
@@ -4638,7 +4677,8 @@ static std::vector<String> resolveCoverArchiveServers(const String& url,
   return urls;
 }
 
-bool ArtworkCache::prepareAlbumMemory(uint8_t*& data, size_t length, const String& key, String& outPath, bool& unavailable) {
+bool ArtworkCache::prepareAlbumMemory(uint8_t*& data, size_t length, const String& key, String& outPath, bool& unavailable,
+                                      uint32_t deadlineMs) {
   ArtworkPhaseTrace totalPhase("RAM-prepare-total");
   const AlbumArtPolicy::ImageInfo info = AlbumArtPolicy::inspect(data, length);
   if (!info.valid()) {
@@ -4651,19 +4691,54 @@ bool ArtworkCache::prepareAlbumMemory(uint8_t*& data, size_t length, const Strin
            key == String(ALBUM_ART_CACHE_PREFIX) + current.artist + "|" + current.title;
   };
   if (!stillCurrent()) { noteDownloadStatus("stale artwork cancelled"); return false; }
+  if (deadlineReached(deadlineMs)) { noteDownloadStatus("image budget expired before RAM preparation"); return false; }
+  ArtworkMemory::AlbumPreparation memoryLease;
   AlbumArtStore::Preparation frame;
   AlbumArtStore::ReserveStatus reserveStatus;
+  bool reserveAttempted = false;
+  bool waitedForMemory = false;
   {
     ArtworkPhaseTrace phase("RAM-reserve");
-    const uint32_t retryUntil = millis() + 250;
+    const uint32_t retryStartedMs = millis();
     do {
-      frame = AlbumArtStore::instance().reserve(key, LCD_THUMB_SIZE, info.format, &reserveStatus);
-      if (frame || reserveStatus.failure != AlbumArtStore::ReserveFailure::SlotsBusy ||
-          !stillCurrent() || deadlineReached(retryUntil)) break;
-      vTaskDelay(pdMS_TO_TICKS(25)); // Let a finishing web response release its lease; retain the downloaded bytes.
+      if (!stillCurrent() || deadlineReached(deadlineMs)) break;
+      if (memoryLease.tryAcquire()) {
+        reserveAttempted = true;
+        frame = AlbumArtStore::instance().reserve(key, LCD_THUMB_SIZE, info.format, &reserveStatus);
+        if (frame || (reserveStatus.failure != AlbumArtStore::ReserveFailure::SlotsBusy &&
+                      reserveStatus.failure != AlbumArtStore::ReserveFailure::InternalLow)) break;
+      }
+      const uint32_t remainingMs = AlbumArtPolicy::ramRetryRemaining(retryStartedMs, millis(), deadlineMs);
+      if (!remainingMs) break;
+      if (!waitedForMemory) {
+        albumArtTrace("RAM wait: %s; keeping %u downloaded bytes, up to %lums",
+                      reserveAttempted ? AlbumArtStore::failureName(reserveStatus.failure) : "station save active",
+                      static_cast<unsigned>(length), static_cast<unsigned long>(remainingMs));
+        waitedForMemory = true;
+      }
+      const uint32_t waitMs = min(remainingMs, AlbumArtPolicy::RAM_RETRY_INTERVAL_MS);
+      vTaskDelay(max(static_cast<TickType_t>(1), pdMS_TO_TICKS(waitMs)));
     } while (true);
+    if (frame && waitedForMemory) {
+      albumArtTrace("RAM recovered after %lums; reusing downloaded image",
+                    static_cast<unsigned long>(millis() - retryStartedMs));
+    }
   }
   if (!frame && !stillCurrent()) { noteDownloadStatus("stale artwork cancelled"); return false; }
+  if (deadlineReached(deadlineMs)) {
+    if (frame) {
+      const String expiredPath = frame->path;
+      frame.reset();
+      AlbumArtStore::instance().retire(expiredPath);
+    }
+    noteDownloadStatus("image budget expired during RAM preparation");
+    return false;
+  }
+  if (!frame && !reserveAttempted) {
+    unavailable = true;
+    noteDownloadStatus("album RAM unavailable: station save still active");
+    return false;
+  }
   if (!frame) {
     // A PNG may need more internal scratch than a JPEG from the next source.
     // Keep that candidate-specific failure from stopping the whole search.
@@ -4708,9 +4783,10 @@ bool ArtworkCache::prepareAlbumMemory(uint8_t*& data, size_t length, const Strin
     thumb.deleteSprite();
     vTaskDelay(1);
   }
-  if (!drawn || !stillCurrent()) {
+  if (!drawn || !stillCurrent() || deadlineReached(deadlineMs)) {
     discard();
-    noteDownloadStatus(drawn ? "stale artwork cancelled" : "RAM cover decode failed");
+    noteDownloadStatus(deadlineReached(deadlineMs) ? "image budget expired during RAM decode" :
+                       drawn ? "stale artwork cancelled" : "RAM cover decode failed");
     return false;
   }
   frame->format = info.format;
@@ -4819,7 +4895,7 @@ bool ArtworkCache::download(const String& url, String& outPath, uint32_t budgetM
       albumImageReceived = albumImageReceived || imageInfo.valid();
       pngMemoryLow = imageInfo.format == AlbumArtPolicy::Format::Png && pngNeedsJpeg();
       bool unavailable = false;
-      const bool ready = prepareAlbumMemory(response.data, written, cacheKey, outPath, unavailable);
+      const bool ready = prepareAlbumMemory(response.data, written, cacheKey, outPath, unavailable, deadlineMs);
       if (memoryUnavailable) *memoryUnavailable = unavailable;
       return ready; // No filesystem fallback for short-lived album art.
     }

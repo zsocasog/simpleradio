@@ -9,6 +9,19 @@ constexpr size_t MAX_IMAGE_BYTES = 384 * 1024;
 constexpr size_t PSRAM_HEADROOM = 512 * 1024;
 constexpr size_t INTERNAL_HEADROOM = 32 * 1024;
 constexpr size_t JPEG_INTERNAL_HEADROOM = 24 * 1024;
+constexpr uint32_t RAM_RETRY_MS = 1500;
+constexpr uint32_t RAM_RETRY_INTERVAL_MS = 25;
+
+// Bound the retry by both its own elapsed time and the existing image budget.
+// The unsigned elapsed calculation remains valid across millis() rollover.
+constexpr uint32_t ramRetryRemaining(uint32_t started, uint32_t now, uint32_t deadline) {
+  const uint32_t elapsed = now - started;
+  const uint32_t remaining = elapsed < RAM_RETRY_MS ? RAM_RETRY_MS - elapsed : 0;
+  if (!deadline) return remaining;
+  const int32_t budgetLeft = static_cast<int32_t>(deadline - now);
+  return budgetLeft <= 0 ? 0 : (static_cast<uint32_t>(budgetLeft) < remaining
+                                   ? static_cast<uint32_t>(budgetLeft) : remaining);
+}
 
 // The pinned LovyanGFX JPEG decoder allocates a 3900-byte work pool. Pixels
 // and compressed data are already in PSRAM; preserve 24 KiB before decoding,

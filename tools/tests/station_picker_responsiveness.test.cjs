@@ -98,52 +98,63 @@ test('cache eviction preserves unique buffer ownership and never evicts an activ
   assert.equal(new Set(h.pickerLogos.map(e => e.pixels)).size, 10);
 });
 
-function advanceHarness({ row = 0, nextY = 0, station = 2, pending = false } = {}) {
-  let reads = 0, closed = 0, us = 0;
-  const entry = { station: 2, source: 'logo', pixels: [], ready: false };
-  const job = { row, station, source: 'logo', nextY, file: {}, path: '/cached', modified: 7 };
-  const context = vm.createContext({ pickerLogoJob: job, pickerLogos: [entry], PICKER_LOGO_SIZE: 32,
-    StationPickerPolicy: { LOGO_ROWS_PER_STEP: 2, LOGO_STEP_US: 2000 },
-    micros: () => ++us * 100, millis: () => 1000,
-    pickerSelectionPending: () => pending,
-    readPickerLogoRow: () => { reads++; return true; },
-    cancelPickerLogoJob: () => { closed++; job.row = -1; }
+function advanceHarness({ row = 0, station = 2, pending = false, complete = true, changed = true } = {}) {
+  let polls = 0, closed = 0, frees = 0;
+  const original = [77], fresh = [88];
+  const entry = { station: 2, source: 'logo', pixels: original, ready: true, path: '/old', modified: 5 };
+  const job = { row, station, source: 'logo', ticket: 9 };
+  const context = vm.createContext({ pickerLogoJob: job, pickerLogos: [entry],
+    PickerLogoLoader: { Result: class { constructor() { this.pixels = null; }
+      releasePixels() { const p = this.pixels; this.pixels = null; return p; }
+    }, take: (ticket, result) => {
+      ++polls; assert.equal(ticket, 9);
+      if (!complete) return false;
+      result.pixels = changed ? fresh : null; result.path = '/cached'; result.modified = 7; return true;
+    } }, millis: () => 1000, pickerSelectionPending: () => pending,
+    free: value => { assert.equal(value, original); ++frees; },
+    cancelPickerLogoJob: () => { ++closed; job.row = -1; }
   });
   const fn = body(display, 'static int advancePickerLogo(')
     .replace('PickerLogo& entry', 'const entry')
-    .replace(/const unsigned long /g, 'const ')
-    .replace(/const int /g, 'const ').replace(/\bint /g, 'let ')
-    .replace(/StationPickerPolicy::/g, 'StationPickerPolicy.');
+    .replace('PickerLogoLoader::Result result;', 'const result = new PickerLogoLoader.Result();')
+    .replace('PickerLogoLoader::take', 'PickerLogoLoader.take')
+    .replace(/std::move\(([^)]+)\)/g, '$1')
+    .replace(/\bint /g, 'let ');
   vm.runInContext('function advance() ' + fn, context);
-  return { context, job, entry, get reads() { return reads; }, get closed() { return closed; } };
+  return { context, job, entry, original, fresh, get polls() { return polls; },
+    get frees() { return frees; }, get closed() { return closed; } };
 }
 
-test('logo conversion yields after two output rows instead of processing a whole file', () => {
+test('an unfinished background image leaves the current tile intact without drawing-path IO', () => {
+  const h = advanceHarness({ complete: false });
+  assert.equal(h.context.advance(), -1); assert.equal(h.polls, 1);
+  assert.equal(h.entry.pixels, h.original); assert.equal(h.entry.ready, true);
+  assert.equal(h.frees, 0); assert.equal(h.closed, 0);
+  assert.doesNotMatch(body(display, 'static int advancePickerLogo('), /LittleFS|readPickerLogoRow|file\./);
+  assert.doesNotMatch(body(display, 'static bool beginPickerLogo('), /LittleFS|stationArtworkReady|file\.|heap_caps/);
+});
+
+test('a newly queued encoder selection takes priority over accepting a background result', () => {
+  const h = advanceHarness({ pending: true });
+  assert.equal(h.context.advance(), -1); assert.equal(h.polls, 0);
+  assert.equal(h.entry.pixels, h.original); assert.equal(h.closed, 0);
+});
+
+test('only a complete matching image replaces the live tile, with one ownership transfer', () => {
   const h = advanceHarness();
-  assert.equal(h.context.advance(), -1);
-  assert.equal(h.reads, 2);
-  assert.equal(h.entry.ready, false);
-  assert.equal(h.job.nextY, 2);
-});
-
-test('a newly queued encoder selection takes priority over thumbnail reads', () => {
-  const h = advanceHarness({ pending: true, nextY: 10 });
-  assert.equal(h.context.advance(), -1);
-  assert.equal(h.reads, 0);
-  assert.equal(h.job.nextY, 10);
-  assert.equal(h.entry.ready, false);
-});
-
-test('completed logo is published only after the final row; stale jobs cannot overwrite another station', () => {
-  const h = advanceHarness({ nextY: 31 });
-  assert.equal(h.context.advance(), 0);
-  assert.equal(h.entry.ready, true);
-  assert.equal(h.entry.path, '/cached');
-  assert.equal(h.closed, 1);
+  assert.equal(h.context.advance(), 0); assert.equal(h.entry.ready, true);
+  assert.equal(h.entry.path, '/cached'); assert.equal(h.entry.modified, 7);
+  assert.equal(h.entry.pixels, h.fresh); assert.equal(h.frees, 1); assert.equal(h.closed, 1);
   const stale = advanceHarness({ station: 9 });
-  assert.equal(stale.context.advance(), -1);
-  assert.equal(stale.reads, 0);
-  assert.equal(stale.entry.ready, false);
+  assert.equal(stale.context.advance(), -1); assert.equal(stale.polls, 0);
+  assert.equal(stale.entry.pixels, stale.original); assert.equal(stale.frees, 0);
+});
+
+test('an unchanged or unavailable source preserves cached pixels without repainting its tile', () => {
+  const h = advanceHarness({ changed: false });
+  assert.equal(h.context.advance(), -1); assert.equal(h.entry.ready, true);
+  assert.equal(h.entry.path, '/old'); assert.equal(h.entry.pixels, h.original);
+  assert.equal(h.frees, 0); assert.equal(h.entry.checkedMs, 1000); assert.equal(h.closed, 1);
 });
 
 test('an older rendered request cannot acknowledge a newer selection of the same station', () => {
