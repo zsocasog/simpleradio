@@ -14,8 +14,8 @@ const names=['setValue','setText','sliderIsProtected','setConfigValue','beginSli
  'clampNumber','percentFrom255','balanceLabel','dbLabel','setPercentLabel','setRawPercentLabel',
  'syncEncoderSensitivity','syncIrSensitivity','syncEqLabels','validHexColor','normalizeHexColor',
  'syncThemeCustomColorFromPicker','syncThemeCustomColorFromText','syncFrontLedColorFromPicker','syncFrontLedColorFromText',
- 'collectConfig','postConfig','queueConfigSave','saveConfigNow','previewMeterSensitivity','flushMeterSensitivity',
- 'commitMeterSensitivity','applyConfigToUI','updateUI','timeToMinutes','minutesToTime'];
+ 'collectConfig','postConfig','queueConfigSave','saveConfigNow',
+ 'applyConfigToUI','updateUI','timeToMinutes','minutesToTime'];
 const functions=names.map(name=>{
  const found=app.match(new RegExp('(?:async )?function '+name+'\\([^]*?\\n\\}'));
  assert.ok(found,name);return found[0];
@@ -37,7 +37,7 @@ function harness({live=true,hold=false}={}){
  }
  const context=vm.createContext({console,Map,Set,Object,Number,String,Math,URLSearchParams,
   document:{...target(),getElementById:id=>nodes.get(id),querySelectorAll:()=>sliders.map(s=>nodes.get(s.id))},
-  window:target(),WebSocket:{OPEN:1},themePresets:{green:{}},irActions:[],inactiveIrActions:[],
+  window:target(),WebSocket:{OPEN:1},themePresets:{green:{}},irActions:[],
   t:(_key,fallback)=>fallback,
   setTimeout:(fn,delay)=>{const id=nextTimer++;timers.set(id,{fn,at:clock+delay});return id;},
   clearTimeout:id=>timers.delete(id),clearInterval(){},
@@ -56,14 +56,12 @@ function harness({live=true,hold=false}={}){
   'let ws=socket,configSaveTimer,configSaveStatusTimer,configSaving=false,configSavePending=false,deferredConfigAction={};',
   'let configSaveDeferred=false,sliderRevision=0,playerPreviewTimer=null,playerPreviewPending={},sliderEditAnnounced=false;',
   'const sliderGestures=new Map(),sliderDirty=new Map();',fields,
-  'let meterSensitivityTimer,meterSensitivityFlight=null,meterSensitivityPending=null;',
-  'let meterSensitivityEditing=false,meterSensitivityDirty=false,meterSensitivityRevision=0;',
   'let currentConfig={},configLoaded=false,irPollTimer,selectedIrAction="",playing=false,currentStationId=-1;',
   'let hardwareCapabilities={transientPlayerControls:'+live+',encoder2:{available:false}};',
   'const $=id=>document.getElementById(id);',functions,'initSliderControls();'
  ].join('\n'),context);
  const defaults={brightness:128,dayBrightness:255,nightBrightness:16,displayIdleBrightness:16,
-  displayVuSensitivity:100,encoderSensitivity:8,irSensitivity:40,frontLedBrightness:128,frontLedStandbyBrightness:13,
+  encoderSensitivity:8,irSensitivity:40,frontLedBrightness:128,frontLedStandbyBrightness:13,
   themeCustomColor:'#a9f7bf',frontLedColor:'#a9f7bf',themeAccent:'custom'};
  context.applyConfigToUI(defaults);context.updateUI({volume:50,eqLow:0,eqMid:0,eqHigh:0,balance:0,stationId:-1,playing:true});
  function fire(id,type,event={}){
@@ -80,14 +78,14 @@ function harness({live=true,hold=false}={}){
   commits:()=>frames.filter(f=>f.persist===true),
   previews:()=>frames.filter(f=>f.persist===false)};
 }
-const finalValue=s=>s.type==='color'?'#123456':s.id==='displayVuSensitivity'?150:s.min==='-12'?3:s.id==='soundBalance'?45:s.id==='encoderSensitivity'?5:s.id==='irSensitivity'?55:75;
+const finalValue=s=>s.type==='color'?'#123456':s.min==='-12'?3:s.id==='soundBalance'?45:s.id==='encoderSensitivity'?5:s.id==='irSensitivity'?55:75;
 test('every range and native color control uses shared release handlers without input autosave',()=>{
- assert.equal(sliders.length,16);assert.equal(sliders.filter(s=>s.type==='range').length,14);
+ assert.equal(sliders.length,15);assert.equal(sliders.filter(s=>s.type==='range').length,13);
  for(const s of sliders){assert.doesNotMatch(s.oninput,/queueConfigSave|saveConfigNow/);assert.equal(s.onchange,undefined);assert.equal(s.onblur,undefined);}
  assert.match(app,/initSliderControls\(\);/);
 });
 test('all configuration sliders and color pickers wait through long pauses and save once on release',async()=>{
- for(const s of sliders.filter(s=>!['volume','soundEqLow','soundEqMid','soundEqHigh','soundBalance','displayVuSensitivity'].includes(s.id))){
+ for(const s of sliders.filter(s=>!['volume','soundEqLow','soundEqMid','soundEqHigh','soundBalance'].includes(s.id))){
   const h=harness();if(s.type==='range')h.down(s.id);
   h.input(s.id,finalValue(s));await h.advance(2000);assert.equal(h.saves().length,0,s.id);
   if(s.type==='range')h.up();else h.fire(s.id,'change');
@@ -112,7 +110,7 @@ test('continuous motion is throttled rather than silenced until the pointer stop
  assert.equal(h.commits()[0].volume,29);
 });
 test('keyboard repeat does not save on native change events; key release commits',async()=>{
- for(const id of ['brightness','volume','displayVuSensitivity']){
+ for(const id of ['brightness','volume']){
   const h=harness();h.fire(id,'keydown',{key:'ArrowRight'});
   for(const value of [110,120,130]){h.input(id,value);h.fire(id,'change');await h.advance(300);}
   assert.equal(h.saves().length,0,id);assert.equal(h.commits().length,0,id);

@@ -88,17 +88,3 @@ test('fast 125ms and 250ms beats stay separated at 44.1kHz and 48kHz', () => {
     }
   }
 });
-
-test('visual sensitivity remains downstream of conditioning at all four supported test settings', () => {
-  const snapshots = [-30, -29.8, -30.1, -23, -29.9].map((db, i) => ({
-    bandDb: Array(24).fill(db), updatedMs: (i + 1) * 33, generation: 1, active: true }));
-  for (const sensitivity of [50, 100, 150, 200]) {
-    const actual = createRenderer(p, sensitivity);
-    const control = createRenderer(p, 100);
-    for (const sample of snapshots) {
-      const row = actual.frame(sample, true, sample.updatedMs), expected = control.frame(sample, true, sample.updatedMs);
-      assert.deepEqual(row.accents, expected.accents);
-      actual.state.rhythm.forEach((band, i) => assert.equal(band.previousLevel, control.state.rhythm[i].previousLevel));
-    }
-  }
-});

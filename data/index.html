@@ -4,9 +4,9 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>SimpleRadio</title>
-  <link rel="icon" type="image/svg+xml" sizes="any" href="favicon.svg?v=1.2.08&amp;ui=9fd22659759f">
-  <link rel="stylesheet" href="style.css?v=1.2.08&amp;ui=9fd22659759f">
-  <link rel="stylesheet" href="ui.css?v=1.2.08&amp;ui=9fd22659759f">
+  <link rel="icon" type="image/svg+xml" sizes="any" href="favicon.svg?v=1.2.08&amp;ui=60f27272d095">
+  <link rel="stylesheet" href="style.css?v=1.2.08&amp;ui=60f27272d095">
+  <link rel="stylesheet" href="ui.css?v=1.2.08&amp;ui=60f27272d095">
 </head>
 <body>
   <div class="app-shell">
@@ -333,7 +333,6 @@
                 <option value="classic">Középről induló VU</option>
                   </select>
                 </label>
-                <label id="displayVuSensitivityField" class="setting-row"><span data-i18n="display.vuSensitivity">VU / spektrum érzékenység</span><span class="setting-range"><input id="displayVuSensitivity" type="range" min="50" max="200" step="5" oninput="previewMeterSensitivity()"><strong id="displayVuSensitivityValue">100%</strong></span></label>
               </section>
 
               <section class="settings-section">
@@ -443,11 +442,16 @@
 
         <div id="irHardwareNotice" class="hardware-notice page-notice hidden"></div>
 
+        <div class="ir-profile-toolbar">
+          <label class="ir-profile-select"><span data-i18n="remote.type">Távirányító típusa</span><select id="irProfile"></select></label>
+          <button id="irEditLayout" type="button" class="ghost-btn" data-i18n="remote.edit">Saját elrendezés</button>
+        </div>
+        <p id="irProfileStatus" class="ir-profile-help"></p>
         <section id="irWorkbench" class="ir-workbench">
           <article class="remote-unit">
             <div class="remote-top">
               <span class="ir-eye"></span>
-              <strong>IR-RCNEC-BK</strong>
+              <strong id="irRemoteName" data-user-content>IR-RCNEC-BK</strong>
             </div>
             <div id="irRemote" class="remote-grid"></div>
           </article>
@@ -478,6 +482,27 @@
               <button class="danger" type="button" onclick="clearSelectedIr()" data-i18n="ir.clearCode">Kód törlése</button>
             </div>
             <div id="irMappedList" class="mapped-grid"></div>
+          </article>
+          <article id="irLayoutEditor" class="panel ir-layout-editor hidden">
+            <header class="panel-head"><div><h2 data-i18n="remote.editorTitle">Saját távirányító</h2><small data-i18n="remote.editorSubtitle">Állítsd össze a gombokat, majd mentés után tanítsd be őket.</small></div></header>
+            <fieldset id="irEditorControls" class="ir-editor-fields">
+              <label class="ir-editor-wide"><span data-i18n="remote.name">Elnevezés</span><input id="irLayoutName" maxlength="32" data-user-content oninput="SRRemoteUI.updateLayout('name', this.value)"></label>
+              <label><span data-i18n="remote.columns">Oszlopok</span><select id="irLayoutColumns" onchange="SRRemoteUI.updateLayout('columns', this.value)"><option value="1">1</option><option value="2">2</option><option value="3">3</option><option value="4">4</option><option value="5">5</option></select></label>
+              <label><span data-i18n="remote.rows">Sorok</span><select id="irLayoutRows" onchange="SRRemoteUI.updateLayout('rows', this.value)"><option value="1">1</option><option value="2">2</option><option value="3">3</option><option value="4">4</option><option value="5">5</option><option value="6">6</option><option value="7">7</option><option value="8">8</option><option value="9">9</option><option value="10">10</option><option value="11">11</option><option value="12">12</option></select></label>
+            </fieldset>
+            <fieldset id="irButtonFields" class="ir-editor-fields">
+              <legend data-i18n="remote.selectedButton">Kiválasztott gomb</legend>
+              <label><span data-i18n="remote.label">Felirat</span><input id="irButtonLabel" maxlength="16" data-user-content oninput="SRRemoteUI.updateButton('label', this.value)"></label>
+              <label><span data-i18n="remote.function">Funkció</span><select id="irButtonAction" onchange="SRRemoteUI.updateButton('action', this.value)"></select></label>
+              <label><span data-i18n="remote.row">Sor</span><input id="irButtonRow" type="number" min="1" max="12" onchange="SRRemoteUI.updateButton('row', this.value)"></label>
+              <label><span data-i18n="remote.column">Oszlop</span><input id="irButtonColumn" type="number" min="1" max="5" onchange="SRRemoteUI.updateButton('column', this.value)"></label>
+              <label><span data-i18n="remote.shape">Alak</span><select id="irButtonShape" onchange="SRRemoteUI.updateButton('shape', this.value)"><option value="pill" data-i18n="remote.pill">Ovális</option><option value="round" data-i18n="remote.round">Kerek</option></select></label>
+              <label><span data-i18n="remote.tone">Megjelenés</span><select id="irButtonTone" onchange="SRRemoteUI.updateButton('tone', this.value)"><option value="normal" data-i18n="remote.normal">Sötét</option><option value="light" data-i18n="remote.light">Világos</option><option value="power" data-i18n="remote.power">Piros</option><option value="accent" data-i18n="remote.accent">Témaszín</option></select></label>
+              <button class="danger ir-editor-wide" type="button" onclick="SRRemoteUI.remove()" data-i18n="remote.deleteButton">Gomb törlése</button>
+            </fieldset>
+            <div class="button-row"><button class="ghost-btn" type="button" onclick="SRRemoteUI.add()" data-i18n="remote.addButton">Új gomb</button><button class="ghost-btn" type="button" onclick="SRRemoteUI.empty()" data-i18n="remote.empty">Üres elrendezés</button></div>
+            <p id="irEditorStatus" role="status" aria-live="polite" class="ir-editor-status"></p>
+            <div class="button-row"><button id="irLayoutSave" type="button" class="primary" onclick="SRRemoteUI.save()" data-i18n="remote.save">Elrendezés mentése</button><button type="button" class="ghost-btn" onclick="SRRemoteUI.cancel()" data-i18n="action.cancel">Mégse</button></div>
           </article>
         </section>
       </section>
@@ -647,9 +672,11 @@
       <span id="footerVersion">v-</span>
     </footer>
   </div>
-  <script src="i18n-catalog.js?v=1.2.08&amp;ui=9fd22659759f"></script>
-  <script src="i18n.js?v=1.2.08&amp;ui=9fd22659759f"></script>
-  <script src="ui.js?v=1.2.08&amp;ui=9fd22659759f"></script>
-  <script src="app.js?v=1.2.08&amp;ui=9fd22659759f"></script>
+  <script src="i18n-catalog.js?v=1.2.08&amp;ui=60f27272d095"></script>
+  <script src="i18n.js?v=1.2.08&amp;ui=60f27272d095"></script>
+  <script src="ir-profiles.js?v=1.2.08&amp;ui=60f27272d095"></script>
+  <script src="ir-editor.js?v=1.2.08&amp;ui=60f27272d095"></script>
+  <script src="ui.js?v=1.2.08&amp;ui=60f27272d095"></script>
+  <script src="app.js?v=1.2.08&amp;ui=60f27272d095"></script>
 </body>
 </html>

@@ -23,12 +23,6 @@ let sliderEditAnnounced = false;
 const playerSliderFields = {
   volume: "volume", soundEqLow: "eqLow", soundEqMid: "eqMid", soundEqHigh: "eqHigh", soundBalance: "balance"
 };
-let meterSensitivityTimer;
-let meterSensitivityFlight = null;
-let meterSensitivityPending = null;
-let meterSensitivityEditing = false;
-let meterSensitivityDirty = false;
-let meterSensitivityRevision = 0;
 let searchTimer;
 let searchAbortController;
 let onlineSearchObserver;
@@ -84,32 +78,8 @@ function normalizeThemeAccent(theme) {
   return theme === "custom" || themePresets[theme] ? theme : "green";
 }
 
-const irLayout = [
-  { action: "power", label: "Power / stop", text: "PWR", cls: "red" },
-  { action: "volUp", label: "VOL+", text: "VOL+" },
-  { action: "hash", label: "FUNC / STOP", text: "FUNC\nSTOP" },
-  { action: "prev", label: "Previous station", text: "|<<" },
-  { action: "toggle", label: "Play / pause", text: ">||" },
-  { action: "next", label: "Next station", text: ">>|" },
-  { action: "down", label: "Down / previous station", text: "▼" },
-  { action: "volDown", label: "VOL-", text: "VOL-" },
-  { action: "up", label: "Up / next station", text: "▲" },
-  { action: "digit0", label: "0", text: "0", cls: "white" },
-  { action: "mute", label: "EQ / display mode", text: "EQ" },
-  { action: "list", label: "ST / REPT / station list", text: "ST/\nREPT" },
-  { action: "digit1", label: "1", text: "1", cls: "white" },
-  { action: "digit2", label: "2", text: "2", cls: "white" },
-  { action: "digit3", label: "3", text: "3", cls: "white" },
-  { action: "digit4", label: "4", text: "4", cls: "white" },
-  { action: "digit5", label: "5", text: "5", cls: "white" },
-  { action: "digit6", label: "6", text: "6", cls: "white" },
-  { action: "digit7", label: "7", text: "7", cls: "white" },
-  { action: "digit8", label: "8", text: "8", cls: "white" },
-  { action: "digit9", label: "9", text: "9", cls: "white" }
-];
-
-const irActions = irLayout.filter(Boolean);
-const inactiveIrActions = ["left", "right", "ok", "back", "star", "station1", "station2", "station3", "station4", "station5"];
+const irActions = window.SRRemoteProfiles.ACTIONS;
+function activeIrActions() { return window.SRRemoteUI ? window.SRRemoteUI.actions() : irActions; }
 
 function irActionLabel(item) {
   return t(`ir.action.${item.action}`, item.label);
@@ -166,7 +136,7 @@ function resetPlayerSliderCommits() {
 
 function trackSliderInput(node) {
   beginSliderGesture(node).changed = true;
-  if (node.id !== "displayVuSensitivity") sliderDirty.set(node.id, { value: node.value, revision: ++sliderRevision });
+  sliderDirty.set(node.id, { value: node.value, revision: ++sliderRevision });
   if (!playerSliderFields[node.id]) {
     configSaveDeferred = true;
     setConfigSaveState("pending");
@@ -177,9 +147,6 @@ function finishSliderGesture(node) {
   const gesture = sliderGestures.get(node.id);
   if (!gesture) return;
   sliderGestures.delete(node.id);
-  if (gesture.changed && node.id === "displayVuSensitivity") {
-    return commitMeterSensitivity().finally(flushReleasedSliders);
-  }
   flushReleasedSliders();
 }
 
@@ -195,7 +162,7 @@ function flushPlayerPreview() {
   // Older firmware safely falls back to release-only commands, never a stream
   // of supposedly transient commands which it would actually persist.
   if (!hardwareCapabilities.transientPlayerControls) { playerPreviewPending = {}; return true; }
-  if (sliderGestures.size || meterSensitivityEditing) announceSliderEditing(true);
+  if (sliderGestures.size) announceSliderEditing(true);
   if (!sendCommand({ ...playerPreviewPending, persist: false })) return false;
   playerPreviewPending = {};
   return true;
@@ -209,7 +176,7 @@ function sendPlayerControls(values, preview = false) {
 }
 
 function flushReleasedSliders() {
-  if (sliderGestures.size || meterSensitivityEditing) return;
+  if (sliderGestures.size) return;
   const controls = {};
   const revisions = new Map();
   for (const [id, field] of Object.entries(playerSliderFields)) {
@@ -417,7 +384,7 @@ function connectWS() {
     setText("connectionInfo", t("status.connected", "Csatlakozva"));
     sendHeartbeat();
     wsHeartbeatTimer = setInterval(sendHeartbeat, WS_HEARTBEAT_MS);
-    if (sliderGestures.size || meterSensitivityEditing) announceSliderEditing(true);
+    if (sliderGestures.size) announceSliderEditing(true);
     flushPlayerPreview();
     flushReleasedSliders();
   };
@@ -1982,9 +1949,7 @@ function syncDisplayIdleMode() {
 function syncDisplayFooterMode() {
   const footerMode = $("displayFooterMode").value || "volume";
   const vuField = $("displayVuStyleField");
-  const vuSensitivityField = $("displayVuSensitivityField");
   if (vuField) vuField.classList.toggle("hidden", footerMode !== "vu");
-  if (vuSensitivityField) vuSensitivityField.classList.toggle("hidden", footerMode !== "vu" && footerMode !== "spectrum");
 }
 
 function normalizeHexColor(value, fallback = "#a9f7bf") {
@@ -2066,9 +2031,10 @@ function syncIrHardwareControls() {
   if (sensitivity) sensitivity.disabled = !available;
   const workbench = $("irWorkbench");
   if (workbench) workbench.classList.toggle("is-hardware-unavailable", !available);
-  document.querySelectorAll("#irWorkbench button").forEach(button => {
+  document.querySelectorAll("#irWorkbench > .learn-panel button").forEach(button => {
     button.disabled = !available;
   });
+  window.SRRemoteUI?.render();
 }
 
 function applyHardwareCapabilitiesToUI() {
@@ -2132,7 +2098,6 @@ function collectConfig() {
     displayFooterMode: $("displayFooterMode").value,
     displayArtworkMode: $("displayArtworkMode").value,
     displayVuStyle: $("displayVuStyle").value,
-    displayVuSensitivity: $("displayVuSensitivity").value,
     themeAccent: normalizeThemeAccent($("themeAccent").value),
     themeCustomColor: normalizeHexColor($("themeCustomColor").value),
     timeZone: $("timeZone").value,
@@ -2144,6 +2109,7 @@ function collectConfig() {
     irEnabled: $("irEnabled").checked ? "1" : "0",
     irSensitivity: $("irSensitivity").value,
     irActionLearning: $("irActionLearning").value,
+    irRemoteProfile: currentConfig.irRemoteProfile || "rcnec21",
     encoderEnabled: $("encoderEnabled").checked ? "1" : "0",
     secondEncoderEnabled: dualEncoder ? "1" : "0",
     encoderMode: dualEncoder ? "dual_volume_station" : "single_volume_picker",
@@ -2173,16 +2139,13 @@ function collectConfig() {
   irActions.forEach(item => {
     data[irKey(item.action)] = String(currentConfig[irKey(item.action)] || "0");
   });
-  inactiveIrActions.forEach(action => {
-    data[irKey(action)] = "0";
-  });
   return window.SRUI?.ready ? window.SRUI.configData(data) : data;
 }
 
 async function postConfig(action = {}) {
   configSaveTimer = null;
   Object.assign(deferredConfigAction, action);
-  if (meterSensitivityEditing || sliderGestures.size) {
+  if (sliderGestures.size) {
     configSaveDeferred = true;
     setConfigSaveState("pending");
     return false;
@@ -2201,7 +2164,6 @@ async function postConfig(action = {}) {
   try {
     const submittedConfig = { ...collectConfig(), ...deferredConfigAction };
     deferredConfigAction = {};
-    const submittedSensitivityRevision = meterSensitivityRevision;
     const submittedSliderRevisions = new Map([...sliderDirty].map(([id, dirty]) => [id, dirty.revision]));
     if (submittedConfig.clearLastFmApiKey === "1") delete submittedConfig.lastFmApiKey;
     const response = await fetch("/api/config/save", {
@@ -2212,10 +2174,6 @@ async function postConfig(action = {}) {
     if (!response.ok) throw new Error(`Config save failed: ${response.status}`);
     const savedConfig = await response.json();
     acknowledgeConfigSliders(savedConfig, submittedConfig, submittedSliderRevisions);
-    if (!meterSensitivityEditing && submittedSensitivityRevision === meterSensitivityRevision &&
-        Number(savedConfig.displayVuSensitivity) === Number(submittedConfig.displayVuSensitivity)) {
-      meterSensitivityDirty = false;
-    }
     applyConfigToUI(savedConfig);
     const keyStatus = $("lastFmApiKeyStatus");
     if (submittedConfig.lastFmApiKey) {
@@ -2239,10 +2197,11 @@ async function postConfig(action = {}) {
     return false;
   } finally {
     configSaving = false;
+    window.SRRemoteUI?.render();
     if (configSavePending) {
       configSavePending = false;
       postConfig();
-    } else if (configSaveDeferred || sliderGestures.size || meterSensitivityEditing) {
+    } else if (configSaveDeferred || sliderGestures.size) {
       setConfigSaveState("pending");
     } else {
       setConfigSaveState(savedOk ? "success" : "error");
@@ -2253,50 +2212,8 @@ async function postConfig(action = {}) {
 function queueConfigSave() {
   clearTimeout(configSaveTimer);
   setConfigSaveState("pending");
-  if (meterSensitivityEditing || sliderGestures.size) { configSaveDeferred = true; return; }
+  if (sliderGestures.size) { configSaveDeferred = true; return; }
   configSaveTimer = setTimeout(postConfig, 140);
-}
-
-function previewMeterSensitivity() {
-  meterSensitivityEditing = true;
-  meterSensitivityDirty = true;
-  ++meterSensitivityRevision;
-  clearTimeout(configSaveTimer);
-  setRawPercentLabel("displayVuSensitivity");
-  meterSensitivityPending = $("displayVuSensitivity").value;
-  clearTimeout(meterSensitivityTimer);
-  meterSensitivityTimer = setTimeout(flushMeterSensitivity, 80);
-}
-
-function flushMeterSensitivity() {
-  if (meterSensitivityFlight) return meterSensitivityFlight;
-  meterSensitivityFlight = (async () => {
-    while (meterSensitivityPending !== null) {
-      const value = meterSensitivityPending;
-      meterSensitivityPending = null;
-      try {
-        const response = await fetch("/api/display/sensitivity", {
-          method: "POST",
-          headers: { "Content-Type": "application/x-www-form-urlencoded" },
-          body: new URLSearchParams({ value })
-        });
-        if (!response.ok) throw new Error("Sensitivity preview failed");
-      } catch (err) {
-        console.warn("Sensitivity preview failed", err);
-      }
-    }
-  })().finally(() => { meterSensitivityFlight = null; });
-  return meterSensitivityFlight;
-}
-
-async function commitMeterSensitivity() {
-  if (!meterSensitivityEditing) return;
-  const revision = meterSensitivityRevision;
-  clearTimeout(meterSensitivityTimer);
-  await flushMeterSensitivity();
-  if (revision !== meterSensitivityRevision) return;
-  meterSensitivityEditing = false;
-  queueConfigSave();
 }
 
 function saveConfigNow() {
@@ -2332,35 +2249,17 @@ function syncEqLabels(low, mid, high) {
 }
 
 function renderRemote() {
-  const remote = $("irRemote");
-  remote.innerHTML = "";
-  irLayout.forEach(item => {
-    if (!item) {
-      const spacer = document.createElement("span");
-      spacer.className = "remote-spacer";
-      remote.appendChild(spacer);
-      return;
-    }
-
-    const button = document.createElement("button");
-    const code = String(currentConfig[irKey(item.action)] || "0");
-    button.type = "button";
-    button.className = `remote-btn ${item.cls || ""}${item.round ? " round" : ""}${selectedIrAction === item.action ? " active" : ""}${code !== "0" ? " learned" : ""}`;
-    button.textContent = item.text;
-    button.title = irActionLabel(item);
-    button.disabled = !hardwareCapabilities.ir?.available;
-    button.onclick = () => startIrLearning(item.action);
-    remote.appendChild(button);
-  });
+  window.SRRemoteUI?.render();
 }
 
 function renderIrMappedList() {
   const list = $("irMappedList");
   list.innerHTML = "";
-  irActions.forEach(item => {
+  activeIrActions().forEach(item => {
     const code = String(currentConfig[irKey(item.action)] || "0");
     const row = document.createElement("div");
     row.className = `mapped-pill${code !== "0" ? " learned" : ""}`;
+    row.dataset.irAction = item.action;
     row.innerHTML = `<strong>${escapeHtml(irActionLabel(item))}</strong><small>${code !== "0" ? escapeHtml(code) : t("ir.notLearned", "Nincs kód")}</small>`;
     list.appendChild(row);
   });
@@ -2440,8 +2339,6 @@ function applyConfigToUI(config) {
   $("lastFmApiKeyStatus")?.classList.toggle("is-saved", !!config.hasLastFmApiKey);
   $("lastFmApiKeyStatus")?.classList.remove("is-error");
   setConfigValue("displayVuStyle", config.displayVuStyle || "bars");
-  if (!meterSensitivityEditing && !meterSensitivityDirty) setConfigValue("displayVuSensitivity", config.displayVuSensitivity || 100);
-  setRawPercentLabel("displayVuSensitivity");
   const themeColor = normalizeHexColor(config.themeCustomColor || "#a9f7bf");
   setConfigValue("themeCustomColor", themeColor);
   setConfigValue("themeCustomColorText", themeColor);
@@ -2463,6 +2360,7 @@ function applyConfigToUI(config) {
   $("irEnabled").checked = !!config.irEnabled;
   setConfigValue("irSensitivity", config.irSensitivity || 40);
   syncIrSensitivity($("irSensitivity").value);
+  window.SRRemoteUI?.syncConfig(config);
   setConfigValue("irActionLearning", config.irActionLearning || "");
   if (config.irActionLearning) selectedIrAction = config.irActionLearning;
   updateIrPanel();

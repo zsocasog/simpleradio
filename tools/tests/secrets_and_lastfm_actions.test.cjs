@@ -54,8 +54,7 @@ test("omitting build flags preserves the existing MQTT configuration", () => {
 function frontend(savedKey = true) {
   const requests = [], labels = new Map();
   const node = { disabled: false, setAttribute() {} };
-  const context = { currentConfig: { hasSavedLastFmApiKey: savedKey }, configSaving: false,
-    meterSensitivityEditing: false, meterSensitivityDirty: false, meterSensitivityRevision: 0,
+  const context = { currentConfig: { hasSavedLastFmApiKey: savedKey }, configSaving: false, window: {},
     deferredConfigAction: {},
     configSaveDeferred: false, sliderGestures: new Map(), sliderDirty: new Map(),
     acknowledgeConfigSliders() {},
@@ -101,32 +100,14 @@ test("a compiled-only key has no saved web key to delete", async () => {
   assert.doesNotMatch(publicJson, /doc\["lastFmApiKey"\]/);
 });
 
-test("a deliberate key deletion waits for sensitivity editing instead of being lost", async () => {
+test("a deliberate key deletion waits for an active slider gesture instead of being lost", async () => {
   const app = frontend();
-  app.context.meterSensitivityEditing = true;
+  app.context.sliderGestures.set("brightness", {});
   await app.context.deleteSavedLastFmKey();
   assert.equal(app.requests.length, 0);
-  app.context.meterSensitivityEditing = false;
+  app.context.sliderGestures.clear();
   await app.context.postConfig();
   assert.equal(app.requests.length, 1);
   assert.equal(app.requests[0].params.get("clearLastFmApiKey"), "1");
   assert.equal(app.requests[0].params.has("lastFmApiKey"), false);
-});
-
-test("an older full-config response cannot acknowledge a newer sensitivity edit", async () => {
-  const app = frontend();
-  let reply;
-  app.context.collectConfig = () => ({ displayVuSensitivity: "100" });
-  app.context.fetch = () => new Promise(resolve => { reply = resolve; });
-  const oldSave = app.context.postConfig();
-  app.context.meterSensitivityRevision = 1;
-  app.context.meterSensitivityDirty = true;
-  reply({ ok: true, json: async () => ({ displayVuSensitivity: 100 }) });
-  await oldSave;
-  assert.equal(app.context.meterSensitivityDirty, true);
-  app.context.collectConfig = () => ({ displayVuSensitivity: "150" });
-  app.context.fetch = async () => ({ ok: true, json: async () => ({ displayVuSensitivity: 150 }) });
-  await app.context.postConfig();
-  assert.equal(app.context.meterSensitivityDirty, false);
-  assert.match(js, /if \(!meterSensitivityEditing && !meterSensitivityDirty\) setConfigValue\("displayVuSensitivity"/);
 });

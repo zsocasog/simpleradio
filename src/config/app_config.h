@@ -3,6 +3,7 @@
 #include <Arduino.h>
 #include <ArduinoJson.h>
 #include "hardware_config.h"
+#include "ir_remote_policy.h"
 
 enum class DisplayClockStyle : uint8_t {
   Digital = 0,
@@ -35,6 +36,8 @@ public:
   String toJson() const;
   String effectiveLastFmApiKey() const;
   bool applyJson(const JsonDocument& doc);
+  static bool normalizeIrRemoteLayout(const String& source, String& normalized);
+  static bool validateIrRemoteCodeMap(const String& source);
 
   bool displayInvert = false;
   uint8_t brightness = 230;
@@ -48,7 +51,6 @@ public:
   String displayArtworkMode = "logo";
   String lastFmApiKey;
   String displayVuStyle = "bars";
-  uint8_t displayVuSensitivity = 100;
   String themeAccent = "green";
   String themeCustomColor = "#a9f7bf";
   DisplayClockStyle displayClockStyleId = DisplayClockStyle::Digital;
@@ -64,6 +66,8 @@ public:
   bool irEnabled = false;
   uint8_t irSensitivity = 40;
   String irActionLearning;
+  String irRemoteProfile = "rcnec21";
+  String irRemoteCustom;
   uint64_t irPrev = 0;
   uint64_t irNext = 0;
   uint64_t irToggle = 0;
@@ -124,4 +128,7 @@ public:
 
 private:
   AppConfig() = default;
+  IrRemotePolicy::Banks irRemoteCodes{};
+  void captureIrRemoteCodes(size_t profile);
+  void restoreIrRemoteCodes(size_t profile);
 };

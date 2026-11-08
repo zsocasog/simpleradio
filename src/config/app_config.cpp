@@ -2,10 +2,89 @@
 
 #include <LittleFS.h>
 #include <time.h>
+#include <esp_heap_caps.h>
 #include "hardware_capabilities.h"
 #include "../storage/atomic_file.h"
 
 static const char* CONFIG_FILE = "/config.json";
+
+// Layout parsing is infrequent, bounded and PSRAM-only. It must not fragment
+// the internal heap needed by the audio/image workers.
+class IrLayoutAllocator final : public ArduinoJson::Allocator {
+public:
+  void* allocate(size_t bytes) override { return heap_caps_malloc(bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT); }
+  void deallocate(void* ptr) override { heap_caps_free(ptr); }
+  void* reallocate(void* ptr, size_t bytes) override {
+    const size_t previous = ptr ? heap_caps_get_allocated_size(ptr) : 0;
+    void* result = heap_caps_realloc(ptr, bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    return !result && ptr && bytes && bytes <= previous ? ptr : result;
+  }
+};
+static uint64_t AppConfig::* const irCodeMembers[] = {&AppConfig::irPrev, &AppConfig::irNext, &AppConfig::irToggle, &AppConfig::irVolUp, &AppConfig::irVolDown, &AppConfig::irMute, &AppConfig::irPower, &AppConfig::irUp, &AppConfig::irDown, &AppConfig::irLeft, &AppConfig::irRight, &AppConfig::irOk, &AppConfig::irList, &AppConfig::irBack, &AppConfig::irDigit0, &AppConfig::irDigit1, &AppConfig::irDigit2, &AppConfig::irDigit3, &AppConfig::irDigit4, &AppConfig::irDigit5, &AppConfig::irDigit6, &AppConfig::irDigit7, &AppConfig::irDigit8, &AppConfig::irDigit9, &AppConfig::irStar, &AppConfig::irHash, &AppConfig::irStation1, &AppConfig::irStation2, &AppConfig::irStation3, &AppConfig::irStation4, &AppConfig::irStation5};
+
+void AppConfig::captureIrRemoteCodes(size_t profile) {
+  for (size_t i = 0; i < IrRemotePolicy::ACTIONS.size(); ++i) irRemoteCodes[profile][i] = this->*irCodeMembers[i];
+}
+void AppConfig::restoreIrRemoteCodes(size_t profile) {
+  for (size_t i = 0; i < IrRemotePolicy::ACTIONS.size(); ++i) this->*irCodeMembers[i] = irRemoteCodes[profile][i];
+}
+
+bool AppConfig::normalizeIrRemoteLayout(const String& source, String& normalized) {
+  if (!source.length() || source.length() > IrRemotePolicy::MAX_CUSTOM_BYTES) return false;
+  IrLayoutAllocator allocator;
+  JsonDocument parsed(&allocator), clean(&allocator);
+  if (deserializeJson(parsed, source, DeserializationOption::NestingLimit(4))) return false;
+  if (!parsed.is<JsonObject>() || parsed["schemaVersion"] != 1 ||
+      !parsed["name"].is<const char*>() || !parsed["columns"].is<int>() || !parsed["rows"].is<int>() ||
+      !parsed["buttons"].is<JsonArray>()) return false;
+  String name = parsed["name"].as<String>(); name.trim();
+  const int columns = parsed["columns"], rows = parsed["rows"];
+  JsonArrayConst buttons = parsed["buttons"].as<JsonArrayConst>();
+  if (!name.length() || name.length() > 64 || columns < 1 || columns > IrRemotePolicy::MAX_COLUMNS ||
+      rows < 1 || rows > IrRemotePolicy::MAX_ROWS || buttons.size() > IrRemotePolicy::MAX_BUTTONS) return false;
+  bool cells[IrRemotePolicy::MAX_COLUMNS * IrRemotePolicy::MAX_ROWS] = {};
+  bool usedActions[IrRemotePolicy::ACTIONS.size()] = {};
+  bool ids[IrRemotePolicy::MAX_BUTTONS + 1] = {};
+  clean["schemaVersion"] = 1; clean["name"] = name; clean["columns"] = columns; clean["rows"] = rows;
+  JsonArray output = clean["buttons"].to<JsonArray>();
+  for (JsonObjectConst button : buttons) {
+    if (!button["id"].is<int>() || !button["row"].is<int>() || !button["column"].is<int>() ||
+        !button["label"].is<const char*>() || !button["action"].is<const char*>() ||
+        !button["shape"].is<const char*>() || !button["tone"].is<const char*>()) return false;
+    int id = button["id"], row = button["row"], column = button["column"];
+    const char* action = button["action"], *shape = button["shape"], *tone = button["tone"];
+    const String label = button["label"].as<String>();
+    int actionIndex = IrRemotePolicy::actionIndex(action);
+    if (id < 1 || id > static_cast<int>(IrRemotePolicy::MAX_BUTTONS) || ids[id] || row < 0 || row >= rows ||
+        column < 0 || column >= columns || cells[row * columns + column] || label.length() > 32 ||
+        (action[0] && actionIndex < 0) || (actionIndex >= 0 && usedActions[actionIndex]) ||
+        (strcmp(shape, "pill") && strcmp(shape, "round")) ||
+        (strcmp(tone, "normal") && strcmp(tone, "light") && strcmp(tone, "power") && strcmp(tone, "accent"))) return false;
+    ids[id] = true; cells[row * columns + column] = true;
+    if (actionIndex >= 0) usedActions[actionIndex] = true;
+    JsonObject item = output.add<JsonObject>();
+    item["id"] = id; item["row"] = row; item["column"] = column; item["label"] = label;
+    item["action"] = action; item["shape"] = shape; item["tone"] = tone;
+  }
+  if (clean.overflowed()) return false;
+  String result;
+  const size_t expected = measureJson(clean);
+  if (serializeJson(clean, result) != expected || result.length() != expected ||
+      !result.length() || result.length() > IrRemotePolicy::MAX_CUSTOM_BYTES) return false;
+  normalized = std::move(result); return true;
+}
+
+bool AppConfig::validateIrRemoteCodeMap(const String& source) {
+  if (!source.length() || source.length() > 2048) return false;
+  IrLayoutAllocator allocator; JsonDocument codes(&allocator);
+  if (deserializeJson(codes, source, DeserializationOption::NestingLimit(1)) || !codes.is<JsonObject>()) return false;
+  for (JsonPairConst pair : codes.as<JsonObjectConst>()) {
+    if (IrRemotePolicy::actionIndex(pair.key().c_str()) < 0 || !pair.value().is<const char*>() ||
+        !IrRemotePolicy::validCode(pair.value().as<const char*>())) return false;
+  }
+  return !codes.overflowed();
+}
+
 
 static DisplayClockStyle parseClockStyle(const String& value) {
   return value == "analog" ? DisplayClockStyle::Analog : DisplayClockStyle::Digital;
@@ -103,11 +182,26 @@ void AppConfig::load() {
   }
   // applyJson also enforces the compiled hardware profile. Run it for an empty
   // document too, so first boot cannot expose impossible default states.
-  applyJson(doc);
+  if (!applyJson(doc)) {
+    // A damaged optional layout must not discard WiFi-independent settings or
+    // the previously taught legacy IR codes.
+    doc.remove("irRemoteCustom"); doc.remove("irRemoteProfile"); doc.remove("irRemoteCodeMap");
+    applyJson(doc);
+  }
 }
 
 bool AppConfig::save() {
+  const int profile = IrRemotePolicy::profileIndex(irRemoteProfile.c_str());
+  captureIrRemoteCodes(profile >= 0 ? profile : 0);
   JsonDocument doc;
+  doc["irRemoteProfile"] = irRemoteProfile;
+  doc["irRemoteCustom"] = irRemoteCustom;
+  for (size_t p = 0; p < IrRemotePolicy::PROFILES.size(); ++p) {
+    JsonObject bank = doc["irProfiles"][IrRemotePolicy::PROFILES[p].data()].to<JsonObject>();
+    for (size_t i = 0; i < IrRemotePolicy::ACTIONS.size(); ++i) {
+      if (irRemoteCodes[p][i]) bank[IrRemotePolicy::ACTIONS[i].data()] = String(irRemoteCodes[p][i]);
+    }
+  }
   doc["displayInvert"] = displayInvert;
   doc["brightness"] = brightness;
   doc["displayIdleEnabled"] = displayIdleEnabled;
@@ -120,7 +214,6 @@ bool AppConfig::save() {
   doc["displayArtworkMode"] = displayArtworkMode;
   doc["lastFmApiKey"] = lastFmApiKey;
   doc["displayVuStyle"] = displayVuStyle;
-  doc["displayVuSensitivity"] = displayVuSensitivity;
   doc["themeAccent"] = themeAccent;
   doc["themeCustomColor"] = themeCustomColor;
   doc["timeZone"] = timeZone;
@@ -192,6 +285,9 @@ bool AppConfig::save() {
 
 String AppConfig::toJson() const {
   JsonDocument doc;
+  doc["irRemoteProfilesVersion"] = 1;
+  doc["irRemoteProfile"] = irRemoteProfile;
+  doc["irRemoteCustom"] = irRemoteCustom;
   doc["displayInvert"] = displayInvert;
   doc["brightness"] = brightness;
   doc["displayIdleEnabled"] = displayIdleEnabled;
@@ -205,7 +301,6 @@ String AppConfig::toJson() const {
   doc["hasLastFmApiKey"] = effectiveLastFmApiKey().length() > 0;
   doc["hasSavedLastFmApiKey"] = lastFmApiKey.length() > 0;
   doc["displayVuStyle"] = displayVuStyle;
-  doc["displayVuSensitivity"] = displayVuSensitivity;
   doc["themeAccent"] = themeAccent;
   doc["themeCustomColor"] = themeCustomColor;
   doc["timeZone"] = timeZone;
@@ -278,6 +373,21 @@ String AppConfig::toJson() const {
 }
 
 bool AppConfig::applyJson(const JsonDocument& doc) {
+  IrLayoutAllocator codeAllocator;
+  JsonDocument incomingCodes(&codeAllocator);
+  String custom;
+  if (doc["irRemoteCustom"].is<const char*>() && doc["irRemoteCustom"].as<String>().length() &&
+      !normalizeIrRemoteLayout(doc["irRemoteCustom"].as<String>(), custom)) return false;
+  if (doc["irRemoteProfile"].is<const char*>() &&
+      IrRemotePolicy::profileIndex(doc["irRemoteProfile"].as<const char*>()) < 0) return false;
+  const char* requestedProfile = doc["irRemoteProfile"] | irRemoteProfile.c_str();
+  if (strcmp(requestedProfile, "custom") == 0 && !custom.length() && !irRemoteCustom.length()) return false;
+  if (doc["irRemoteCodeMap"].is<const char*>() &&
+      !validateIrRemoteCodeMap(doc["irRemoteCodeMap"].as<String>())) return false;
+  if (doc["irRemoteCodeMap"].is<const char*>() &&
+      deserializeJson(incomingCodes, doc["irRemoteCodeMap"].as<String>(), DeserializationOption::NestingLimit(1))) return false;
+  const int oldProfile = IrRemotePolicy::profileIndex(irRemoteProfile.c_str());
+
   if (doc["displayInvert"].is<bool>()) displayInvert = doc["displayInvert"];
   if (doc["brightness"].is<int>()) brightness = constrain(doc["brightness"].as<int>(), 0, 255);
   if (doc["displayIdleEnabled"].is<bool>()) displayIdleEnabled = doc["displayIdleEnabled"];
@@ -317,7 +427,6 @@ bool AppConfig::applyJson(const JsonDocument& doc) {
     }
     displayVuStyleId = parseVuStyle(displayVuStyle);
   }
-  if (doc["displayVuSensitivity"].is<int>()) displayVuSensitivity = constrain(doc["displayVuSensitivity"].as<int>(), 50, 200);
   if (doc["themeAccent"].is<const char*>()) themeAccent = normalizeThemeAccent(doc["themeAccent"].as<String>());
   if (doc["themeCustomColor"].is<const char*>()) themeCustomColor = normalizeHexColor(doc["themeCustomColor"].as<String>());
   if (doc["timeZone"].is<const char*>()) {
@@ -366,6 +475,33 @@ bool AppConfig::applyJson(const JsonDocument& doc) {
   if (doc["irStation3"].is<const char*>()) irStation3 = strtoull(doc["irStation3"], nullptr, 10);
   if (doc["irStation4"].is<const char*>()) irStation4 = strtoull(doc["irStation4"], nullptr, 10);
   if (doc["irStation5"].is<const char*>()) irStation5 = strtoull(doc["irStation5"], nullptr, 10);
+
+  captureIrRemoteCodes(oldProfile >= 0 ? oldProfile : 0);
+  if (doc["irProfiles"].is<JsonObjectConst>()) {
+    for (size_t p = 0; p < IrRemotePolicy::PROFILES.size(); ++p) {
+      JsonObjectConst bank = doc["irProfiles"][IrRemotePolicy::PROFILES[p].data()].as<JsonObjectConst>();
+      if (bank.isNull()) continue;
+      for (size_t i = 0; i < IrRemotePolicy::ACTIONS.size(); ++i) {
+        const char* code = bank[IrRemotePolicy::ACTIONS[i].data()] | "0";
+        irRemoteCodes[p][i] = IrRemotePolicy::validCode(code) ? strtoull(code, nullptr, 10) : 0;
+      }
+    }
+  }
+  if (doc["irRemoteProfile"].is<const char*>()) irRemoteProfile = doc["irRemoteProfile"].as<String>();
+  if (custom.length()) irRemoteCustom = std::move(custom);
+  const int nextProfile = IrRemotePolicy::profileIndex(irRemoteProfile.c_str());
+  if (nextProfile != oldProfile || doc["irProfiles"].is<JsonObjectConst>()) {
+    restoreIrRemoteCodes(nextProfile >= 0 ? nextProfile : 0);
+    irActionLearning = "";
+  }
+  if (doc["irRemoteCodeMap"].is<const char*>()) {
+    for (size_t i = 0; i < IrRemotePolicy::ACTIONS.size(); ++i) {
+      const char* code = incomingCodes[IrRemotePolicy::ACTIONS[i].data()] | "0";
+      this->*irCodeMembers[i] = strtoull(code, nullptr, 10);
+    }
+    captureIrRemoteCodes(nextProfile >= 0 ? nextProfile : 0);
+    irActionLearning = "";
+  }
 
   if (doc["encoderEnabled"].is<bool>()) encoderEnabled = doc["encoderEnabled"];
   if (doc["secondEncoderEnabled"].is<bool>()) secondEncoderEnabled = doc["secondEncoderEnabled"];

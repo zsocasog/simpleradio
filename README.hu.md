@@ -18,6 +18,7 @@
 - Mobilon is használható webfelület: lejátszás, állomáskeresés, EQ, balansz és kijelzőbeállítások.
 - Közös LCD/webes témák; élő csúszka-előnézet, mentés az állítás végén.
 - Egy vagy két enkóder, opcionális IR-távirányító és RGB LED.
+- Távirányító-sablonok és saját elrendezésszerkesztő, típusonként mentett betanított kódokkal.
 - MQTT discovery és [Home Assistant-kártya](home-assistant/README.md).
 
 ![A webes lejátszó előnézete](.screenshots/player.jpg)

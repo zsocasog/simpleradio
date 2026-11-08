@@ -17,15 +17,14 @@ constexpr float clamp(float value, float low, float high) {
 constexpr std::array<float, 14> HEIGHT = {
     0, 0, 6, 15, 30, 52, 82, 119, 164, 213, 255, 300, 345, 390};
 
-constexpr float displayLevel(float measuredDb, uint16_t sensitivity) {
+constexpr float displayLevel(float measuredDb) {
   if (!(measuredDb > SILENCE_DB)) return 0; // Includes NaN and true silence.
   const float gate = clamp((measuredDb - SILENCE_DB) / 6.0f, 0, 1);
   const float position = clamp((measuredDb + 66.0f) / 6.0f, 0, 13);
   const unsigned index = static_cast<unsigned>(position);
   const float height = index >= HEIGHT.size() - 1 ? HEIGHT.back() :
       HEIGHT[index] + (HEIGHT[index + 1] - HEIGHT[index]) * (position - index);
-  // This is VISUAL sensitivity: 50% really halves the height. Clip only last.
-  return clamp(height * gate * clamp(sensitivity, 50, 200) / 100.0f, 0, 255);
+  return clamp(height * gate, 0, 255);
 }
 
 // Visual-only taper along the ERB axis, reaching zero at bar 8 (~754 Hz).
@@ -38,13 +37,13 @@ constexpr float visualCorrectionDb(std::size_t band) {
   return -8.0f * remaining * remaining;
 }
 
-constexpr float bandDisplayLevel(float measuredDb, std::size_t band, uint16_t sensitivity) {
-  return displayLevel(measuredDb + visualCorrectionDb(band), sensitivity);
+constexpr float bandDisplayLevel(float measuredDb, std::size_t band) {
+  return displayLevel(measuredDb + visualCorrectionDb(band));
 }
 
 // Display-only rhythm contrast, identical for all ERB bands. A constant level
 // retains 72% of its former height, leaving space for a bounded onset accent.
-// Sensitivity is applied AFTER detection so dragging it cannot invent a beat.
+// The display uses the fixed, previously calibrated 100% scale.
 constexpr float steadyLevel(float level) { return level * 0.72f; }
 
 constexpr float accentDecayFactor(uint32_t elapsedMs) {
@@ -100,8 +99,8 @@ struct RhythmBand {
   }
 };
 
-constexpr float rhythmicDisplayLevel(float steady, float accent, uint16_t sensitivity) {
-  return clamp((steady + accent) * clamp(sensitivity, 50, 200) / 100.0f, 0, 255);
+constexpr float rhythmicDisplayLevel(float steady, float accent) {
+  return clamp(steady + accent, 0, 255);
 }
 
 // One envelope for the ENTIRE visible bar, after the steady/accent sum.

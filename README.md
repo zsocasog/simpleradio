@@ -18,6 +18,7 @@
 - Mobile-friendly web UI: playback, station search, EQ, balance and display settings.
 - Shared LCD/web themes; live slider previews, saved when adjustment ends.
 - One or two rotary encoders, optional IR remote and RGB LED.
+- IR remote templates and a custom layout editor, with separately saved learned codes.
 - MQTT discovery and a [Home Assistant card](home-assistant/README.md).
 
 ![Web player preview](.screenshots/en/player.jpg)

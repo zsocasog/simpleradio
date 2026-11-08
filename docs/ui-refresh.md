@@ -253,3 +253,43 @@ vagy saját készítésű, már törölt képet ez nem tudja rekonstruálni.
 Ezt először firmware-frissítésként kell telepíteni, és csak utána következzen
 a data-csomag, mert a fájlok megőrzését a feltöltést fogadó firmware végzi.
 Az eljárás futás közbeni RAM-mentés, nem áramszünetet átvészelő tartalék.
+
+
+## Távirányító-profilok és rögzített műszerkitérés (2026-11-08)
+
+- A VU/spektrum érzékenységállítása megszűnik: a korábbi 100%-os kitérés marad.
+  A régi konfigurációs kulcsot a firmware figyelmen kívül hagyja, a következő
+  mentésből elmarad. Az élő előnézeti végpont és a hozzá tartozó webes állapotgép
+  is megszűnik. Az FFT, ERB-felosztás, basszustaper, ritmusérzékelés és 25/95 ms-os
+  mozgásidő változatlan; csak a kézzel állítható kitérési szorzó tűnik el.
+- Három rajzolt sablon választható: az eddigi IR-RCNEC-BK 21 gombos, a Car MP3
+  21 gombos és a számokkal, csillaggal, kettőskereszttel, nyilakkal és OK-val
+  szerelt 17 gombos kiosztás. A sablon kizárólag a rajzot és funkciókiosztást adja,
+  nem feltételez előre gyártott IR-kódokat. Az eltérő klónok gombjait be kell tanítani.
+- A Saját elrendezés a kiválasztott típust másolja. A gombok húzással felcserélhetők,
+  vagy sor/oszlop megadásával helyezhetők át. Szerkeszthető a név, gombfelirat,
+  funkció, kerek/ovális alak és sötét/világos/piros/témaszínű megjelenés.
+  Üres elrendezésből is lehet indulni; a rács 1–5 oszlopos és 1–12 soros lehet,
+  legfeljebb 40 gombbal. A nem használt fizikai gombok hozzárendelés nélkül hagyhatók.
+  Egy rádiófunkció egy gombhoz rendelhető; ütközéskor a korábbi érvényes érték marad.
+- A szerkesztés a böngészőben marad az Elrendezés mentése gombig. Mégse esetén
+  nincs mentés. Sikertelen kérésnél a vázlat megmarad és újrapróbálható.
+  A már megtanított kód a fizikai gombbal marad, ha a funkcióját átrendezzük.
+- Mindhárom sablon és az egyéni profil külön IR-kódkészletet kap. A régi kódok
+  az eddigi sablonba költöznek. Típusváltás megszakítja a tanítást, majd az új típus
+  korábban mentett kódjai töltődnek vissza. Más beállítás mentése nem nullázza a
+  rajzon éppen nem látható funkciókat. A kódok 64 bites, tízes számrendszerű
+  szövegek maradnak a webes kérésekben és a konfigurációban.
+- A saját rajz és az összes kódkészlet a meglévő config.json része, ezért a meglévő
+  OTA-mentés és visszaállítás ezeket is megőrzi. A firmware a saját rajzot legfeljebb
+  6144 bájtos, korlátozott mélységű JSON-ként ellenőrzi; a feldolgozópufferek PSRAM-ot
+  használnak, új háttérfeladat nem indul. A kódkészletek korlátozott, összesen 992
+  bájtos tömbökben vannak. A rajzolás és az elrendezésszerkesztés a böngészőben fut.
+- A magyar, angol és nyelvi sablon frissül. Az IR-vevő időzítési toleranciája
+  továbbra is állítható: ez független a megszüntetett VU/spektrum érzékenységtől.
+- Ehhez a körhöz firmware és data/LittleFS frissítés is kell. Az új webes felület
+  régi firmware mellett letiltja a profilszerkesztést és jelzi a frissítés szükségességét.
+  DLNA-támogatás ebben a körben nem készül.
+
+Kiosztási referenciák: [17 gombos IR-távirányító](https://www.beemong.com/product/17-key-ir-remote-control),
+[Car MP3 21 gombos távirányító](https://cms.katranji.com/web/content/720534).

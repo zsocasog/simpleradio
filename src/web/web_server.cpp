@@ -1990,16 +1990,6 @@ void webServerBegin() {
     }
   );
 
-  server.on("/api/display/sensitivity", HTTP_POST, [](AsyncWebServerRequest* request) {
-    if (!request->hasParam("value", true)) {
-      request->send(400, "text/plain", "Missing sensitivity");
-      return;
-    }
-    AppConfig::instance().displayVuSensitivity = constrain(
-        request->getParam("value", true)->value().toInt(), 50, 200);
-    request->send(200, "application/json", "{\"ok\":true}");
-  });
-
   server.on("/api/config/save", HTTP_POST, [](AsyncWebServerRequest* request) {
     requestDisplayActivity();
     JsonDocument doc;
@@ -2036,7 +2026,6 @@ void webServerBegin() {
     setString("lastFmApiKey");
     setBool("clearLastFmApiKey");
     setString("displayVuStyle");
-    setInt("displayVuSensitivity");
     setString("themeAccent");
     setString("themeCustomColor");
     setString("timeZone");
@@ -2048,6 +2037,9 @@ void webServerBegin() {
     setBool("irEnabled");
     setInt("irSensitivity");
     setString("irActionLearning");
+    setString("irRemoteProfile");
+    setString("irRemoteCustom");
+    setString("irRemoteCodeMap");
     setString("irPrev");
     setString("irNext");
     setString("irToggle");
@@ -2104,7 +2096,10 @@ void webServerBegin() {
     setString("frontLedColor");
 
     String previousLastFmApiKey = AppConfig::instance().lastFmApiKey;
-    AppConfig::instance().applyJson(doc);
+    if (!AppConfig::instance().applyJson(doc)) {
+      request->send(400, "text/plain", "Invalid remote layout or IR profile");
+      return;
+    }
     if (previousLastFmApiKey != AppConfig::instance().lastFmApiKey) {
       ArtworkCache::instance().retryCurrentAlbumLookup();
     }

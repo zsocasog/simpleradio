@@ -1395,11 +1395,6 @@ static void updateVuAutoScale(uint8_t& left, uint8_t& right, bool hasSignal) {
   vuAutoScaleReady = true;
 }
 
-static uint8_t applyVuSensitivity(uint8_t value) {
-  uint16_t sensitivity = constrain(AppConfig::instance().displayVuSensitivity, 50, 200);
-  return static_cast<uint8_t>(min<uint16_t>(127, (static_cast<uint16_t>(value) * sensitivity + 50U) / 100U));
-}
-
 static void updateVuMotion(uint8_t left, uint8_t right, bool hasSignal) {
   if (!hasSignal) {
     vuMotionL = vuMotionL > 8 ? vuMotionL - 8 : 0;
@@ -1479,8 +1474,6 @@ static bool updateVuBars(bool playing) {
   uint8_t right = fresh ? meter.right : 0;
   bool hasFreshSignal = fresh && max(left, right) > 2;
   updateVuAutoScale(left, right, hasFreshSignal);
-  left = applyVuSensitivity(left);
-  right = applyVuSensitivity(right);
   hasFreshSignal = max(left, right) > 2;
   updateVuMotion(left, right, hasFreshSignal);
   pushVuHistory(left, right, hasFreshSignal, now);
@@ -1546,13 +1539,12 @@ static bool updateSpectrumBars(bool playing, AudioSpectrumSnapshot& spectrum) {
   // through a drawing stall instead of clearing every bar at once.
   elapsedMs = min<uint32_t>(elapsedMs, 100);
   lastSpectrumEnvelopeMs = now;
-  const uint16_t sensitivity = constrain(AppConfig::instance().displayVuSensitivity, 50, 200);
   const bool initializeRhythm = fresh && (rhythmHistoryExpired || !hasSpectrumMeasurement || spectrum.generation != lastSpectrumGeneration);
   const bool newMeasurement = fresh && (initializeRhythm || spectrum.updatedMs != lastSpectrumSampleMs);
   bool changed = false;
   for (size_t i = 0; i < SpectrumMath::BAND_COUNT; ++i) {
     // Detect before sensitivity and pixel rounding; never alter measured dB.
-    const float inputLevel = fresh ? SpectrumDynamics::bandDisplayLevel(spectrum.bandDb[i], i, 100) : 0;
+    const float inputLevel = fresh ? SpectrumDynamics::bandDisplayLevel(spectrum.bandDb[i], i) : 0;
     spectrumRhythm[i].update(inputLevel, newMeasurement, initializeRhythm, accentDecay, smallMotionDecay);
     // The same conditioned level drives BOTH the steady envelope and onset
     // detector, uniformly across all bands. Stop still releases towards zero.
@@ -1561,7 +1553,7 @@ static bool updateSpectrumBars(bool playing, AudioSpectrumSnapshot& spectrum) {
     // Accents now receive the same short smoothing as the steady component;
     // there is no second, independent steady-envelope release in this path.
     spectrumEnvelope[i] = initializeEnvelope ? level : SpectrumDynamics::smoothRhythmLevel(spectrumEnvelope[i], level, elapsedMs);
-    const float displayed = SpectrumDynamics::rhythmicDisplayLevel(spectrumEnvelope[i], 0, sensitivity);
+    const float displayed = SpectrumDynamics::rhythmicDisplayLevel(spectrumEnvelope[i], 0);
     const uint8_t next = static_cast<uint8_t>(lroundf(displayed * VU_SYMMETRIC_MAX_H / 255.0f));
     const uint8_t current = vuBars[i];
     vuBars[i] = next;

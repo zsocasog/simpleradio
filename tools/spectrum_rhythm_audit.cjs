@@ -16,7 +16,7 @@ function body(source, marker) {
 }
 function loadProduction() {
   // Share the numerical tests' type-erasure bridge instead of reimplementing
-  // any FFT weighting, sensitivity, accent or envelope rule in the audit.
+  // any FFT weighting, accent or envelope rule in the audit.
   const tests = path.join(root, 'tools/tests');
   const source = fs.readFileSync(path.join(tests, 'spectrum_signal.test.cjs'), 'utf8');
   const end = source.indexOf('test("full Q31'); assert.ok(end > 0);
@@ -70,18 +70,17 @@ function generateFrames(runtime, { bed = 0, kick = 0, click = 0, bedHz = 63, kic
   }
   return frames;
 }
-function createRenderer(p, sensitivity = 100) {
+function createRenderer(p) {
   const display = fs.readFileSync(path.join(root, 'src/display/display.cpp'), 'utf8');
   const translated = body(display, 'static bool updateSpectrumBars(')
     .replace('spectrum = AudioSpectrum::instance().snapshot();', 'spectrum = input;')
     .replace(/SpectrumMath::|SpectrumDynamics::/g, 'p.')
-    .replace('AppConfig::instance().displayVuSensitivity', 'state.sensitivity')
     .replace(/const (?:unsigned long|bool|uint32_t|uint16_t|float|uint8_t) /g, 'const ')
     .replace(/\b(?:bool|uint32_t|size_t) /g, 'let ')
     .replace(/min<uint32_t>/g, 'Math.min')
     .replace(/static_cast<uint8_t>\(lroundf\(([^;]+)\)\)/g, 'Math.round($1)')
     .replace(/([0-9]+(?:\.[0-9]*)?)f\b/g, '$1');
-  const state = { sensitivity, envelope: Array(24).fill(0),
+  const state = { envelope: Array(24).fill(0),
     rhythm: Array.from({ length: 24 }, () => new p.RhythmBand()), bars: Array(24).fill(0),
     lastEnvelope: 0, lastSample: 0, lastGeneration: 0, hasSample: false };
   const frame = new Function('p', 'state', 'input', 'playing', 'now', `
@@ -97,8 +96,8 @@ function createRenderer(p, sensitivity = 100) {
   `);
   return { state, frame: (input, playing, now) => frame(p, state, input, playing, now) };
 }
-function simulate(runtime, frames, { rhythm = true, sensitivity = 100, durationMs = 1500 } = {}) {
-  const p = runtime.production, renderer = createRenderer(p, sensitivity), oldEnvelope = Array(24).fill(0);
+function simulate(runtime, frames, { rhythm = true, durationMs = 1500 } = {}) {
+  const p = runtime.production, renderer = createRenderer(p), oldEnvelope = Array(24).fill(0);
   const rendered = []; let used = -1;
   for (let t = 33; t < durationMs; t += 33) {
     const newest = frames.findLastIndex(frame => frame.ready <= t);
@@ -112,7 +111,7 @@ function simulate(runtime, frames, { rhythm = true, sensitivity = 100, durationM
     let result;
     if (rhythm) result = renderer.frame(sample, true, t);
     else {
-      for (let band = 0; band < 24; ++band) oldEnvelope[band] = p.smoothLevel(oldEnvelope[band], p.bandDisplayLevel(db[band], band, sensitivity), 33);
+      for (let band = 0; band < 24; ++band) oldEnvelope[band] = p.smoothLevel(oldEnvelope[band], p.bandDisplayLevel(db[band], band), 33);
       result = { heights: oldEnvelope.map(value => Math.round(value * 32 / 255)), accents: Array(24).fill(0) };
     }
     rendered.push({ t, ...result });

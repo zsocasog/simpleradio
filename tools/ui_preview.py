@@ -24,7 +24,7 @@ REQUESTS = []
 CONFIG = dict(displayInvert=False, brightness=230, displayIdleEnabled=True,
     displayIdleBlank=False, displayIdleSeconds=120, displayIdleBrightness=13,
     displayClockEnabled=True, displayClockStyle='digital', displayFooterMode='spectrum',
-    displayArtworkMode='album', displayVuStyle='symmetric', displayVuSensitivity=100,
+    displayArtworkMode='album', displayVuStyle='symmetric',
     themeAccent='amber', themeCustomColor='#f5ce74', timeZone='CET-1CEST,M3.5.0/2,M10.5.0/3',
     autoBrightness=True, dayBrightness=230, nightBrightness=51, dayStartMinute=420,
     nightStartMinute=1200, irEnabled=True, irSensitivity=40, irActionLearning='',
@@ -36,6 +36,11 @@ CONFIG = dict(displayInvert=False, brightness=230, displayIdleEnabled=True,
     autoStart=False, volumeCurve='soft', frontLedEnabled=False, frontLedUseTheme=True,
     frontLedBrightness=128, frontLedStandbyBrightness=13, frontLedColor='#a9f7bf',
     hasLastFmApiKey=True, hasSavedLastFmApiKey=False)
+IR_ACTIONS = ['prev','next','toggle','volUp','volDown','mute','power','up','down','left','right','ok','list','back'] + ['digit'+str(i) for i in range(10)] + ['star','hash'] + ['station'+str(i) for i in range(1,6)]
+def ir_key(action): return 'ir'+action[0].upper()+action[1:]
+CONFIG.update(irRemoteProfilesVersion=1, irRemoteProfile='rcnec21', irRemoteCustom='')
+CONFIG.update({ir_key(action):'0' for action in IR_ACTIONS})
+IR_BANKS = {profile:{ir_key(action):'0' for action in IR_ACTIONS} for profile in ('rcnec21','car21','nav17','custom')}
 HARDWARE = dict(schemaVersion=1, transientPlayerControls=True, encoderCount=1,
     encoder1=dict(available=True, hasButton=True), encoder2=dict(available=False, hasButton=False),
     frontRgbLed=dict(available=False, type='none'), ir=dict(available=True))
@@ -89,15 +94,26 @@ class Handler(BaseHTTPRequestHandler):
         with LOCK:
             REQUESTS.append({'path':path,'data':data})
             if path=='/api/config/save':
+                previous=CONFIG['irRemoteProfile']
                 for key,value in data.items():
                     if key in CONFIG:
                         original=CONFIG[key]
                         CONFIG[key]=(value=='1') if isinstance(original,bool) else int(value) if isinstance(original,int) else value
+                IR_BANKS[previous] = {ir_key(action):CONFIG[ir_key(action)] for action in IR_ACTIONS}
+                if CONFIG['irRemoteProfile'] != previous:
+                    CONFIG.update(IR_BANKS[CONFIG['irRemoteProfile']]); CONFIG['irActionLearning']=''
+                if 'irRemoteCodeMap' in data:
+                    codes=json.loads(data['irRemoteCodeMap'])
+                    CONFIG.update({ir_key(action):codes.get(action,'0') for action in IR_ACTIONS})
+                    IR_BANKS[CONFIG['irRemoteProfile']]={ir_key(action):CONFIG[ir_key(action)] for action in IR_ACTIONS}
                 if data.get('lastFmApiKey'): CONFIG.update(hasLastFmApiKey=True,hasSavedLastFmApiKey=True)
                 if data.get('clearLastFmApiKey')=='1': CONFIG.update(hasLastFmApiKey=True,hasSavedLastFmApiKey=False)
                 return self.reply(CONFIG)
-            if path=='/api/display/sensitivity':
-                CONFIG['displayVuSensitivity']=int(data.get('value',100));return self.reply(CONFIG)
+            if path=='/__preview/learn':
+                action=CONFIG.get('irActionLearning','')
+                if action in IR_ACTIONS: CONFIG[ir_key(action)]=data.get('code','12345678901234567890')
+                CONFIG['irActionLearning']=''
+                return self.reply(CONFIG)
             if path=='/__preview/clear':REQUESTS.clear();return self.reply({'ok':True})
         if path.startswith('/api/ota/'):return self.reply({'error':'Preview: hardware updates are disabled'},code=400)
         self.reply({'ok':True})

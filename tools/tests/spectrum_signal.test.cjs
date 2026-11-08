@@ -69,14 +69,14 @@ const production = vm.runInNewContext(`
   const DISPLAY_SILENCE_DB = ${translate(dynamics.match(/constexpr float SILENCE_DB = ([^;]+);/)[1])};
   const Curve = { Soft: 0, Linear: 1, Log: 2 };
   function clamp(value, low, high) ${translate(body(dynamics, "clamp"))}
-  function displayLevel(measuredDb, sensitivity) ${translate(body(dynamics, "displayLevel")).replace(/\bSILENCE_DB\b/g, "DISPLAY_SILENCE_DB")}
+  function displayLevel(measuredDb) ${translate(body(dynamics, "displayLevel")).replace(/\bSILENCE_DB\b/g, "DISPLAY_SILENCE_DB")}
   function visualCorrectionDb(band) ${translate(body(dynamics, "visualCorrectionDb"))}
-  function bandDisplayLevel(measuredDb, band, sensitivity) ${translate(body(dynamics, "bandDisplayLevel"))}
+  function bandDisplayLevel(measuredDb, band) ${translate(body(dynamics, "bandDisplayLevel"))}
   function steadyLevel(level) ${translate(body(dynamics, "steadyLevel"))}
   function accentDecayFactor(elapsedMs) ${translate(body(dynamics, "accentDecayFactor"))}
   function smallMotionDecayFactor(elapsedMs) ${translate(body(dynamics, "smallMotionDecayFactor"))}
   function dampSmallMotion(current, target, decay) ${translate(body(dynamics, "dampSmallMotion"))}
-  function rhythmicDisplayLevel(steady, accent, sensitivity) ${translate(body(dynamics, "rhythmicDisplayLevel"))}
+  function rhythmicDisplayLevel(steady, accent) ${translate(body(dynamics, "rhythmicDisplayLevel"))}
   function smoothRhythmLevel(current, target, elapsedMs) ${translate(body(dynamics, "smoothRhythmLevel"))}
   class RhythmBand {
     constructor(){ this.previousLevel=0; this.accent=0; }
@@ -133,7 +133,7 @@ function analyze(samples, { sampleRate = 44100, attenuationDb = 0 } = {}) {
   const powers = production.bandPowers(dft(work), sampleRate, windowEnergy);
   const db = Array.from(powers, (power) => production.powerDb(power, attenuationDb));
   return { powers, db, rmsDb: production.powerDb(rms, attenuationDb),
-    levels: db.map((value, band) => production.bandDisplayLevel(value, band, 100)) };
+    levels: db.map((value, band) => production.bandDisplayLevel(value, band)) };
 }
 
 test("full Q31 -> window -> DFT -> production bands tracks a frequency sweep", () => {
@@ -183,21 +183,16 @@ test("opposite-phase stereo does not cancel, and DC/silence cannot become organ 
   assert.equal(production.powerDb(0, -60), -120);
 });
 
-test("visual sensitivity halves/doubles heights, and quiet tones stay visibly smaller", () => {
-  for (const db of [-55, -40, -30, -24, -18, -12]) {
-    const normal = production.displayLevel(db, 100);
-    assert.ok(Math.abs(production.displayLevel(db, 50) - normal / 2) < 0.0001);
-    assert.ok(Math.abs(production.displayLevel(db, 200) - Math.min(255, normal * 2)) < 0.0001);
-  }
-  assert.ok(production.displayLevel(-30, 100) > 255 * 0.30);
-  assert.ok(production.displayLevel(-12.5, 100) > 255 * 0.80);
-  assert.equal(production.displayLevel(-100, 200), 0);
+test("the fixed display scale preserves quiet details, dynamics and silence", () => {
+  assert.ok(production.displayLevel(-30) > 255 * .30);
+  assert.ok(production.displayLevel(-12.5) > 255 * .80);
+  assert.equal(production.displayLevel(-100), 0);
 });
 
 test("beats rise, softer sections recede, and stop decays monotonically without new PCM", () => {
   let level = 0;
-  const weak = production.displayLevel(-36, 100);
-  const beat = production.displayLevel(-6, 100);
+  const weak = production.displayLevel(-36);
+  const beat = production.displayLevel(-6);
   for (let i = 0; i < 8; ++i) level = production.smoothLevel(level, weak, 42);
   const before = level;
   for (let i = 0; i < 3; ++i) level = production.smoothLevel(level, beat, 42);
@@ -213,7 +208,7 @@ test("beats rise, softer sections recede, and stop decays monotonically without 
 });
 
 test("one LCD frame catches a beat and the envelope recedes before the next beat", () => {
-  const beat = production.displayLevel(-12, 100);
+  const beat = production.displayLevel(-12);
   const first = production.smoothLevel(0, beat, 33);
   assert.equal(first, beat);
   const released = production.smoothLevel(first, 0, 33);
@@ -323,15 +318,15 @@ test("the ERB plan uses external RAM and leaves capture, display dynamics and FF
   assert.doesNotMatch(body(analyzer,'capture'),/BandPlan|configure|binBandWeight|log10|malloc/);
 });
 
-test("the user's logged bass levels fall to about 51/51/40 percent at 100% sensitivity", () => {
-  const first=production.bandDisplayLevel(-14.6,0,100)/255;
-  const second=production.bandDisplayLevel(-16.6,1,100)/255;
-  const third=production.bandDisplayLevel(-22.9,2,100)/255;
+test("the user's logged bass levels fall to about 51/51/40 percent at the fixed scale", () => {
+  const first=production.bandDisplayLevel(-14.6,0)/255;
+  const second=production.bandDisplayLevel(-16.6,1)/255;
+  const third=production.bandDisplayLevel(-22.9,2)/255;
   assert.ok(first>0.50 && first<0.52);
   assert.ok(second>0.50 && second<0.52);
   assert.ok(third>0.39 && third<0.41);
   for(let band=7;band<24;++band) for(const db of [-55,-40,-28,-12,-6]) {
-    assert.equal(production.bandDisplayLevel(db,band,100),production.displayLevel(db,100));
+    assert.equal(production.bandDisplayLevel(db,band),production.displayLevel(db));
   }
 });
 
@@ -347,25 +342,23 @@ test("visual bass taper has no three-bar step and smoothly reaches the unchanged
   }
   // Equal neighboring input levels expose the previous artificial ledge.
   // Test the actual nonlinear display curve across the usable input range.
-  for(const sensitivity of [50,100,150,200]) for(const db of [-55,-40,-30,-24,-18,-12,-6]){
-    const third=production.bandDisplayLevel(db,2,sensitivity);
-    const fourth=production.bandDisplayLevel(db,3,sensitivity);
-    const oldThird=production.displayLevel(db-4,sensitivity);
-    const oldFourth=production.displayLevel(db,sensitivity);
+  for(const db of [-55,-40,-30,-24,-18,-12,-6]){
+    const third=production.bandDisplayLevel(db,2);
+    const fourth=production.bandDisplayLevel(db,3);
+    const oldThird=production.displayLevel(db-4);
+    const oldFourth=production.displayLevel(db);
     assert.ok(fourth>=third);
     assert.ok(fourth-third<=oldFourth-oldThird+1e-9);
-    if(sensitivity===100) assert.ok(fourth-third<255*0.05);
+    assert.ok(fourth-third<255*0.05);
   }
 });
 
-test("visual bass correction retains beats, silence, decay and sensitivity", () => {
+test("visual bass correction retains beats, silence and decay", () => {
   for(let band=0;band<24;++band){
-    assert.equal(production.bandDisplayLevel(-120,band,200),0);
-    assert.equal(production.bandDisplayLevel(NaN,band,100),0);
-    const quiet=production.bandDisplayLevel(-36,band,100), beat=production.bandDisplayLevel(-6,band,100);
+    assert.equal(production.bandDisplayLevel(-120,band),0);
+    assert.equal(production.bandDisplayLevel(NaN,band),0);
+    const quiet=production.bandDisplayLevel(-36,band), beat=production.bandDisplayLevel(-6,band);
     assert.ok(beat>quiet*3);
-    assert.equal(production.bandDisplayLevel(-24,band,50),production.bandDisplayLevel(-24,band,100)/2);
-    assert.equal(production.bandDisplayLevel(-24,band,200),Math.min(255,production.bandDisplayLevel(-24,band,100)*2));
     let envelope=production.smoothLevel(0,beat,33);
     assert.ok(envelope>beat*0.70);
     for(let i=0;i<24;++i) envelope=production.smoothLevel(envelope,0,33);

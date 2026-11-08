@@ -11,7 +11,7 @@ const sync = app.match(/function syncDisplayFooterMode\(\) \{[\s\S]*?\n\}/)[0];
 function visibility(mode) {
   const hidden = {};
   const fields = { displayFooterMode: { value: mode } };
-  for (const id of ["displayVuStyleField", "displayVuSensitivityField"]) {
+  for (const id of ["displayVuStyleField"]) {
     fields[id] = { classList: { toggle: (name, enabled) => { hidden[id] = enabled; } } };
   }
   vm.runInNewContext(sync + "\nsyncDisplayFooterMode();", { $: (id) => fields[id] });
@@ -27,17 +27,17 @@ test("spectrum is a separate footer option, not an existing VU style", () => {
   assert.doesNotMatch(styles, /value="spectrum"/);
 });
 
-test("spectrum shows sensitivity but hides VU style", () => {
-  assert.deepEqual(visibility("spectrum"), { displayVuStyleField: true, displayVuSensitivityField: false });
+test("spectrum hides the VU style control", () => {
+  assert.deepEqual(visibility("spectrum"), { displayVuStyleField: true });
 });
 
 test("existing VU controls stay visible", () => {
-  assert.deepEqual(visibility("vu"), { displayVuStyleField: false, displayVuSensitivityField: false });
+  assert.deepEqual(visibility("vu"), { displayVuStyleField: false });
 });
 
-test("non-audio footers hide both audio controls", () => {
+test("non-audio footers hide the VU style control", () => {
   for (const mode of ["volume", "station", "datetime", "off"]) {
-    assert.deepEqual(visibility(mode), { displayVuStyleField: true, displayVuSensitivityField: true });
+    assert.deepEqual(visibility(mode), { displayVuStyleField: true });
   }
 });
 
@@ -91,14 +91,14 @@ test("FFT is below audio priority but not idle, and self-tests the linked backen
   assert.match(analyzer, /void AudioSpectrum::reportDiagnostics\(\)/);
 });
 
-test("drawing stalls do not clear the envelope, and sensitivity preserves spectral contrast", () => {
+test("drawing stalls do not clear the envelope, and the fixed display preserves spectral contrast", () => {
   const display = fs.readFileSync(path.join(root, "src/display/display.cpp"), "utf8");
   const update = display.match(/static bool updateSpectrumBars\(bool playing, AudioSpectrumSnapshot& spectrum\) \{[\s\S]*?\n\}/)[0];
   assert.doesNotMatch(update, /spectrumEnvelope\.fill\(0\)/);
   assert.match(update, /SpectrumMath::usableFrame/);
-  assert.match(update, /SpectrumDynamics::bandDisplayLevel\(spectrum.bandDb\[i\], i, 100\)/);
+  assert.match(update, /SpectrumDynamics::bandDisplayLevel\(spectrum.bandDb\[i\], i\)/);
   assert.match(update, /steadyLevel\(fresh \? spectrumRhythm\[i\].previousLevel : 0\) \+ spectrumRhythm\[i\].accent/);
-  assert.match(update, /rhythmicDisplayLevel\(spectrumEnvelope\[i\], 0, sensitivity\)/);
+  assert.match(update, /rhythmicDisplayLevel\(spectrumEnvelope\[i\], 0\)/);
   assert.doesNotMatch(update, /spectrumLevelTracker|gainDb/);
   assert.doesNotMatch(update, /log10f\(sensitivity/);
   assert.doesNotMatch(update, /spectrum\.bands\[i\] \* sensitivity/);

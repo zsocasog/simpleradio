@@ -194,7 +194,6 @@ window.SR_TEXT_KEYS = {
   "Több PNG, JPG vagy BMP fájl is mehet egyszerre.": "text.98c8024be4d0",
   "Törlés": "text.3f8cd2aa925b",
   "US - Egyesült Államok": "text.0aa4594c11a8",
-  "VU / spektrum érzékenység": "text.47147f3ebdb2",
   "Vezérlés": "text.70be90111460",
   "Válassz egy gombot, majd tanítsd be.": "text.c893c4d90564",
   "Válaszd ki a hálózatot, add meg a jelszót, majd mentsd a rádióra.": "text.a81188ef764d",

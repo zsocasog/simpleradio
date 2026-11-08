@@ -263,7 +263,7 @@
     const status = id("connectionSaveStatus"); status.classList.remove("is-error"); status.textContent = tr("save.busy", "Mentés…");
     try {
       const started = Date.now();
-      while (configSaving || sliderGestures.size || meterSensitivityEditing) {
+      while (configSaving || sliderGestures.size) {
         if (Date.now() - started > 5000) throw new Error("busy");
         await new Promise(resolve => setTimeout(resolve, 40));
       }
@@ -561,8 +561,9 @@
     visible(id("deleteLastFmApiKey"), !!config.hasSavedLastFmApiKey);
     visible(id("lastFmKeyDeleteHelp"), !!config.hasSavedLastFmApiKey);
     (U.secondFields || []).forEach(([source, target]) => { if (document.activeElement !== id(target)) id(target).value = String(Number(id(source).value) / 1000); });
-    const learned = irActions.filter(item => String(config[irKey(item.action)] || "0") !== "0").length;
-    disclosureLabel(id("irMappingSummary"), tr("ui.mappingCount", "Összes hozzárendelés ({count}/{total})", { count: learned, total: irActions.length }));
+    const activeMappings = activeIrActions();
+    const learned = activeMappings.filter(item => String(config[irKey(item.action)] || "0") !== "0").length;
+    disclosureLabel(id("irMappingSummary"), tr("ui.mappingCount", "Összes hozzárendelés ({count}/{total})", { count: learned, total: activeMappings.length }));
     const learning = !!config.irActionLearning; const active = selectedIrAction || config.irActionLearning;
     if (learning) id("irPrimaryCode").textContent = tr("ui.waitingSignal", "Várakozás a jelre…");
     visible(document.querySelector('[onclick="cancelIrLearning()"]'), learning);
@@ -570,7 +571,7 @@
     if (active && !learning && String(config[irKey(active)] || "0") !== "0") id("irPanelHelp").textContent = tr("ui.keyLearned", "A gomb elmentve. Válassz másikat a folytatáshoz.");
     id("irMappedList").querySelectorAll(".mapped-pill").forEach((n, i) => {
       n.setAttribute("role", "button"); n.tabIndex = hardwareCapabilities.ir?.available ? 0 : -1;
-      n.onclick = () => startIrLearning(irActions[i].action);
+      n.onclick = () => startIrLearning(n.dataset.irAction);
       n.onkeydown = e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); n.click(); } };
     });
     U.syncConditional(); U.transport(); U.updateLayoutPreview();

@@ -48,19 +48,7 @@ test('the exact LCD update uses the same rhythm policy for all 24 ERB bands', ()
   }
 });
 
-test('sensitivity changes scale the drawing without entering the onset detector', () => {
-  const renderer = createRenderer(p);
-  const first = renderer.frame(sample(-24, 33), true, 33);
-  renderer.state.sensitivity = 200;
-  const louder = renderer.frame(sample(-24, 33), true, 66);
-  assert.ok(louder.accents.every(value => value === 0));
-  for (let band = 0; band < 24; ++band) assert.ok(Math.abs(louder.heights[band] - first.heights[band] * 2) <= 1);
-  renderer.frame(sample(-12, 99), true, 99);
-  const before = renderer.state.rhythm.map(band => band.accent);
-  renderer.state.sensitivity = 50;
-  const quieter = renderer.frame(sample(-12, 99), true, 132);
-  quieter.accents.forEach((value, i) => assert.ok(value <= before[i]));
-});
+
 
 test('stop and digital silence decay to zero without new PCM, spikes or a residual baseline', () => {
   for (const playing of [false, true]) {
@@ -88,13 +76,13 @@ test('a stale sample cannot retrigger, and a new generation initializes without 
   assert.ok(resumed.accents.every(value => value === 0));
 });
 
-test('accent and pixel bounds hold at every sensitivity, including very small or invalid inputs', () => {
-  for (const sensitivity of [50, 100, 150, 200]) {
+test('accent and pixel bounds hold at the fixed scale, including very small or invalid inputs', () => {
+  {
     const band = new p.RhythmBand(); band.update(0, true, true, 1, 0);
     for (const level of [NaN, 0, 0.5, 2, 3, 20, 255, 0, 255, 0, 255]) {
       const safe = Number.isFinite(level) ? level : 0;
       band.update(level, true, false, p.accentDecayFactor(33), 0);
-      const displayed = p.rhythmicDisplayLevel(p.steadyLevel(safe), band.accent, sensitivity);
+      const displayed = p.rhythmicDisplayLevel(p.steadyLevel(safe), band.accent);
       assert.ok(Number.isFinite(displayed) && displayed >= 0 && displayed <= 255);
       assert.ok(band.accent >= 0 && band.accent <= 64);
     }
