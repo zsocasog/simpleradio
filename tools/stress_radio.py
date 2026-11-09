@@ -63,6 +63,7 @@ class Run:
             shutil.copyfile(path,sources/name);hashes[name]=hashlib.sha256(path.read_bytes()).hexdigest()
         self.emit('manifest', seed=args.seed, base=self.base, exercise=args.exercise,
                   profile=getattr(args,'profile','extreme'),scale=getattr(args,'scale',1),runnerHashes=hashes,
+                  referenceSha256=hashlib.sha256(args.reference_file.read_bytes()).hexdigest() if getattr(args,'reference_file',None) else None,
                   sourceVersion=read_version(), note='No acoustic or browser-DOM certification')
 
     def emit(self, kind, **fields):
@@ -301,7 +302,14 @@ class Run:
 
     async def isolation(self, stations, config):
         flac = next((s for s in stations if 'flac' in s['url'].lower() or 'flac' in s['name'].lower()),stations[0])
-        await self.command({'station':flac['id'],'play':True})
+        if self.args.fixture_url:
+            suffix=self.args.reference_file.suffix.lower() if self.args.reference_file else '.wav'
+            route='/reference'+suffix if self.args.reference_file else '/tone.wav'
+            sid=await self.add_station('isolated-reference',self.args.fixture_url+route,self.args.fixture_url+'/logo.png')
+            self.emit('controlled-source',format=suffix[1:].upper())
+        else:
+            sid=flac['id']
+        await self.command({'station':sid,'play':True})
         self.set_phase('isolation-baseline'); await self.hold(35)
         self.set_phase('isolation-images')
         images=asyncio.create_task(self.image_load([s['id'] for s in stations]));self.background.append(images)
@@ -374,6 +382,7 @@ def main():
     parser.add_argument('--profile', choices=('extreme','isolation'),default='extreme')
     parser.add_argument('--fixture-url', help='LAN address of this PC, e.g. http://192.168.0.10:19840')
     parser.add_argument('--serve-fixture', action='store_true')
+    parser.add_argument('--reference-file',type=Path,help='Optional long local FLAC/Ogg/MP3/WAV for controlled isolation runs')
     parser.add_argument('--serial-port', help='Optional passive USB serial capture; never asserts DTR/RTS')
     parser.add_argument('--restore',type=Path,help='Recover only the saved journal, without running scenarios')
     args = parser.parse_args()
@@ -381,9 +390,10 @@ def main():
     if args.exercise and not args.mute: parser.error('--exercise requires --mute')
     if args.restore and not args.exercise: parser.error('--restore requires --exercise --mute')
     if args.serve_fixture and not args.fixture_url: parser.error('--serve-fixture requires a device-reachable --fixture-url')
+    if args.reference_file and not args.serve_fixture: parser.error('--reference-file requires --serve-fixture')
     server = None
     if args.serve_fixture:
-        server = FixtureServer(urlsplit(args.fixture_url).port or 19840)
+        server = FixtureServer(urlsplit(args.fixture_url).port or 19840,args.reference_file)
         threading.Thread(target=server.serve_forever,daemon=True).start()
     async def execute():
         asyncio.get_running_loop().set_default_executor(ThreadPoolExecutor(max_workers=8))

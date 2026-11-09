@@ -2065,6 +2065,9 @@ void webServerBegin() {
     PROBE_FIELD(pumpGapMaxUs); PROBE_FIELD(pumpWorkMaxUs); PROBE_FIELD(inputBytes);
     PROBE_FIELD(inputCapacity); PROBE_FIELD(inputMinBytes); PROBE_FIELD(inputSamples);
     PROBE_FIELD(inputEmptySamples);
+    PROBE_FIELD(decoderCalls); PROBE_FIELD(decoderGapMaxUs); PROBE_FIELD(decoderWorkMaxUs);
+    PROBE_FIELD(decoderLockMaxUs); PROBE_FIELD(decoderLongGaps); PROBE_FIELD(decoderSlowCalls);
+    PROBE_FIELD(decoderShortInputs); PROBE_FIELD(decoderInputAvailable); PROBE_FIELD(decoderInputNeeded);
 #undef PROBE_FIELD
     String out; serializeJson(doc, out);
     request->send(200, "application/json", out);

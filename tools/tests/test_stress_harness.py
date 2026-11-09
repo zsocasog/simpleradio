@@ -1,6 +1,7 @@
 import asyncio
 import copy
 import importlib.util
+import io
 import json
 from pathlib import Path
 import struct
@@ -8,14 +9,13 @@ import sys
 import tempfile
 import threading
 import unittest
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from types import SimpleNamespace
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT/'tools'))
 from stress_report import AudioAudit, summarize, percentile, write_report, feed_balances
 from stress_radio import Run, owned_stations, station_digest, validate_image
-from stress_fixture import PCM, RATE, png
+from stress_fixture import PCM, RATE, png, FixtureHandler
 import patch_runtime_probe
 
 def sample(**audio):
@@ -110,21 +110,40 @@ class ProbePatchTests(unittest.TestCase):
         self.assertIn('#define SIMPLE_RADIO_RUNTIME_DIAGNOSTICS 0',(ROOT/'src/diagnostics/runtime_probe.h').read_text())
 
 class HttpTests(unittest.TestCase):
+    def test_ogg_reference_uses_stream_headers_and_exact_bytes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            reference=Path(directory)/'reference.ogg'
+            data=b'OggS'+bytes(range(256))*90
+            reference.write_bytes(data)
+            handler=object.__new__(FixtureHandler)
+            handler.path='/reference.ogg';handler.wfile=io.BytesIO()
+            handler.server=SimpleNamespace(reference_file=reference,stopping=threading.Event())
+            headers={};codes=[]
+            handler.send_response=codes.append
+            handler.send_header=lambda key,value:headers.__setitem__(key,value)
+            handler.end_headers=lambda:None
+            handler.do_GET()
+            self.assertEqual(codes,[200])
+            self.assertEqual(headers['Content-Type'],'audio/ogg')
+            self.assertNotIn('Content-Length',headers)
+            self.assertTrue(handler.close_connection)
+            self.assertEqual(handler.wfile.getvalue(),data)
+
     def test_network_reader_detects_truncated_body(self):
-        class Handler(BaseHTTPRequestHandler):
-            def log_message(self,*_): pass
-            def do_GET(self):
-                self.send_response(200);self.send_header('Content-Length','20');self.end_headers();self.wfile.write(b'bad');self.close_connection=True
-        server=ThreadingHTTPServer(('127.0.0.1',0),Handler)
-        thread=threading.Thread(target=server.serve_forever,daemon=True);thread.start()
-        try:
-            with tempfile.TemporaryDirectory() as d:
-                args=SimpleNamespace(base=f'http://127.0.0.1:{server.server_port}',out=Path(d)/'run',seed=1,exercise=False)
-                run=Run(args)
-                try:
-                    with self.assertRaises(Exception):run.raw('/')
-                    with self.assertRaises(ValueError):asyncio.run(run.request('/api/config/save',{'brightness':5}))
-                finally:run.log.close()
-        finally:server.shutdown();server.server_close();thread.join()
+        class Response:
+            code=200;headers={'Content-Length':'20','Content-Type':'image/png'}
+            def __init__(self):self.remaining=b'bad'
+            def __enter__(self):return self
+            def __exit__(self,*_):pass
+            def read(self,count=-1):
+                body=self.remaining if count<0 else self.remaining[:count]
+                self.remaining=self.remaining[len(body):];return body
+        with tempfile.TemporaryDirectory() as d:
+            args=SimpleNamespace(base='http://127.0.0.1',out=Path(d)/'run',seed=1,exercise=False)
+            run=Run(args);run.http=SimpleNamespace(open=lambda *_args,**_kwargs:Response())
+            try:
+                with self.assertRaisesRegex(ValueError,'Truncated HTTP body'):run.raw('/')
+                with self.assertRaises(ValueError):asyncio.run(run.request('/api/config/save',{'brightness':5}))
+            finally:run.log.close()
 
 if __name__=='__main__':unittest.main()

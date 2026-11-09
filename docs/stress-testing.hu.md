@@ -72,6 +72,22 @@ python tools/stress_radio.py --exercise --mute --serve-fixture --fixture-url htt
 
 A `--expect-build` azonosítja a pontos firmware-t. A `--scale` a várakozási szakaszok hosszát szorozza, a hálózati határidőket nem. Hosszabb próbához például `--scale 5`. Ha valamelyik elvárt lejátszási szakaszból nincs legalább két stabil hangmérési minta, az eredmény hiányos lefedettségű lesz. Hiányzó diagnosztika mellett nincs zöld hangminősítés.
 
+Azonos hanganyaggal végzett összevetéshez a `--reference-file` egy hosszú helyi fájlt is elfogad:
+
+```powershell
+python tools/stress_radio.py --exercise --mute --profile isolation --serve-fixture --fixture-url http://192.168.0.203:19840 --reference-file .pio/reference.ogg --expect-build AZONOSITO --out .pio/stress/controlled-01
+```
+
+A `.ogg` mintát `audio/ogg` típussal, `Content-Length` nélkül szolgálja ki, így a rádiófolyam-kezelési útvonalat használja. A benne lévő kodeket a tényleges eszközállapotból kell ellenőrizni: az Ogg csomagolás önmagában nem jelent FLAC-ot. A `.flac`, `.mp3`, `.wav` fájlok hosszal érkeznek, ezek a könyvtár webes fájlkezelési útvonalát vizsgálják. A saját determinisztikus mintánk nem azonos összetettségű minden élő rádióadással.
+
+A futás lementi a négy kliensprogramot és lenyomatukat, a seedet, a referenciaminta SHA256-át és a megfigyelt firmware-azonosítót. Két eredmény összevetése:
+
+```powershell
+python tools/compare_stress.py .pio/stress/before .pio/stress/after --out .pio/stress/comparison.json
+```
+
+A dekóder külön mérésében a futásközök, a teljes hívási idő és a külső feladatzárra várás szerepel. A teljes hívási időbe a más feladatok miatti megszakítás és a belső várakozás is beleszámít; ez nem tisztán CPU-idő. A megfigyelő nem olvassa ki külön az inputpuffer mutatóját módosító `readSpace()` függvényt.
+
 Az `--profile isolation` külön FLAC-alapmérést, csak képkéréseket, terhelés utáni megnyugvást, csak mentéseket, majd a kettő együttfutását méri. Ezzel ellenőrizhető, hogy egy vegyes próba eredménye reprodukálható-e egyetlen terhelés hozzáadásával. A mentési kérés 20 másodperces megfigyelési határideje hosszabb a készülék 15 másodperces belső várakozásánál, így a rádió saját elutasítása is megkülönböztethető a kliens időtúllépésétől.
 
 ## Eredmények és helyreállítás

@@ -22,12 +22,17 @@ struct Snapshot {
   uint32_t pumpCalls = 0, pumpGapMaxUs = 0, pumpWorkMaxUs = 0;
   uint32_t inputBytes = 0, inputCapacity = 0, inputMinBytes = UINT32_MAX;
   uint32_t inputSamples = 0, inputEmptySamples = 0;
+  uint32_t decoderCalls = 0, decoderGapMaxUs = 0, decoderWorkMaxUs = 0, decoderLockMaxUs = 0;
+  uint32_t decoderLongGaps = 0, decoderSlowCalls = 0, decoderShortInputs = 0;
+  uint32_t decoderInputAvailable = 0, decoderInputNeeded = 0;
 };
 void outputStart(uint32_t rate, uint32_t capacityFrames);
 void outputStop();
 void IRAM_ATTR outputSent(size_t frames, uint32_t nowUs);
 void written(size_t requested, size_t accepted, int result, uint32_t elapsedUs);
 void pump(uint32_t durationUs, uint32_t inputBytes, uint32_t inputCapacity, bool running);
+void decoder(uint32_t started, uint32_t acquired, uint32_t finished,
+             uint32_t available, uint32_t needed, bool hadPending);
 Snapshot snapshot();
 #endif
 }

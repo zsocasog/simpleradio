@@ -24,6 +24,22 @@ class FixtureHandler(BaseHTTPRequestHandler):
     def log_message(self, *_): pass
     def do_GET(self):
         try:
+            reference=getattr(self.server,'reference_file',None)
+            if reference and self.path.split('?',1)[0]=='/reference'+reference.suffix.lower():
+                self.send_response(200)
+                self.send_header('Content-Type',{'.flac':'audio/flac','.mp3':'audio/mpeg','.wav':'audio/wav','.ogg':'audio/ogg'}[reference.suffix.lower()])
+                if reference.suffix.lower()=='.ogg':
+                    # Exercise the radio stream path, not the web-file path.
+                    self.send_header('Connection','close');self.close_connection=True
+                else:
+                    self.send_header('Content-Length',str(reference.stat().st_size))
+                self.end_headers()
+                with reference.open('rb') as source:
+                    while not self.server.stopping.is_set():
+                        data=source.read(16384)
+                        if not data:break
+                        self.wfile.write(data)
+                return
             if self.path.startswith('/logo'):
                 data = png(); self.send_response(200); self.send_header('Content-Type', 'image/png')
                 self.send_header('Content-Length', str(len(data))); self.end_headers()
@@ -49,7 +65,11 @@ class FixtureHandler(BaseHTTPRequestHandler):
 
 class FixtureServer(ThreadingHTTPServer):
     daemon_threads = True
-    def __init__(self, port):
+    def __init__(self, port, reference_file=None):
+        from pathlib import Path
+        self.reference_file=Path(reference_file).resolve() if reference_file else None
+        if self.reference_file and (not self.reference_file.is_file() or self.reference_file.suffix.lower() not in ('.flac','.mp3','.wav','.ogg')):
+            raise ValueError('Reference must be an existing FLAC, Ogg, MP3 or WAV file')
         self.stopping = threading.Event()
         super().__init__(('0.0.0.0', port), FixtureHandler)
     def close(self):

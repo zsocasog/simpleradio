@@ -13,7 +13,7 @@ HASH = 'bce32e20bdc48017a0c21df8b3caf06ca36108520ddf1d5367a514da437d4ddd'
 START = 'i2swrite:\n'
 END = '    // ---- statistics, bytes written to I2S (every 10s)'
 
-def patch_source(source):
+def patch_write_source(source):
     source = source.replace('\r\n', '\n')
     matches = list(re.finditer(r'(?ms)^void IRAM_ATTR Audio::playChunk\(.*?^}', source))
     if len(matches) != 1: raise RuntimeError('Runtime probe: unfamiliar playChunk')
@@ -36,6 +36,28 @@ def patch_source(source):
     anchor = '#include "SimpleRadioAudioOutput.h"\n'
     if source.count(anchor) != 1: raise RuntimeError('Runtime probe: output hook must run first')
     return source.replace(anchor, anchor + INCLUDE, 1)
+
+DECODER_HASH = '5810981301359377df1f7a4d92c0a7ab34d7c14afb75d46a6923208df48552d8'
+DECODER_OLD = '''        xSemaphoreTake(mutex_audioTask, 0.3 * configTICK_RATE_HZ);
+        playAudioData();'''
+DECODER_NEW = '''        const uint32_t probeStart = micros();
+        xSemaphoreTake(mutex_audioTask, 0.3 * configTICK_RATE_HZ);
+        const uint32_t probeAcquired = micros();
+        const bool probePending = m_validSamples != 0;
+        playAudioData();
+        RuntimeProbe::decoder(probeStart, probeAcquired, micros(), m_pad.bytesToDecode,
+                              InBuff.getMaxBlockSize(), probePending);'''
+
+def patch_source(source):
+    source = patch_write_source(source)
+    matches=list(re.finditer(r'(?ms)^void Audio::performAudioTask\(.*?^}',source))
+    if len(matches)!=1: raise RuntimeError('Runtime probe: missing decoder task')
+    match=matches[0];function=match.group();original=function.replace(DECODER_NEW,DECODER_OLD)
+    if hashlib.sha256(original.encode()).hexdigest()!=DECODER_HASH:
+        raise RuntimeError('Runtime probe: pinned decoder task changed')
+    if DECODER_NEW in function:return source
+    if function.count(DECODER_OLD)!=1:raise RuntimeError('Runtime probe: decoder anchor changed')
+    return source[:match.start()]+function.replace(DECODER_OLD,DECODER_NEW,1)+source[match.end():]
 
 if 'Import' in globals():
     Import('env')

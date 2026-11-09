@@ -11,6 +11,7 @@ DRAM_ATTR RuntimeProbe::Snapshot probe;
 DRAM_ATTR uint32_t lastSentUs = 0, lastFeedUs = 0, lastPumpUs = 0;
 DRAM_ATTR uint32_t startedUs = 0, dmaBudgetUs = 0, lastInputUs = 0;
 DRAM_ATTR bool feedLate = false;
+DRAM_ATTR uint32_t lastDecoderUs = 0;
 }
 
 namespace RuntimeProbe {
@@ -91,6 +92,26 @@ Snapshot snapshot() {
   result.sentAgeUs = lastSentUs ? now - lastSentUs : 0;
   portEXIT_CRITICAL(&probeMux);
   return result;
+}
+
+void decoder(uint32_t started, uint32_t acquired, uint32_t finished,
+             uint32_t available, uint32_t needed, bool hadPending) {
+  portENTER_CRITICAL(&probeMux);
+  ++probe.decoderCalls;
+  const uint32_t gap = lastDecoderUs ? started - lastDecoderUs : 0;
+  const uint32_t work = finished - acquired;
+  const uint32_t lock = acquired - started;
+  if (gap > probe.decoderGapMaxUs) probe.decoderGapMaxUs = gap;
+  if (work > probe.decoderWorkMaxUs) probe.decoderWorkMaxUs = work;
+  if (lock > probe.decoderLockMaxUs) probe.decoderLockMaxUs = lock;
+  if (dmaBudgetUs && gap > dmaBudgetUs + 10000) ++probe.decoderLongGaps;
+  if (dmaBudgetUs && work > dmaBudgetUs + 10000) ++probe.decoderSlowCalls;
+  if (!hadPending) {
+    probe.decoderInputAvailable = available; probe.decoderInputNeeded = needed;
+    if (available < needed) ++probe.decoderShortInputs;
+  }
+  lastDecoderUs = started;
+  portEXIT_CRITICAL(&probeMux);
 }
 }
 #endif
