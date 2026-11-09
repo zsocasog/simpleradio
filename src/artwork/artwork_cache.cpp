@@ -11,6 +11,7 @@
 #include "artwork_json_reader.h"
 #include "picker_logo_loader.h"
 #include "../config/diagnostics.h"
+#include "../storage/read_only_file.h"
 
 #include <Arduino.h>
 #include "../audio/spectrum_log.h"
@@ -150,6 +151,7 @@ struct ArtworkDownloadJob {
   bool allowSecureFallback = true;
   bool fillFrame = false;
   uint32_t deadlineMs = 0;
+  uint32_t albumSearchGeneration = 0;
   String key;
   String url;
   String artist;
@@ -329,9 +331,18 @@ void ArtworkCache::loop() {
   String completedUrl;
   String completedPath;
   bool completedOk = false;
-  if (takeDownloadResult(completedUrl, completedPath, completedOk)) {
+  bool completedCancelled = false;
+  if (takeDownloadResult(completedUrl, completedPath, completedOk, completedCancelled)) {
     if (completedOk && !completedUrl.startsWith("album:")) notifyStationArtworkReady();
-    if (!completedOk) {
+    if (completedCancelled) {
+      // Cancellation says nothing about whether a cover exists. Leave cached
+      // images alone and release only this attempt's retry suppression.
+      if (lastAlbumLookupKey == completedUrl) {
+        lastAlbumLookupKey = "";
+        lastAlbumLookupMs = 0;
+        lastAlbumStartFailed = false;
+      }
+    } else if (!completedOk) {
       if (completedUrl.startsWith("album:")) {
         String activeKey = String(ALBUM_ART_CACHE_PREFIX) + state.artist + "|" + state.title;
         if (state.playing && completedUrl == activeKey) {
@@ -851,6 +862,7 @@ bool ArtworkCache::startAlbumArtworkTask(const String& artist, const String& tit
   }
   job->cache = this;
   job->kind = ArtworkJobKind::AlbumSearch;
+  job->albumSearchGeneration = albumSearchGeneration.load();
   job->key = key;
   job->artist = artist;
   job->title = title;
@@ -1148,6 +1160,7 @@ void ArtworkCache::cancelIdlePrewarm() {
 }
 
 void ArtworkCache::notifyAudioConnectStarting() {
+  albumSearchGeneration.fetch_add(1);
   audioConnectionReady = false;
   audioConnectionReadyMs = 0;
 }
@@ -1191,19 +1204,20 @@ unsigned long ArtworkCache::lastDownloadStatusAgeMs() {
   return age;
 }
 
-void ArtworkCache::storeDownloadResult(const String& url, const String& path, bool success) {
+void ArtworkCache::storeDownloadResult(const String& url, const String& path, bool success, bool cancelled) {
   if (!resultMutex) return;
 
   if (xSemaphoreTake(resultMutex, pdMS_TO_TICKS(200)) == pdTRUE) {
     resultUrl = url;
     resultPath = path;
     resultSuccess = success;
+    resultCancelled = cancelled && !success;
     resultReady = true;
     xSemaphoreGive(resultMutex);
   }
 }
 
-bool ArtworkCache::takeDownloadResult(String& url, String& path, bool& success) {
+bool ArtworkCache::takeDownloadResult(String& url, String& path, bool& success, bool& cancelled) {
   if (!resultMutex) return false;
 
   bool ready = false;
@@ -1212,9 +1226,11 @@ bool ArtworkCache::takeDownloadResult(String& url, String& path, bool& success) 
       url = resultUrl;
       path = resultPath;
       success = resultSuccess;
+      cancelled = resultCancelled;
       resultUrl = "";
       resultPath = "";
       resultSuccess = false;
+      resultCancelled = false;
       resultReady = false;
       ready = true;
     }
@@ -1243,6 +1259,7 @@ void ArtworkCache::runDownloadJob(ArtworkDownloadJob* job) {
   bool allowSecureFallback = job ? job->allowSecureFallback : true;
   bool fillFrame = job ? job->fillFrame : false;
   uint32_t deadlineMs = job ? job->deadlineMs : 0;
+  const uint32_t searchGeneration = job ? job->albumSearchGeneration : 0;
   String key = job ? job->key : "";
   String url = job ? job->url : "";
   String artist = job ? job->artist : "";
@@ -1273,6 +1290,16 @@ void ArtworkCache::runDownloadJob(ArtworkDownloadJob* job) {
       ok = cache->download(url, path, deadlineMs, allowSecureFallback);
     }
     cancelled = idlePrewarm && cache->idlePrewarmCancellationRequested();
+    if (!ok && kind == ArtworkJobKind::AlbumSearch) {
+      const PlayerStateSnapshot current = PlayerState::instance().snapshot();
+      const bool playbackChanged = searchGeneration != cache->albumSearchGeneration.load() ||
+                                   !current.playing || current.artist != artist || current.title != title;
+      if (playbackChanged) {
+        cache->storeDownloadResult(key, "", false, true);
+        albumArtTrace("search cancelled: playback changed; retry available on return");
+        return;
+      }
+    }
     if (cancelled) {
       // A selected station/audio connection may interrupt another queued logo.
       // Keep that request for later; cancellation is not a missing-image failure.
@@ -2559,6 +2586,10 @@ String ArtworkCache::cachePath(const String& url, const String& extension) const
   return String(path);
 }
 
+static bool artworkFileExists(const String& path) {
+  return ReadOnlyStorage::exists(LittleFS.mountpoint(), path.c_str());
+}
+
 bool ArtworkCache::findExistingCachePath(const String& url, String& outPath) const {
   if (url.startsWith(ALBUM_ART_CACHE_PREFIX)) {
     const auto frame = AlbumArtStore::instance().find(url);
@@ -2568,7 +2599,7 @@ bool ArtworkCache::findExistingCachePath(const String& url, String& outPath) con
   const char* extensions[] = { ".png", ".jpg", ".jpeg", ".bmp" };
   for (const char* extension : extensions) {
     String path = cachePath(url, extension);
-    if (LittleFS.exists(path)) {
+    if (artworkFileExists(path)) {
       outPath = path;
       return true;
     }
@@ -2724,9 +2755,9 @@ String ArtworkCache::preferredLocalArtworkPath(String source) const {
   if (!localPath.startsWith("/")) {
     String rooted = "/" + localPath;
     String logosRooted = "/logos/" + localPath;
-    if (LittleFS.exists(rooted)) {
+    if (artworkFileExists(rooted)) {
       localPath = rooted;
-    } else if (LittleFS.exists(logosRooted)) {
+    } else if (artworkFileExists(logosRooted)) {
       localPath = logosRooted;
     } else {
       localPath = rooted;
@@ -2738,17 +2769,17 @@ String ArtworkCache::preferredLocalArtworkPath(String source) const {
   if (!lower.endsWith(".jpg") && !lower.endsWith(".jpeg")) return localPath;
 
   String pngPath = fileStem(localPath) + ".png";
-  if (LittleFS.exists(pngPath)) return pngPath;
+  if (artworkFileExists(pngPath)) return pngPath;
 
   String bmpPath = fileStem(localPath) + ".bmp";
-  if (LittleFS.exists(bmpPath)) return bmpPath;
+  if (artworkFileExists(bmpPath)) return bmpPath;
 
   String baseName = fileNameOnly(localPath);
   String logoPngPath = "/logos/" + fileStem(baseName) + ".png";
-  if (LittleFS.exists(logoPngPath)) return logoPngPath;
+  if (artworkFileExists(logoPngPath)) return logoPngPath;
 
   String logoBmpPath = "/logos/" + fileStem(baseName) + ".bmp";
-  if (LittleFS.exists(logoBmpPath)) return logoBmpPath;
+  if (artworkFileExists(logoBmpPath)) return logoBmpPath;
 
   return localPath;
 }
@@ -3331,7 +3362,7 @@ static uint16_t rgb565(uint8_t r, uint8_t g, uint8_t b) {
 }
 
 static bool validLcdThumbnailFile(const String& path) {
-  File file = LittleFS.open(path, "r");
+  ReadOnlyStorage::File file(LittleFS.mountpoint(), path.c_str());
   if (!file) return false;
   if (file.size() != LCD_THUMB_BYTES) {
     file.close();
@@ -3798,7 +3829,7 @@ bool ArtworkCache::stationArtworkReady(int stationId, String* outPath) const {
     imagePath = preferredLocalArtworkPath(logo);
   }
 
-  if (!supportedArtworkFile(imagePath) || !LittleFS.exists(imagePath)) return false;
+  if (!supportedArtworkFile(imagePath) || !artworkFileExists(imagePath)) return false;
 
   String lower = imagePath;
   lower.toLowerCase();

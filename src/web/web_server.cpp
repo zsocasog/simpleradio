@@ -22,6 +22,7 @@
 #include "../artwork/artwork_http.h"
 #include "../artwork/artwork_json.h"
 #include "../artwork/lcd_bmp_stream.h"
+#include "station_artwork_response.h"
 #include <memory>
 #include <algorithm>
 #include <new>
@@ -1598,26 +1599,9 @@ void webServerBegin() {
       request->send(404); return;
     }
     const String path = cache.lcdThumbnailPath(imagePath);
-    auto file = std::make_shared<File>(LittleFS.open(path, "r"));
-    uint8_t sr[8]{};
-    if (!*file || file->read(sr, sizeof(sr)) != sizeof(sr) ||
-        sr[0] != 'S' || sr[1] != 'R' || sr[2] != '5' || sr[3] != '6') {
-      request->send(404); return;
-    }
-    const uint16_t width = sr[4] | (static_cast<uint16_t>(sr[5]) << 8);
-    const uint16_t height = sr[6] | (static_cast<uint16_t>(sr[7]) << 8);
-    const size_t pixels = static_cast<size_t>(width) * height * 2;
-    if (!width || (width & 1) || !height || width > 512 || height > 512 || file->size() != 8 + pixels) {
-      request->send(404); return;
-    }
-    const auto bmp = LcdBmp::header(width, height);
-    const size_t total = bmp.size() + pixels;
-    auto* response = request->beginResponse("image/bmp", total,
-        [file, bmp, total](uint8_t* buffer, size_t maxLen, size_t index) {
-      const size_t read = LcdBmp::read(*file, bmp, buffer, maxLen, index, total);
-      if (index + read >= total) file->close();
-      return read;
-    });
+    auto* response = new (std::nothrow) StationArtworkResponse(LittleFS.mountpoint(), path.c_str());
+    if (!response) { request->send(503); return; }
+    if (!response->_sourceValid()) { delete response; request->send(404); return; }
     response->addHeader("Cache-Control", "no-cache");
     request->send(response);
   });

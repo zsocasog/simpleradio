@@ -6,6 +6,7 @@
 #include <freertos/semphr.h>
 #include <freertos/task.h>
 #include <vector>
+#include <atomic>
 #include "album_search_policy.h"
 
 struct PlayerStateSnapshot;
@@ -136,8 +137,8 @@ private:
   bool compactRemoteArtwork(const String& source, const String& imagePath, String& outPath, bool fillFrame = false);
   bool isDownloadActive();
   void noteDownloadStatus(const String& status);
-  void storeDownloadResult(const String& url, const String& path, bool success);
-  bool takeDownloadResult(String& url, String& path, bool& success);
+  void storeDownloadResult(const String& url, const String& path, bool success, bool cancelled = false);
+  bool takeDownloadResult(String& url, String& path, bool& success, bool& cancelled);
   bool prewarmFailureBlocked(const String& source) const;
   void notePrewarmFailure(const String& source);
   bool takePendingEmbedded(String& key, String& url, std::vector<uint32_t>& segments);
@@ -160,6 +161,7 @@ private:
   SemaphoreHandle_t prewarmMutex = nullptr;
   bool resultReady = false;
   bool resultSuccess = false;
+  bool resultCancelled = false;
   String resultUrl;
   String resultPath;
   bool pendingEmbedded = false;
@@ -188,6 +190,9 @@ private:
   String lastAlbumLookupKey;
   unsigned long lastAlbumLookupMs = 0;
   bool lastAlbumStartFailed = false;
+  // An A -> B -> A switch must remain observable even if metadata matches
+  // again by the time a cancelled network request returns to the worker.
+  std::atomic<uint32_t> albumSearchGeneration{0};
   volatile unsigned long lastServiceMs = 0;
   volatile bool albumLookupRetryRequested = false;
   String deferredArtworkUrl;

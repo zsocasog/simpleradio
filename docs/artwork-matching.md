@@ -1,5 +1,18 @@
 # Album artwork matching
 
+## Gyors csatornaváltás és megszakított keresés (2026-11-09)
+
+- A csatornaváltással vagy leállítással félbeszakított albumkeresés külön
+  megszakított eredményt ad; nem számít sikertelen borítókeresésnek.
+- Visszaváltáskor a félbehagyott keresés újraindulhat, amint a régi feladat
+  befejeződött és letelt a stabil hangkapcsolat meglévő 1500 ms-os várakozása.
+- A hangkapcsolat váltásazonosítója akkor is felismeri a megszakítást, ha az
+  állomás és a szám adatai a hálózati kérés visszatéréséig már ismét azonosak.
+- A kész borító gyorsítótárból használható. Valódi eredménytelen keresésnél
+  továbbra is 120 másodperc a várakozás; indulási hibánál 3 másodperc.
+- A megszakítás alapnaplója:
+  `[album-art] search cancelled: playback changed; retry available on return`.
+
 ## Ofenbach / Katchi (2026-11-08)
 
 - A `vs.` és `versus` előadó-kapcsolat az `&`-hez hasonlóan külön krediteket
