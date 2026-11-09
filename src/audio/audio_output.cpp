@@ -2,6 +2,7 @@
 #include "audio_spectrum.h"
 #include "spectrum_output_queue.h"
 #include "spectrum_log.h"
+#include "../diagnostics/runtime_probe.h"
 
 #include <esp_attr.h>
 #include <esp_timer.h>
@@ -28,6 +29,9 @@ bool IRAM_ATTR onSent(i2s_chan_handle_t, i2s_event_data_t* event, void*) {
   // safety. FreeRTOS ticks can be one millisecond ahead of millis().
   const uint32_t endedMs = static_cast<uint32_t>(startedUs / 1000);
   const size_t frames = event->size / (2 * sizeof(int32_t));
+#if SIMPLE_RADIO_RUNTIME_DIAGNOSTICS
+  RuntimeProbe::outputSent(frames, static_cast<uint32_t>(startedUs));
+#endif
   int index = -1;
   TaskHandle_t consumer = nullptr;
   portENTER_CRITICAL_ISR(&outputMux);
@@ -102,6 +106,10 @@ bool attach(i2s_chan_handle_t handle) {
 }
 
 void start(uint32_t sampleRate) {
+#if SIMPLE_RADIO_RUNTIME_DIAGNOSTICS
+  // The pinned library uses 32 descriptors of 256 stereo frames.
+  RuntimeProbe::outputStart(sampleRate, 32 * 256);
+#endif
   portENTER_CRITICAL(&outputMux);
   queue.reset();
   outputFrames = 0;
@@ -111,6 +119,9 @@ void start(uint32_t sampleRate) {
 }
 
 void stop() {
+#if SIMPLE_RADIO_RUNTIME_DIAGNOSTICS
+  RuntimeProbe::outputStop();
+#endif
   portENTER_CRITICAL(&outputMux);
   running = false;
   queue.reset();

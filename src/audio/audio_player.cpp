@@ -1,5 +1,6 @@
 #include "audio_player.h"
 #include "audio_spectrum.h"
+#include "../diagnostics/runtime_probe.h"
 #include "audio_meter.h"
 #include "audio_network_control.h"
 #include "volume_math.h"
@@ -648,6 +649,9 @@ void AudioPlayer::service() {
   uint32_t audioLoopStartUs = micros();
   audio.loop();
   uint32_t audioLoopDurationUs = micros() - audioLoopStartUs;
+#if SIMPLE_RADIO_RUNTIME_DIAGNOSTICS
+  RuntimeProbe::pump(audioLoopDurationUs, audio.inBufferFilled(), audio.getInBufferSize(), audio.isRunning());
+#endif
   if (s.playing && !streamControlOperation && audioLoopDurationUs > AUDIO_LOOP_STALL_ABORT_US) {
     if (audioLoopStallCount < AUDIO_LOOP_STALL_ABORT_COUNT) ++audioLoopStallCount;
     Serial.printf("[audio] loop stall %lu ms (%u/%u)\n",

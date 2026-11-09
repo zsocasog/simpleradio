@@ -35,6 +35,7 @@
 #include "../config/logging.h"
 #include "recovery_page.h"
 #include "webui_compatibility.h"
+#include "../diagnostics/runtime_probe.h"
 
 #ifndef SIMPLE_RADIO_OTA_PASSWORD
 #define SIMPLE_RADIO_OTA_PASSWORD "simpleradio"
@@ -2044,6 +2045,31 @@ void webServerBegin() {
   server.on("/api/system/status", HTTP_GET, [](AsyncWebServerRequest* request) {
     request->send(200, "application/json", systemStatusJson());
   });
+
+#if SIMPLE_RADIO_RUNTIME_DIAGNOSTICS
+  server.on("/api/diagnostics", HTTP_GET, [](AsyncWebServerRequest* request) {
+    const auto s = RuntimeProbe::snapshot();
+    ArtworkJson::Allocator allocator;
+    JsonDocument doc(&allocator);
+    doc["schema"] = 1; doc["uptimeMs"] = millis();
+    doc["heapFree"] = ESP.getFreeHeap(); doc["heapLargest"] = ESP.getMaxAllocHeap();
+    doc["psramFree"] = ESP.getFreePsram();
+    JsonObject audio = doc["audio"].to<JsonObject>();
+#define PROBE_FIELD(name) audio[#name] = s.name
+    PROBE_FIELD(epoch); PROBE_FIELD(sampleRate); PROBE_FIELD(dmaFrames); PROBE_FIELD(active);
+    PROBE_FIELD(starts); PROBE_FIELD(stops); PROBE_FIELD(sentFrames); PROBE_FIELD(acceptedBytes);
+    PROBE_FIELD(sentBlocks); PROBE_FIELD(writes); PROBE_FIELD(partialWrites);
+    PROBE_FIELD(writeTimeouts); PROBE_FIELD(writeErrors); PROBE_FIELD(sentGapMaxUs);
+    PROBE_FIELD(feedGapMaxUs); PROBE_FIELD(writeMaxUs); PROBE_FIELD(feedDeadlineMisses);
+    PROBE_FIELD(feedAgeUs); PROBE_FIELD(sentAgeUs); PROBE_FIELD(pumpCalls);
+    PROBE_FIELD(pumpGapMaxUs); PROBE_FIELD(pumpWorkMaxUs); PROBE_FIELD(inputBytes);
+    PROBE_FIELD(inputCapacity); PROBE_FIELD(inputMinBytes); PROBE_FIELD(inputSamples);
+    PROBE_FIELD(inputEmptySamples);
+#undef PROBE_FIELD
+    String out; serializeJson(doc, out);
+    request->send(200, "application/json", out);
+  });
+#endif
 
   server.on("/api/system/reboot", HTTP_POST, [](AsyncWebServerRequest* request) {
     request->send(200, "application/json", "{\"rebooting\":true}");
