@@ -7,6 +7,16 @@ constexpr uint32_t LOOKUP_BUDGET_MS = 35000;
 constexpr uint32_t IMAGE_BUDGET_MS = 12000;
 constexpr uint32_t PROVIDER_BUDGET_MS = 12000;
 constexpr uint32_t MIN_PROVIDER_BUDGET_MS = 3000;
+// Mirror discovery is optional: preserve the advertised file's download window.
+constexpr uint32_t ARCHIVE_METADATA_MS = 2000;
+constexpr uint32_t ARCHIVE_FILE_RESERVE_MS = 6000;
+constexpr uint32_t archiveMetadataDeadline(uint32_t now, uint32_t imageDeadline) {
+  if (!imageDeadline) return now + ARCHIVE_METADATA_MS;
+  const int32_t left = static_cast<int32_t>(imageDeadline - now);
+  if (left <= static_cast<int32_t>(ARCHIVE_FILE_RESERVE_MS)) return now;
+  const uint32_t available = static_cast<uint32_t>(left) - ARCHIVE_FILE_RESERVE_MS;
+  return now + (available < ARCHIVE_METADATA_MS ? available : ARCHIVE_METADATA_MS);
+}
 // Metadata cannot borrow the final image window, even inside one provider.
 // A slow provider also leaves time for a different source. Unsigned elapsed
 // time keeps both windows correct when millis() wraps.

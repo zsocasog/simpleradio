@@ -80,7 +80,7 @@ test('backend and browser share all profile/action identifiers and bounded layou
   assert.match(cpp, /MAX_CUSTOM_BYTES/); assert.match(cpp, /usedActions\[actionIndex\]/);
   assert.match(cpp, /MALLOC_CAP_SPIRAM \| MALLOC_CAP_8BIT/);
   const server = read('src/web/web_server.cpp');
-  assert.match(server, /if \(!AppConfig::instance\(\).applyJson\(doc\)\) \{\s*request->send\(400/);
+  assert.match(server, /if \(!AppConfig::instance\(\).applyJson\(job->doc\)\) \{\s*status = 400/);
 });
 
 test('production capture/restore preserves each remote through repeated switches and clears learning on switch', () => {

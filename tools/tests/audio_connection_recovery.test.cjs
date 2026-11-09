@@ -44,7 +44,7 @@ test('background requests cannot open a socket during audio reservation, and may
       .replace('background_.compare_exchange_strong(expected, true)', 'exchange(expected, true)');
     js += `function ${name}() ${code}\n`;
   }
-  const c = vm.createContext({ audio_: false, background_: false });
+  const c = vm.createContext({ audio_: false, background_: false, settingsSaveReserved: () => false });
   c.exchange = (expected, next) => { if (c.background_ !== expected) return false; c.background_ = next; return true; };
   vm.runInContext(js, c);
   assert.equal(c.beginBackground(), true);
@@ -73,7 +73,7 @@ test('slow connect cannot immediately retry or publish a connection for a cancel
   assert.equal(run(() => ({ playing: true, streamUrl: 'a' }), 'a', { isConnected: () => true }), true);
   assert.match(body(http, 'bool service()'), /networkGate.audioReserved\(\)/);
   const get = body(http, 'bool get(const String&');
-  assert.ok(get.indexOf('BackgroundNetworkScope network;') < get.indexOf('request(client,'));
+  assert.ok(get.indexOf('BackgroundNetworkScope network(options);') < get.indexOf('request(client,'));
 });
 
 test('station payload validation rejects HTML/JSON but keeps PNG/JPEG/BMP/ICO support', () => {

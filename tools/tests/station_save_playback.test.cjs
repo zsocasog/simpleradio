@@ -104,7 +104,7 @@ function workerHarness() {
     .replace('job.logo.length()', 'job.logo.length')
     .replace('job.error.length()', 'job.error.length')
     .replace('if (auto request = job.request.lock())', 'const request = job.request.lock(); if (request)')
-    .replace('JsonDocument doc;', 'const doc = {};').replace('String out;', 'let out;')
+    .replace(/ArtworkJson::Allocator jsonAllocator;\s*JsonDocument doc\(&jsonAllocator\);/, 'const doc = {};').replace('String out;', 'let out;')
     .replace('serializeJson(doc, out);', 'out = JSON.stringify(doc);').replace(/::/g, '.');
   complete = complete.slice(0, -1) + 'dispose(job); }'; // C++ unique_ptr releases the job and its memory claim.
   vm.runInContext(`function run(parameter) ${worker}\nfunction enqueue(request, job) ${start}

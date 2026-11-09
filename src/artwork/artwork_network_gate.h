@@ -10,16 +10,20 @@ public:
   void reserveAudio() { audio_.store(true); }
   void releaseAudio() { audio_.store(false); }
   bool audioReserved() const { return audio_.load(); }
+  void reserveSettingsSave() { settingsSave_.store(true); }
+  void releaseSettingsSave() { settingsSave_.store(false); }
+  bool settingsSaveReserved() const { return settingsSave_.load(); }
   bool backgroundActive() const { return background_.load(); }
   bool beginBackground() {
     bool expected = false;
     if (!background_.compare_exchange_strong(expected, true)) return false;
-    if (audioReserved()) { endBackground(); return false; }
+    if (audioReserved() || settingsSaveReserved()) { endBackground(); return false; }
     return true;
   }
   void endBackground() { background_.store(false); }
 private:
   std::atomic<bool> audio_{false};
   std::atomic<bool> background_{false};
+  std::atomic<bool> settingsSave_{false};
 };
 } // namespace ArtworkHttp

@@ -5,6 +5,8 @@
 #include <WiFi.h>
 #include <esp_system.h>
 #include <esp_heap_caps.h>
+#include <esp_app_desc.h>
+#include <sys/stat.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
 #include <freertos/task.h>
@@ -17,6 +19,8 @@
 #include "../artwork/artwork_cache.h"
 #include "../artwork/album_art_store.h"
 #include "../artwork/artwork_memory_gate.h"
+#include "../artwork/artwork_http.h"
+#include "../artwork/artwork_json.h"
 #include "../artwork/lcd_bmp_stream.h"
 #include <memory>
 #include <algorithm>
@@ -512,8 +516,11 @@ static int wifiQualityFromRssi(int rssi) {
   return 2 * (rssi + 100);
 }
 
+static bool settingsSavePending();
+
 static String systemStatusJson() {
-  JsonDocument doc;
+  ArtworkJson::Allocator jsonAllocator;
+  JsonDocument doc(&jsonAllocator);
 
   PlayerStateSnapshot player = PlayerState::instance().snapshot();
   JsonObject status = doc["status"].to<JsonObject>();
@@ -546,6 +553,10 @@ static String systemStatusJson() {
   system["uptimeMs"] = millis();
   system["chipModel"] = ESP.getChipModel();
   system["version"] = APP_VERSION;
+  const uint8_t* elfHash = esp_app_get_description()->app_elf_sha256;
+  char buildId[10];
+  snprintf(buildId, sizeof(buildId), "%02x%02x%02x%02x%x", elfHash[0], elfHash[1], elfHash[2], elfHash[3], elfHash[4] >> 4);
+  system["buildId"] = buildId;
   system["webApiVersion"] = WEB_API_VERSION;
   system["chipRevision"] = ESP.getChipRevision();
   system["cpuMhz"] = ESP.getCpuFreqMHz();
@@ -554,6 +565,9 @@ static String systemStatusJson() {
   system["resetReason"] = static_cast<int>(esp_reset_reason());
   system["resetReasonText"] = resetReasonText(esp_reset_reason());
   system["heapFree"] = ESP.getFreeHeap();
+  system["heapMinFree"] = ESP.getMinFreeHeap();
+  system["settingsSavePending"] = settingsSavePending();
+  system["artworkNetworkActive"] = ArtworkHttp::backgroundNetworkActive();
   system["heapLargest"] = ESP.getMaxAllocHeap();
   system["psramFree"] = ESP.getFreePsram();
   JsonObject artwork = doc["artwork"].to<JsonObject>();
@@ -589,7 +603,8 @@ static String systemStatusJson() {
 }
 
 static String hardwareCapabilitiesJson() {
-  JsonDocument doc;
+  ArtworkJson::Allocator jsonAllocator;
+  JsonDocument doc(&jsonAllocator);
   doc["schemaVersion"] = 1;
   doc["transientPlayerControls"] = true;
   doc["encoderCount"] = HardwareCapabilities::encoderCount;
@@ -1035,7 +1050,8 @@ static void onWsEvent(
     AwsFrameInfo *info = (AwsFrameInfo*)arg;
     if (!info->final || info->opcode != WS_TEXT) return;
 
-    JsonDocument cmd;
+    ArtworkJson::Allocator jsonAllocator;
+    JsonDocument cmd(&jsonAllocator);
     if (deserializeJson(cmd, data, len) != DeserializationError::Ok) return;
     if (!cmd["ping"].isNull()) {
       client->text("{\"pong\":true}");
@@ -1308,7 +1324,8 @@ static void completeStationSave() {
   }
   if (auto request = job->request.lock()) {
     if (job->saved) {
-      JsonDocument doc;
+      ArtworkJson::Allocator jsonAllocator;
+      JsonDocument doc(&jsonAllocator);
       if (job->upload) doc["path"] = job->logo;
       else doc["id"] = job->outId;
       String out;
@@ -1450,7 +1467,98 @@ static void executeQueuedAction(const QueuedPlayerAction& action) {
   }
 }
 
+struct SettingsSaveJob {
+  ArtworkJson::Allocator allocator;
+  JsonDocument doc{&allocator};
+  std::weak_ptr<AsyncWebServerRequest> request;
+  uint32_t startedMs = 0;
+  bool replied = false;
+};
+static SettingsSaveJob* pendingSettingsSave = nullptr;
+static portMUX_TYPE settingsSaveMux = portMUX_INITIALIZER_UNLOCKED;
+static constexpr uint32_t SETTINGS_SAVE_WAIT_MS = 15000;
+
+static bool settingsSavePending() {
+  portENTER_CRITICAL(&settingsSaveMux);
+  const bool pending = pendingSettingsSave != nullptr;
+  portEXIT_CRITICAL(&settingsSaveMux);
+  return pending;
+}
+
+static bool queueSettingsSave(AsyncWebServerRequest* request, SettingsSaveJob* job) {
+  if (!job || job->doc.overflowed()) return false;
+  // Without pause(), the server auto-sends 501 when this handler returns.
+  // Publish only after the request is paused, just like station-save jobs.
+  job->request = request->pause();
+  job->startedMs = millis();
+  portENTER_CRITICAL(&settingsSaveMux);
+  const bool accepted = !pendingSettingsSave && !otaUploadActive && !rebootPending;
+  if (accepted) {
+    ArtworkHttp::reserveSettingsSave();
+    pendingSettingsSave = job;
+  }
+  portEXIT_CRITICAL(&settingsSaveMux);
+  return accepted;
+}
+
+static void processSettingsSave() {
+  portENTER_CRITICAL(&settingsSaveMux);
+  SettingsSaveJob* job = pendingSettingsSave;
+  portEXIT_CRITICAL(&settingsSaveMux);
+  if (!job) return;
+  if (job->request.expired()) {
+    portENTER_CRITICAL(&settingsSaveMux);
+    pendingSettingsSave = nullptr;
+    ArtworkHttp::releaseSettingsSave();
+    portEXIT_CRITICAL(&settingsSaveMux);
+    delete job;
+    return;
+  }
+  const bool timedOut = millis() - job->startedMs >= SETTINGS_SAVE_WAIT_MS;
+  if (job->replied) {
+    // Keep TLS out until the response has drained too. Weak ownership never
+    // prolongs the HTTP request or replaces its disconnect callback.
+    if (timedOut) {
+      if (auto request = job->request.lock()) {
+        // abort() deliberately does nothing once a reply has been sent.
+        if (auto* client = request->client()) client->close(true);
+      }
+    }
+    return;
+  }
+  if (ArtworkHttp::backgroundNetworkActive() && !timedOut && !otaUploadActive && !rebootPending) return;
+  if (auto request = job->request.lock()) {
+    int status = 200;
+    String response;
+    const String previousLastFmApiKey = AppConfig::instance().lastFmApiKey;
+    if (timedOut || otaUploadActive || rebootPending) {
+      status = 503;
+      response = "Settings save temporarily unavailable";
+    } else if (!AppConfig::instance().applyJson(job->doc)) {
+      status = 400;
+      response = "Invalid remote layout or IR profile";
+    } else if (!AppConfig::instance().save()) {
+      status = 500;
+      response = "Failed to save config";
+    } else {
+      if (previousLastFmApiKey != AppConfig::instance().lastFmApiKey) {
+        ArtworkCache::instance().retryCurrentAlbumLookup();
+      }
+      AppConfig::instance().applyTimeZone();
+      StatusLed::instance().applyConfig();
+      requestDisplayConfigRefresh();
+      response = AppConfig::instance().toJson();
+    }
+    auto* reply = request->beginResponse(status, status == 200 ? "application/json" : "text/plain", response);
+    reply->addHeader("Connection", "close");
+    request->send(reply);
+    job->replied = true;
+    job->startedMs = millis();
+  }
+}
+
 void webServerLoop() {
+  processSettingsSave();
   completeStationSave();
   dispatchPendingStationSave();
   unsigned long now = millis();
@@ -1515,7 +1623,8 @@ void webServerBegin() {
   });
 
   server.on("/api/stations", HTTP_GET, [](AsyncWebServerRequest* request) {
-    JsonDocument doc;
+    ArtworkJson::Allocator jsonAllocator;
+    JsonDocument doc(&jsonAllocator);
     JsonArray arr = doc["stations"].to<JsonArray>();
     StationManager::instance().toJson(arr);
 
@@ -1525,31 +1634,41 @@ void webServerBegin() {
   });
 
   server.on("/api/logos", HTTP_GET, [](AsyncWebServerRequest* request) {
-    JsonDocument doc;
+    ArtworkJson::Allocator jsonAllocator;
+    JsonDocument doc(&jsonAllocator);
     JsonArray arr = doc["logos"].to<JsonArray>();
 
-    if (LittleFS.exists("/logos")) {
+    const char* mount = LittleFS.mountpoint();
+    char absolute[320];
+    struct stat info{};
+    const int length = mount ? snprintf(absolute, sizeof(absolute), "%s/logos", mount) : -1;
+    if (length > 0 && static_cast<size_t>(length) < sizeof(absolute) &&
+        ::stat(absolute, &info) == 0 && S_ISDIR(info.st_mode)) {
       File root = LittleFS.open("/logos");
       if (root && root.isDirectory()) {
-        File file = root.openNextFile();
-        while (file) {
-          if (!file.isDirectory()) {
-            String path = file.path();
-            if (!path.length()) path = file.name();
-            String name = logoBasename(path);
-            if (supportedLogoExtension(name)) {
+        bool directory = false;
+        String path = root.getNextFileName(&directory);
+        while (path.length()) {
+          if (!directory) {
+            const String name = logoBasename(path);
+            const int count = snprintf(absolute, sizeof(absolute), "%s/logos/%s", mount, name.c_str());
+            // Directory enumeration must not fopen() every logo: that creates
+            // newlib FILE mutexes even though only name and size are needed.
+            if (supportedLogoExtension(name) && count > 0 && static_cast<size_t>(count) < sizeof(absolute) &&
+                ::stat(absolute, &info) == 0 && S_ISREG(info.st_mode)) {
               JsonObject item = arr.add<JsonObject>();
               item["name"] = name;
               item["path"] = "/logos/" + name;
-              item["size"] = static_cast<uint32_t>(file.size());
+              item["size"] = static_cast<uint32_t>(info.st_size);
             }
           }
-          file = root.openNextFile();
+          path = root.getNextFileName(&directory);
         }
         root.close();
       }
     }
 
+    if (doc.overflowed()) { request->send(503, "text/plain", "Logo list memory unavailable"); return; }
     String out;
     serializeJson(doc, out);
     request->send(200, "application/json", out);
@@ -1680,7 +1799,8 @@ void webServerBegin() {
         return;
       }
 
-      JsonDocument doc;
+      ArtworkJson::Allocator jsonAllocator;
+      JsonDocument doc(&jsonAllocator);
       doc["ok"] = true;
       doc["count"] = countText.length() ? countText.toInt() : 0;
       String out;
@@ -1992,7 +2112,9 @@ void webServerBegin() {
 
   server.on("/api/config/save", HTTP_POST, [](AsyncWebServerRequest* request) {
     requestDisplayActivity();
-    JsonDocument doc;
+    std::unique_ptr<SettingsSaveJob> job(new (std::nothrow) SettingsSaveJob);
+    if (!job) { request->send(503, "text/plain", "Failed to save config"); return; }
+    JsonDocument& doc = job->doc;
 
     auto setBool = [&](const char* name) {
       if (request->hasParam(name, true)) {
@@ -2095,23 +2217,11 @@ void webServerBegin() {
     setInt("frontLedStandbyBrightness");
     setString("frontLedColor");
 
-    String previousLastFmApiKey = AppConfig::instance().lastFmApiKey;
-    if (!AppConfig::instance().applyJson(doc)) {
-      request->send(400, "text/plain", "Invalid remote layout or IR profile");
+    if (!queueSettingsSave(request, job.get())) {
+      request->send(503, "text/plain", "Failed to save config");
       return;
     }
-    if (previousLastFmApiKey != AppConfig::instance().lastFmApiKey) {
-      ArtworkCache::instance().retryCurrentAlbumLookup();
-    }
-    if (!AppConfig::instance().save()) {
-      request->send(500, "text/plain", "Failed to save config");
-      return;
-    }
-
-    AppConfig::instance().applyTimeZone();
-    StatusLed::instance().applyConfig();
-    requestDisplayConfigRefresh();
-    request->send(200, "application/json", AppConfig::instance().toJson());
+    job.release(); // Main loop owns it until the completed response disconnects.
   });
 
   server.on("/recovery", HTTP_GET, [](AsyncWebServerRequest* request) {

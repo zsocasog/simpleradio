@@ -32,6 +32,10 @@ bool get(const String& url, size_t limit, Response& response, const Options& opt
 void reserveAudioConnection();
 bool backgroundNetworkActive();
 void releaseAudioConnection();
+// Reserve the gap between background requests, without interrupting audio or
+// aborting an active TLS object. The main loop releases it after settings save.
+void reserveSettingsSave();
+void releaseSettingsSave();
 String publicImageUrl(const String& url);
 String host(const String& url);
 } // namespace ArtworkHttp

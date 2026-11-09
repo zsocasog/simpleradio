@@ -20,6 +20,13 @@ static_assert(oneRetryAfter503());
 static_assert(nextSongStartsFresh());
 
 using AlbumSearchPolicy::Budget;
+using AlbumSearchPolicy::archiveMetadataDeadline;
+static_assert(archiveMetadataDeadline(1000, 13000) == 3000);
+static_assert(archiveMetadataDeadline(5534, 13000) == 7000); // Logged 4534ms redirect.
+static_assert(archiveMetadataDeadline(7000, 13000) == 7000);
+static_assert(archiveMetadataDeadline(14000, 13000) == 14000);
+static_assert(archiveMetadataDeadline(1000, 0) == 3000);
+static_assert(archiveMetadataDeadline(0xfffff000u, 0xfffff000u + 12000u) == 0xfffff000u + 2000u);
 constexpr Budget budget(1000);
 static_assert(budget.providerDeadline(1000) == 13000);
 static_assert(budget.providerDeadline(22000) == 24000);

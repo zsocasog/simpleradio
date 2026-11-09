@@ -1,4 +1,5 @@
 #include "app_config.h"
+#include "../artwork/artwork_json.h"
 
 #include <LittleFS.h>
 #include <time.h>
@@ -193,7 +194,8 @@ void AppConfig::load() {
 bool AppConfig::save() {
   const int profile = IrRemotePolicy::profileIndex(irRemoteProfile.c_str());
   captureIrRemoteCodes(profile >= 0 ? profile : 0);
-  JsonDocument doc;
+  ArtworkJson::Allocator jsonAllocator;
+  JsonDocument doc(&jsonAllocator);
   doc["irRemoteProfile"] = irRemoteProfile;
   doc["irRemoteCustom"] = irRemoteCustom;
   for (size_t p = 0; p < IrRemotePolicy::PROFILES.size(); ++p) {
@@ -280,11 +282,13 @@ bool AppConfig::save() {
   doc["frontLedStandbyBrightness"] = frontLedStandbyBrightness;
   doc["frontLedColor"] = frontLedColor;
 
+  if (doc.overflowed()) return false; // Never replace settings with a partial document.
   return writeJsonAtomic(CONFIG_FILE, doc, true);
 }
 
 String AppConfig::toJson() const {
-  JsonDocument doc;
+  ArtworkJson::Allocator jsonAllocator;
+  JsonDocument doc(&jsonAllocator);
   doc["irRemoteProfilesVersion"] = 1;
   doc["irRemoteProfile"] = irRemoteProfile;
   doc["irRemoteCustom"] = irRemoteCustom;

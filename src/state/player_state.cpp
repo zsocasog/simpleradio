@@ -1,4 +1,5 @@
 #include "player_state.h"
+#include "../artwork/artwork_json.h"
 #include "../config/app_config.h"
 #include "../stations/station_manager.h"
 #include <freertos/FreeRTOS.h>
@@ -368,7 +369,8 @@ uint32_t PlayerState::revision() const {
 
 String PlayerState::toJson() const {
   PlayerStateSnapshot s = snapshot();
-  JsonDocument doc;
+  ArtworkJson::Allocator jsonAllocator;
+  JsonDocument doc(&jsonAllocator);
   doc["playing"] = s.playing;
   doc["streamConnectionState"] = streamConnectionStateName(s.streamConnectionState);
   doc["streamConnectFailures"] = s.streamConnectFailures;

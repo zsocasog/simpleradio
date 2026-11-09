@@ -17,14 +17,25 @@ constexpr uint32_t CONNECT_MS = 3500;
 constexpr uint16_t READ_MS = 6000;
 constexpr uint32_t REQUEST_MS = 12000;
 NetworkGate networkGate;
+bool expired(uint32_t deadline);
 
 class BackgroundNetworkScope {
 public:
-  BackgroundNetworkScope() : acquired_(networkGate.beginBackground()) {}
+  explicit BackgroundNetworkScope(const Options& options) {
+    for (;;) {
+      if (networkGate.beginBackground()) { acquired_ = true; return; }
+      if (!networkGate.settingsSaveReserved() || networkGate.audioReserved() ||
+          expired(options.deadlineMs) || WiFi.status() != WL_CONNECTED ||
+          (options.cancelled && options.cancelled())) return;
+      // Let the main loop commit settings after the preceding request has
+      // released TLS RAM. Do not consume another connection or task stack.
+      vTaskDelay(1);
+    }
+  }
   ~BackgroundNetworkScope() { if (acquired_) networkGate.endBackground(); }
   bool acquired() const { return acquired_; }
 private:
-  bool acquired_;
+  bool acquired_ = false;
 };
 
 bool expired(uint32_t deadline) {
@@ -304,6 +315,8 @@ Response::~Response() { free(data); }
 void reserveAudioConnection() { networkGate.reserveAudio(); }
 bool backgroundNetworkActive() { return networkGate.backgroundActive(); }
 void releaseAudioConnection() { networkGate.releaseAudio(); }
+void reserveSettingsSave() { networkGate.reserveSettingsSave(); }
+void releaseSettingsSave() { networkGate.releaseSettingsSave(); }
 
 String host(const String& url) {
   const int scheme = url.indexOf("://");
@@ -329,15 +342,15 @@ String publicImageUrl(const String& url) {
 }
 
 bool get(const String& url, size_t limit, Response& response, const Options& supplied) {
-  BackgroundNetworkScope network;
-  if (!network.acquired()) {
-    response.error = "background network deferred for audio connection";
-    return false;
-  }
   Options options = supplied;
   if (!options.deadlineMs || (!expired(options.deadlineMs) &&
                              options.deadlineMs - millis() > REQUEST_MS)) {
     options.deadlineMs = millis() + REQUEST_MS;
+  }
+  BackgroundNetworkScope network(options);
+  if (!network.acquired()) {
+    response.error = "background network deferred or deadline reached";
+    return false;
   }
   Transfer transfer{options};
   String current = url;

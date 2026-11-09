@@ -1,0 +1,22 @@
+{
+  "library": "ESPAsyncWebServer 3.12.1",
+  "license": "SPDX-License-Identifier: LGPL-3.0-or-later",
+  "copyright": [
+    "// Copyright 2016-2026 Hristo Gochkov, Mathieu Carbou, Emil Muratov, Will Miles",
+    "",
+    "#include \"ESPAsyncWebServer.h\""
+  ],
+  "sourceSha256": "3ca1c44ffef44e4fd7d8e900857e797469cd336bf846f2a9af61e02a0956e7ad",
+  "markers": {
+    "_send": "void AsyncWebServerRequest::_send()",
+    "pause": "AsyncWebServerRequestPtr AsyncWebServerRequest::pause()",
+    "send": "void AsyncWebServerRequest::send(AsyncWebServerResponse *response)",
+    "abort": "void AsyncWebServerRequest::abort()"
+  },
+  "methods": {
+    "_send": "{\n  if (!_sent && !_paused) {\n    // async_ws_log_d(\"AsyncWebServerRequest::_send()\");\n\n    // user did not create a response ?\n    if (!_response) {\n      send(501, T_text_plain, \"Handler did not handle the request\");\n    }\n\n    // response is not valid ?\n    if (!_response->_sourceValid()) {\n      send(500, T_text_plain, \"Invalid data in handler\");\n    }\n\n    // here, we either have a response given from user or one of the two above\n    _client->setRxTimeout(0);\n    _response->_respond(this);\n    _sent = true;\n  }\n}",
+    "pause": "{\n  if (_paused) {\n    return _this;\n  }\n  client()->setRxTimeout(0);\n  _paused = true;\n  return _this;\n}",
+    "send": "{\n  // request is already sent on the wire ?\n  if (_sent) {\n    return;\n  }\n\n  // if we already had a response, delete it and replace it with the new one\n  if (_response) {\n    delete _response;\n  }\n  _response = response;\n\n  // if request was paused, we need to send the response now\n  if (_paused) {\n    _paused = false;\n    _send();\n  }\n}",
+    "abort": "{\n  if (!_sent) {\n    _sent = true;\n    _paused = false;\n    async_ws_log_v(\"Abort request: %s\", _url.c_str());\n    _client->abort();\n  }\n}"
+  }
+}
