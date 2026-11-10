@@ -6,6 +6,7 @@
 #include "station_logo_policy.h"
 #include "lcd_image_policy.h"
 #include "artwork_title_match.h"
+#include "artwork_track_parts.h"
 #include "artwork_http_policy.h"
 #include "artwork_json.h"
 #include "artwork_json_reader.h"
@@ -1528,10 +1529,11 @@ static String normalizeArtworkText(const String& input) {
 }
 
 static bool artworkArtistsMatch(const String& foundArtist, const String& wantedArtist,
-                                const std::vector<String>* verifiedAliases = nullptr) {
+                                const std::vector<String>* verifiedAliases = nullptr,
+                                bool allowSubset = false) {
   // Identity aliases are a fallback, not a reason to split a previously
   // matching credit differently (e.g. the corrected Mike/Mechanics metadata).
-  if (verifiedAliases && !verifiedAliases->empty() && artworkArtistsMatch(foundArtist, wantedArtist)) return true;
+  if (verifiedAliases && !verifiedAliases->empty() && artworkArtistsMatch(foundArtist, wantedArtist, nullptr, allowSubset)) return true;
   auto artistCredits = [&](String value) {
     // Bind proven aliases before interpreting their punctuation as credits.
     // Stored aliases use the established text normalization, including '+'.
@@ -1607,6 +1609,27 @@ static bool artworkArtistsMatch(const String& foundArtist, const String& wantedA
     std::vector<String> wantedCredits = artistCredits(wanted);
     if (foundCredits.empty() || wantedCredits.empty()) return false;
 
+    // Unseparated names are accepted only when the other side supplies
+    // explicit complete credits, and consuming those names leaves NO words.
+    // A literal unspaced '+' remains part of a band's identity (R+R, +44).
+    auto joinedCreditsMatch = [&](const std::vector<String>& credits, String joined) {
+      for (const String& credit : credits) {
+        int at = joined.indexOf(credit);
+        while (at >= 0 && ((at > 0 && joined[at - 1] != ' ') ||
+               (at + credit.length() < joined.length() && joined[at + credit.length()] != ' '))) {
+          at = joined.indexOf(credit, at + 1);
+        }
+        if (at < 0) return false;
+        for (size_t i = 0; i < credit.length(); ++i) joined.setCharAt(at + i, ' ');
+      }
+      joined.trim();
+      return !joined.length();
+    };
+    if (foundCredits.size() > 1 && wantedCredits.size() == 1 && wanted.indexOf('+') < 0 &&
+        joinedCreditsMatch(foundCredits, wantedCredits[0])) return true;
+    if (wantedCredits.size() > 1 && foundCredits.size() == 1 && found.indexOf('+') < 0 &&
+        joinedCreditsMatch(wantedCredits, foundCredits[0])) return true;
+
     // A single station artist may be credited alongside a guest on a provider;
     // for explicit duets, require every requested artist to be present.
     if (wantedCredits.size() == 1) {
@@ -1615,7 +1638,7 @@ static bool artworkArtistsMatch(const String& foundArtist, const String& wantedA
       }
       return false;
     }
-    if (foundCredits.size() != wantedCredits.size()) return false;
+    if (allowSubset ? foundCredits.size() < wantedCredits.size() : foundCredits.size() != wantedCredits.size()) return false;
     std::vector<bool> matched(foundCredits.size(), false);
     for (const String& wantedCredit : wantedCredits) {
       bool foundMatch = false;
@@ -1634,26 +1657,102 @@ static bool artworkArtistsMatch(const String& foundArtist, const String& wantedA
   return artistsMatch(foundArtist, wantedArtist);
 }
 
-static bool exactTrackMatch(String foundArtist, String foundTitle,
-                            const String& wantedArtist, const String& wantedTitle,
-                            bool allowStudioMix = false, bool allowTitleTypos = false) {
-
-  auto stripFeature = [](String value) {
-    const auto stripped = ArtworkTitleMatch::withoutFeatureCredit(value.c_str());
-    return String(stripped.data(), stripped.size());
+// Build a comparison title from the raw feature boundary. Only evidence
+// already returned by providers may peel an unbracketed version off a name.
+// The original/display metadata, task scheduling and network budget stay intact.
+static bool prepareArtworkTitles(const String& foundArtist, const String& wantedArtist,
+                                  String& foundTitle, String& wantedTitle,
+                                  const std::vector<String>* verifiedAliases = nullptr) {
+  auto found = ArtworkTrackParts::parse(foundTitle.c_str());
+  auto wanted = ArtworkTrackParts::parse(wantedTitle.c_str());
+  if (!found.feature && !wanted.feature) return true;
+  auto copy = [](std::string_view text) { return String(text.data(), text.size()); };
+  String foundGuest = copy(found.guest);
+  String wantedGuest = copy(wanted.guest);
+  String foundVersion;
+  String wantedVersion;
+  auto containsGuest = [&](const String& credits, const String& guest) {
+    return credits.length() && guest.length() && artworkArtistsMatch(credits, guest, verifiedAliases, true);
   };
+  // "with" can belong to a literal title. Only treat it as a credit when
+  // real artist fields or an explicit feat/ft credit on the peer prove it.
+  if (found.feature && !found.explicitCredit &&
+      !containsGuest(foundArtist, foundGuest) && !containsGuest(wantedArtist, foundGuest) &&
+      !(wanted.explicitCredit && containsGuest(wantedGuest, foundGuest))) {
+    found = {std::string_view(foundTitle.c_str(), foundTitle.length()), {}, {}, {}, false, true, false};
+    foundGuest = "";
+  }
+  if (wanted.feature && !wanted.explicitCredit &&
+      !containsGuest(foundArtist, wantedGuest) && !containsGuest(wantedArtist, wantedGuest) &&
+      !(found.explicitCredit && containsGuest(foundGuest, wantedGuest))) {
+    wanted = {std::string_view(wantedTitle.c_str(), wantedTitle.length()), {}, {}, {}, false, true, false};
+    wantedGuest = "";
+  }
+  if (!found.valid || !wanted.valid) return false;
+  auto separateVersion = [&](String& guest, String& version, const String& peerGuest) {
+    if (!guest.length() || containsGuest(foundArtist, guest) || containsGuest(wantedArtist, guest) ||
+        containsGuest(peerGuest, guest)) return;
+    // Longest proven complete artist name wins. A word such as "Mix" inside
+    // Little Mix therefore survives; a following proven "Remix" does not.
+    for (int at = guest.length() - 1; at > 0; --at) {
+      if (guest[at] != ' ') continue;
+      const String name = guest.substring(0, at);
+      const String suffix = guest.substring(at + 1);
+      if (!ArtworkTrackParts::versionText(suffix.c_str())) continue;
+      if (containsGuest(foundArtist, name) || containsGuest(wantedArtist, name) || containsGuest(peerGuest, name)) {
+        version = suffix;
+        guest = name;
+        return;
+      }
+    }
+  };
+  separateVersion(foundGuest, foundVersion, wantedGuest);
+  separateVersion(wantedGuest, wantedVersion, foundGuest);
+  // Repeat once so a guest proven on one side can resolve the other side too.
+  separateVersion(foundGuest, foundVersion, wantedGuest);
+  if (wantedGuest.length()) {
+    const String actualCredits = foundArtist + " & " + foundGuest;
+    const String requestedCredits = wantedArtist + " & " + wantedGuest;
+    // Artist fields and title credits can distribute the same participants
+    // differently. Check their union, and reject every unrequested credit.
+    if (!containsGuest(actualCredits, wantedGuest) ||
+        !containsGuest(requestedCredits, foundArtist) ||
+        (foundGuest.length() && !containsGuest(requestedCredits, foundGuest))) return false;
+  }
+  auto comparisonTitle = [&](const ArtworkTrackParts::Parts& parts, const String& version) {
+    String result = copy(parts.main);
+    for (const auto piece : {parts.version, parts.tail, std::string_view(version.c_str(), version.length())}) {
+      if (!piece.empty()) { result += ' '; result += copy(piece); }
+    }
+    return result;
+  };
+  // All views are consumed before either owning String is changed.
+  const String cleanFound = comparisonTitle(found, foundVersion);
+  const String cleanWanted = comparisonTitle(wanted, wantedVersion);
+  foundTitle = cleanFound;
+  wantedTitle = cleanWanted;
+  return true;
+}
+
+static bool exactTrackMatch(String foundArtist, String foundTitle,
+                            const String& wantedArtist, String wantedTitle,
+                            bool allowStudioMix = false, bool allowTitleTypos = false,
+                            const std::vector<String>* verifiedAliases = nullptr) {
+
+  if (!prepareArtworkTitles(foundArtist, wantedArtist, foundTitle, wantedTitle, verifiedAliases)) return false;
 
   auto baseTitle = [&](String value) {
     // Stores often name the original studio mix in parentheses (California
     // (Tchad Blake Mix)). Only relax this subtitle, never the credited artist,
     // and never accept live/demo/remix/tribute versions for a plain title.
-    if (allowStudioMix && value.endsWith(")")) {
+    if (allowStudioMix && !ArtworkTrackParts::versionText(wantedTitle.c_str()) && value.endsWith(")")) {
       const int at = value.lastIndexOf(" (");
       if (at > 0) {
         const String suffix = normalizeArtworkText(value.substring(at + 2, value.length() - 1));
         bool differentVersion = false;
         for (const char* marker : {"remix", "live", "acoustic", "demo", "karaoke", "tribute",
-                                   "instrumental", "extended", "cover version"}) {
+                                   "instrumental", "extended", "cover version", "club mix", "club edit",
+                                   "club version", "dance mix", "festival mix", "dub mix", "sped", "slowed"}) {
           if (suffix.indexOf(marker) >= 0) differentVersion = true;
         }
         if (!differentVersion && (suffix.endsWith(" mix") || suffix == "stereo" || suffix == "mono")) {
@@ -1676,19 +1775,34 @@ static bool exactTrackMatch(String foundArtist, String foundTitle,
         break;
       }
     }
-    return stripFeature(value);
+    return value;
   };
 
   String expectedTitle = baseTitle(wantedTitle);
   String actualTitle = baseTitle(foundTitle);
-  return artworkArtistsMatch(foundArtist, wantedArtist) &&
+  auto sameVersion = [&]() {
+    const auto expectedParts = ArtworkTitleMatch::splitSubtitle(wantedTitle.c_str());
+    const auto actualParts = ArtworkTitleMatch::splitSubtitle(foundTitle.c_str());
+    if (!expectedParts.valid || !actualParts.valid) return false;
+    const String expectedNote = normalizeArtworkText(String(expectedParts.subtitle.data(), expectedParts.subtitle.size()));
+    const String actualNote = normalizeArtworkText(String(actualParts.subtitle.data(), actualParts.subtitle.size()));
+    const bool expectedProtected = ArtworkTitleMatch::protectedSubtitle(expectedNote.c_str());
+    const bool actualProtected = ArtworkTitleMatch::protectedSubtitle(actualNote.c_str());
+    if (expectedProtected || actualProtected) return expectedNote == actualNote;
+    // Without an explicit boundary a typo allowance must not rename a remixer.
+    return !ArtworkTrackParts::versionText(expectedTitle.c_str()) &&
+           !ArtworkTrackParts::versionText(actualTitle.c_str());
+  };
+  return artworkArtistsMatch(foundArtist, wantedArtist, verifiedAliases) &&
          expectedTitle.length() && (expectedTitle == actualTitle ||
-           (allowTitleTypos && ArtworkTitleMatch::minorTypo(expectedTitle.c_str(), actualTitle.c_str())));
+           (allowTitleTypos && sameVersion() && ArtworkTitleMatch::minorTypo(expectedTitle.c_str(), actualTitle.c_str())));
 }
 
-static bool subtitleTrackMatch(const String& foundArtist, const String& foundTitle,
-                                const String& wantedArtist, const String& wantedTitle) {
-  if (!artworkArtistsMatch(foundArtist, wantedArtist)) return false;
+static bool subtitleTrackMatch(const String& foundArtist, String foundTitle,
+                                const String& wantedArtist, String wantedTitle,
+                                const std::vector<String>* verifiedAliases = nullptr) {
+  if (!artworkArtistsMatch(foundArtist, wantedArtist, verifiedAliases)) return false;
+  if (!prepareArtworkTitles(foundArtist, wantedArtist, foundTitle, wantedTitle, verifiedAliases)) return false;
   const auto found = ArtworkTitleMatch::splitSubtitle(std::string_view(foundTitle.c_str(), foundTitle.length()));
   const auto wanted = ArtworkTitleMatch::splitSubtitle(std::string_view(wantedTitle.c_str(), wantedTitle.length()));
   if (!found.valid || !wanted.valid || found.main.empty() || wanted.main.empty()) return false;
@@ -1700,31 +1814,24 @@ static bool subtitleTrackMatch(const String& foundArtist, const String& foundTit
   if (ArtworkTitleMatch::protectedSubtitle(normalizedAnnotation.c_str())) return false;
   const String foundMain = normalizeArtworkText(String(found.main.data(), found.main.size()));
   const String wantedMain = normalizeArtworkText(String(wanted.main.data(), wanted.main.size()));
-  const auto foundBase = ArtworkTitleMatch::withoutFeatureCredit(foundMain.c_str());
-  const auto wantedBase = ArtworkTitleMatch::withoutFeatureCredit(wantedMain.c_str());
-  return foundBase == wantedBase || ArtworkTitleMatch::minorTypo(wantedBase, foundBase);
+  return foundMain == wantedMain || ArtworkTitleMatch::minorTypo(wantedMain.c_str(), foundMain.c_str());
 }
 
 // A parenthetical containing ONLY the complete, confirmed performer credit is
 // metadata, not a guessed subtitle. This also works for a verified Single/EP.
-static bool artistCreditTitleMatch(const String& foundArtist, const String& foundTitle,
-                                   const String& wantedArtist, const String& wantedTitle) {
-  if (!artworkArtistsMatch(foundArtist, wantedArtist)) return false;
+static bool artistCreditTitleMatch(const String& foundArtist, String foundTitle,
+                                   const String& wantedArtist, String wantedTitle,
+                                const std::vector<String>* verifiedAliases = nullptr) {
+  if (!artworkArtistsMatch(foundArtist, wantedArtist, verifiedAliases)) return false;
+  if (!prepareArtworkTitles(foundArtist, wantedArtist, foundTitle, wantedTitle, verifiedAliases)) return false;
   const auto found = ArtworkTitleMatch::splitSubtitle(foundTitle.c_str());
   const auto wanted = ArtworkTitleMatch::splitSubtitle(wantedTitle.c_str());
   if (!found.valid || !wanted.valid || found.subtitle.empty() || !wanted.subtitle.empty()) return false;
   const String annotation = normalizeArtworkText(String(found.subtitle.data(), found.subtitle.size()));
-  if (ArtworkTitleMatch::protectedSubtitle(annotation.c_str()) ||
-      !artworkArtistsMatch(annotation, foundArtist) || !artworkArtistsMatch(foundArtist, annotation)) return false;
+  if (!artworkArtistsMatch(annotation, foundArtist, verifiedAliases) || !artworkArtistsMatch(foundArtist, annotation, verifiedAliases)) return false;
   const String foundMain = normalizeArtworkText(String(found.main.data(), found.main.size()));
   const String wantedMain = normalizeArtworkText(String(wanted.main.data(), wanted.main.size()));
-  const auto wantedBase = ArtworkTitleMatch::withoutFeatureCredit(wantedMain.c_str());
-  if (std::string_view(foundMain.c_str()) != wantedBase) return false;
-  const auto feature = ArtworkTitleMatch::featureCredit(wantedMain.c_str());
-  if (!feature.empty()) {
-    const String expectedCredit = wantedArtist + " & " + String(feature.data(), feature.size());
-    if (!artworkArtistsMatch(foundArtist, expectedCredit)) return false;
-  }
+  if (foundMain != wantedMain) return false;
   return true;
 }
 
@@ -1819,18 +1926,16 @@ static AlbumArtworkKind albumArtworkKind(const String& albumArtist, const String
 }
 
 static String albumTitleForSearch(String title) {
+  const auto parts = ArtworkTrackParts::parse(title.c_str());
+  if (parts.feature && parts.valid && parts.explicitCredit) {
+    String query(parts.main.data(), parts.main.size());
+    for (const auto piece : {parts.version, parts.tail}) {
+      if (!piece.empty()) { query += ' '; query += String(piece.data(), piece.size()); }
+    }
+    title = query;
+  }
   String lower = title;
   lower.toLowerCase();
-  const char* featureMarkers[] = { " feat.", " feat ", " ft.", " ft ", " featuring ", " with " };
-  int featureAt = -1;
-  for (const char* marker : featureMarkers) {
-    int position = lower.indexOf(marker);
-    if (position > 0 && (featureAt < 0 || position < featureAt)) featureAt = position;
-  }
-  if (featureAt > 0) {
-    title = title.substring(0, featureAt);
-    lower = lower.substring(0, featureAt);
-  }
 
   const char* versionSuffixes[] = {
     " (country version)", " country version", " (acoustic version)", " acoustic version",
@@ -1900,13 +2005,13 @@ std::vector<String> ArtworkCache::resolveAlbumArtworkUrls(const String& artist, 
     PlayerStateSnapshot current = PlayerState::instance().snapshot();
     return !audioConnectionReady || !current.playing || current.artist != artist || current.title != title;
   };
-  auto titleQuality = [&](const String& foundArtist, const String& foundTitle) {
-    if (exactTrackMatch(foundArtist, foundTitle, artist, title)) return 4;
-    if (lookupTitle != title && exactTrackMatch(foundArtist, foundTitle, artist, lookupTitle)) return 4;
-    if (artistCreditTitleMatch(foundArtist, foundTitle, artist, lookupTitle)) return 4;
-    if (exactTrackMatch(foundArtist, foundTitle, artist, lookupTitle, false, true)) return 3;
-    if (exactTrackMatch(foundArtist, foundTitle, artist, lookupTitle, true, true)) return 2;
-    return subtitleTrackMatch(foundArtist, foundTitle, artist, lookupTitle) ? 1 : 0;
+  auto titleQuality = [&](const String& foundArtist, const String& foundTitle, const std::vector<String>* verifiedAliases = nullptr) {
+    if (exactTrackMatch(foundArtist, foundTitle, artist, title, false, false, verifiedAliases)) return 4;
+    if (lookupTitle != title && exactTrackMatch(foundArtist, foundTitle, artist, lookupTitle, false, false, verifiedAliases)) return 4;
+    if (artistCreditTitleMatch(foundArtist, foundTitle, artist, lookupTitle, verifiedAliases)) return 4;
+    if (exactTrackMatch(foundArtist, foundTitle, artist, lookupTitle, false, true, verifiedAliases)) return 3;
+    if (exactTrackMatch(foundArtist, foundTitle, artist, lookupTitle, true, true, verifiedAliases)) return 2;
+    return subtitleTrackMatch(foundArtist, foundTitle, artist, lookupTitle, verifiedAliases) ? 1 : 0;
   };
   auto addCandidate = [&](const String& url, AlbumArtworkKind kind, const String& albumTitle) {
     std::vector<String>* target = &urls;
@@ -2030,12 +2135,19 @@ std::vector<String> ArtworkCache::resolveAlbumArtworkUrls(const String& artist, 
     if (strictQuality) return strictQuality;
     // Test the title independently before any identity request. Never accept
     // the acronym of an arbitrary artist name, a search rank or a title alone.
-    const int aliasQuality = titleQuality(artist, foundTitle);
+    int aliasQuality = titleQuality(artist, foundTitle);
+    // A title feature may need the provider's real credit to prove its guest.
+    // Use the same query title only as ELIGIBILITY for identity verification;
+    // acceptance below repeats full matching with the verified aliases.
+    if (!aliasQuality && ArtworkTrackParts::parse(lookupTitle.c_str()).feature &&
+        normalizeArtworkText(albumTitleForSearch(foundTitle)) == normalizeArtworkText(albumTitleForSearch(lookupTitle))) {
+      aliasQuality = 1;
+    }
     if (!aliasQuality || artworkArtistsMatch(foundArtist, artist)) return 0;
     if (search.artistAliases.empty()) loadArtistAliases();
     if (!artworkArtistsMatch(foundArtist, artist, &search.artistAliases)) return 0;
     albumArtTrace("verified artist alias match: %s = %s", foundArtist.c_str(), artist.c_str());
-    return aliasQuality;
+    return titleQuality(foundArtist, foundTitle, &search.artistAliases);
   };
   auto mbKind = [&](JsonObject release, const String& recordingArtist) {
     JsonObject group = release["release-group"].as<JsonObject>();

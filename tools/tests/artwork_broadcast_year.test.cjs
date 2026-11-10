@@ -26,28 +26,9 @@ const clean = new Function('trim', 'text', yearBody).bind(null, s => s.replace(/
 // Execute the real title matcher and ranking lambda. Only artist normalization
 // and the unrelated typo/subtitle policies are injected; their own full tests
 // remain in the suite. This reproduces the supplied Madonna log exactly.
-const exactBody = body(cpp, 'static bool exactTrackMatch(')
-  .replace(/const auto /g, 'const ')
-  .replace('ArtworkTitleMatch::withoutFeatureCredit', 'withoutFeatureCredit')
-  .replace('String(stripped.data(), stripped.size())', 'stripped')
-  .replace('auto stripFeature = [](String value)', 'const stripFeature = value =>')
-  .replace('auto baseTitle = [&](String value)', 'const baseTitle = value =>')
-  .replace(/const char\* (\w+)\[\] = \{([^}]+)\};/g, 'const $1 = [$2];')
-  .replace(/for \(const char\* (\w+) : \{([^}]+)\}\)/g, 'for (const $1 of [$2])')
-  .replace(/for \(const char\* (\w+) : (\w+)\)/g, 'for (const $1 of $2)')
-  .replace(/const (?:String|size_t|int) /g, 'const ')
-  .replace(/\b(?:String|size_t|int|bool) /g, 'let ')
-  .replace(/\.length\(\)/g, '.length')
-  .replace(/\.c_str\(\)/g, '')
-  .replace(/value.remove\(([^)]+)\);/g, 'value = value.substring(0, $1);')
-  .replace(/value.trim\(\);/g, 'value = value.trim();')
-  .replace(/strlen\(([^)]+)\)/g, '$1.length')
-  .replace('ArtworkTitleMatch::minorTypo', 'minorTypo');
-const normalize = value => value.toLowerCase().normalize('NFD').replace(/\p{M}/gu, '').replace(/[^a-z0-9&,]+/g, ' ').trim();
-const exact = new Function('normalizeArtworkText', 'artworkArtistsMatch', 'minorTypo', 'withoutFeatureCredit',
-  'foundArtist', 'foundTitle', 'wantedArtist', 'wantedTitle', 'allowStudioMix', 'allowTitleTypos', exactBody)
-  .bind(null, normalize, (a, b) => normalize(a) === normalize(b), () => false, withoutFeatureCredit);
-const quality = 'const artistCreditTitleMatch = () => false; ' + body(cpp, 'auto titleQuality =');
+const {exactWithArtists,normalizeArtworkText} = require('./helpers/artwork_credit_match.cjs');
+const exact=exactWithArtists((a,b)=>normalizeArtworkText(a)===normalizeArtworkText(b));
+const quality = 'const verifiedAliases=null; const artistCreditTitleMatch = () => false; ' + body(cpp, 'auto titleQuality =');
 function rank(foundArtist, foundTitle, wantedTitle = 'Love Sensation [2026]', strip = true) {
   return new Function('exactTrackMatch', 'subtitleTrackMatch', 'foundArtist', 'foundTitle',
     'artist', 'title', 'lookupTitle', quality)(exact, () => false, foundArtist, foundTitle,
@@ -94,7 +75,7 @@ test('all provider queries and title verification use the same cleaned title, wh
   const resolver = cpp.slice(cpp.indexOf('std::vector<String> ArtworkCache::resolveAlbumArtworkUrls('),
     cpp.indexOf('bool ArtworkCache::resolveAndDownloadAlbumArtwork('));
   assert.match(resolver, /withoutBroadcastYear\(std::string_view\(title.c_str\(\), title.length\(\)\)\)/);
-  assert.equal((resolver.match(/albumTitleForSearch\(lookupTitle\)/g) || []).length, 2);
+  assert.equal((resolver.match(/albumTitleForSearch\(lookupTitle\)/g) || []).length, 3);
   assert.match(resolver, /current.title != title/);
   assert.match(resolver, /MusicBrainz query: %s - %s", artist.c_str\(\), lookupTitle.c_str\(\)/);
 });

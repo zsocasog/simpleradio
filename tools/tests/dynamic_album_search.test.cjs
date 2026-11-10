@@ -196,50 +196,11 @@ test('too little time for a new provider goes directly to the known fallback', (
   assert.deepEqual(result.downloads,['known-cover']);assert.deepEqual(result.imageBudgets,[12000]);
 });
 
-function viewCode(code) {
-  return code.replace(/\.size\(\)/g, '.length').replace(/const (?:char|size_t) /g, 'const ')
-    .replace(/\bsize_t /g, 'let ').replace('char stack[8] = {};', 'const stack=Array(8).fill(0);')
-    .replace(/sizeof\(stack\)/g, '8')
-    .replace('return {text, {}, true};', 'return {main:text, subtitle:"", valid:true};')
-    .replace(/return \{\{\}, \{\}, false\};/g, 'return {main:"", subtitle:"", valid:false};')
-    .replace('return depth ? TitleParts{{}, {}, false} : TitleParts{trim(text.substr(0, first)), text.substr(first), true};',
-      'return depth ? {main:"",subtitle:"",valid:false} : {main:trim(text.substr(0, first)),subtitle:text.substr(first),valid:true};');
+const {subtitle: structuredSubtitle} = require('./helpers/artwork_credit_match.cjs');
+function subtitleMatch(foundArtist, foundTitle, wantedArtist='Shinedown', wantedTitle='Diamond Eyes') {
+  return structuredSubtitle(foundArtist,foundTitle,wantedArtist,wantedTitle);
 }
-const wordChar = new Function('c', block(titles, 'bool wordChar('));
-const hasWord = new Function('wordChar', 'text', 'word', viewCode(block(titles, 'bool hasWord('))).bind(null, wordChar);
-function standardVersion(text) {
-  // Use the same explicit list as the constexpr implementation, including case.
-  const versions = block(titles, 'bool standardVersion(').match(/"[a-z ]+"/g).map(value => JSON.parse(value));
-  return versions.includes(text.trim().toLowerCase());
-}
-const versionCode = block(titles, 'std::string_view withoutStandardVersions(')
-  .replace(/const (?:char|size_t) /g, 'const ').replace(/size_t count/g, 'let count')
-  .replace(/text\.empty\(\)/g, '!text.length').replace(/text\.back\(\)/g, 'text.at(-1)')
-  .replace(/text\.find_last_of\(open\)/g, 'text.lastIndexOf(open)')
-  .replace(/std::string_view::npos/g, '-1').replace(/text\.size\(\)/g, 'text.length');
-const withoutStandardVersions = new Function('trim', 'standardVersion', 'text', versionCode).bind(null, value => value.trim(), standardVersion);
-const splitSubtitle = new Function('trim', 'withoutStandardVersions', 'text', viewCode(block(titles, 'TitleParts splitSubtitle(')))
-  .bind(null, value => value.trim(), withoutStandardVersions);
-const protectedCode = block(titles, 'bool protectedSubtitle(')
-  .replace('for (char c : normalized)', 'for (const c of normalized)')
-  .replace(/for \(const char\* marker : \{([\s\S]*?)\}\)/, 'for (const marker of [$1])');
-const protectedSubtitle = new Function('hasWord', 'normalized', protectedCode).bind(null, hasWord);
-const cppString = text => ({ c_str: () => text, length: () => text.length });
-const subtitleBody = block(cpp, 'static bool subtitleTrackMatch(')
-  .replace(/std::string_view\((\w+)\.c_str\(\), \1.length\(\)\)/g, '$1.c_str()')
-  .replace(/ArtworkTitleMatch::/g, 'policy.')
-  .replace(/const (?:auto|String) /g, 'const ')
-  .replace(/(found|wanted)\.main\.empty\(\)/g, '!$1.main.length')
-  .replace(/(found|wanted)\.subtitle\.empty\(\)/g, '(!$1.subtitle.length)')
-  .replace(/String\((\w+)\.(main|subtitle)\.data\(\), \1\.\2.size\(\)\)/g, 'String($1.$2)')
-  .replace(/String\(annotation.data\(\), annotation.size\(\)\)/g, 'String(annotation)')
-  .replace('foundMain == wantedMain', 'foundMain.c_str() === wantedMain.c_str()');
-function subtitleMatch(foundArtist, foundTitle, wantedArtist = 'Shinedown', wantedTitle = 'Diamond Eyes') {
-  const normalize = value => cppString(value.c_str().toLowerCase().normalize('NFD').replace(/\p{M}/gu, '').replace(/[^a-z0-9&,]+/g, ' ').trim());
-  return new Function('foundArtist','foundTitle','wantedArtist','wantedTitle','artworkArtistsMatch', 'policy', 'normalizeArtworkText','String', subtitleBody)(
-    foundArtist, cppString(foundTitle), wantedArtist, cppString(wantedTitle), (a,b) => a.toLowerCase() === b.toLowerCase(),
-    { splitSubtitle, protectedSubtitle, withoutFeatureCredit, minorTypo: () => false }, normalize, cppString);
-}
+
 test('production title matching accepts Shinedown subtitle spelling and punctuation variants', () => {
   for (const title of ['Diamond Eyes (Boom-Lay Boom-Lay Boom)', 'Diamond Eyes (Boom‐Lay Boom‐Lay Boom)', 'Diamond Eyes (Boom-Lay...)']) {
     assert.equal(subtitleMatch('Shinedown', title), true, title);

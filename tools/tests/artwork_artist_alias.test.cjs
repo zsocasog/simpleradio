@@ -30,23 +30,7 @@ function strings(code) {
     .replace(/for \(const (\w+) : ([^)]+)\)/g, 'for (const $1 of $2)')
     .replace(/for \((\w+) : ([^)]+)\)/g, 'for (const $1 of $2)');
 }
-const normalizeArtworkText = value => value.toLowerCase().normalize('NFD').replace(/\p{M}/gu, '')
-  .replace(/[^a-z0-9&,]+/g, ' ').trim().replace(/ +/g, ' ');
-let artistsCode = block('static bool artworkArtistsMatch(')
-  .replace('const char* separators[] = {', 'const separators = [').replace(/" and ", "&", ","\s*\};/, '" and ", "&", ","\n    ];')
-  .replace('for (const char* separator : separators)', 'for (const separator of separators)')
-  .replace(/std::vector<String> (\w+);/g, 'const $1 = [];')
-  .replace(/std::vector<String> (\w+) =/g, 'const $1 =')
-  .replace('std::vector<bool> matched(foundCredits.size(), false);', 'const matched = Array(foundCredits.size()).fill(false);')
-  .replace('return std::vector<String>{(*verifiedAliases)[0]};', 'return [verifiedAliases[0]];')
-  .replace('std::sort(words.begin(), words.end());', 'words.sort();')
-  .replace(/\bconst String (\w+) =/g, 'const $1 =')
-  .replace('artworkArtistsMatch(foundArtist, wantedArtist)', 'plainArtistMatch(foundArtist, wantedArtist)')
-  .replace(/\bString (\w+) =/g, 'let $1 =');
-artistsCode = strings(artistsCode);
-const runArtistsMatch = new Function('normalizeArtworkText', 'plainArtistMatch', 'foundArtist', 'wantedArtist', 'verifiedAliases', artistsCode);
-const artistsMatch = (found, wanted, aliases = null) => runArtistsMatch(normalizeArtworkText,
-  (left, right) => artistsMatch(left, right), found, wanted, aliases);
+const {normalizeArtworkText, artistsMatch, exact:joinedExact, creditTitle:creditTitleMatch} = require('./helpers/artwork_credit_match.cjs');
 const mbid = '408b2a33-d229-46a5-a361-0667bc616e34';
 const fixture = { id: mbid, name: 'ATC', aliases: [
   { name: 'A Touch of Class', type: null }, { name: 'A.T.C', type: null },
@@ -123,16 +107,30 @@ test('aliases are bounded and long artist names do not expand the per-song stora
 test('production track matching consults identity only for a matching title and then reuses the proof', () => {
   const h = aliasHarness();
   const fullTitle = 'Around the World (La La La La La) [Radio Version]';
-  const titleQuality = (artist, title) => artistsMatch(artist, 'ATC') && title === fullTitle ? 1 : 0;
+  const titleQuality = (artist, title, aliases=null) => artistsMatch(artist, 'ATC', aliases) && title === fullTitle ? 1 : 0;
   const match = new Function('search', 'artworkArtistsMatch', 'titleQuality', 'loadArtistAliases',
-    'albumArtTrace', 'artist', 'foundArtist', 'foundTitle',
-    strings(block('auto matchQuality =')).replace('&search.artistAliases', 'search.artistAliases'))
-    .bind(null, h.search, artistsMatch, titleQuality, h.load, () => {}, 'ATC');
+    'albumArtTrace', 'artist', 'lookupTitle', 'parse', 'foundArtist', 'foundTitle',
+    strings(block('auto matchQuality =')).replaceAll('&search.artistAliases', 'search.artistAliases').replace('ArtworkTrackParts::parse','parse'))
+    .bind(null, h.search, artistsMatch, titleQuality, h.load, () => {}, 'ATC', fullTitle, require('./helpers/artwork_track_parts.cjs').parse);
   assert.equal(match('A Touch of Class', 'Another Song'), 0); assert.equal(h.calls, 0);
   assert.equal(match('A Touch of Class', fullTitle), 1); assert.equal(h.calls, 1);
   assert.equal(match('A Touch of Class', fullTitle), 1); assert.equal(h.calls, 1);
   assert.equal(match('Unrelated Band', fullTitle), 0);
   assert.equal(match('ATC Tribute', fullTitle), 0);
+});
+
+test('feature titles remain eligible for alias proof but acceptance rechecks the real guest',()=>{
+  const h=aliasHarness();
+  const wanted='Song feat. Guest';
+  const {exact,query}=require('./helpers/artwork_credit_match.cjs');
+  const parse=require('./helpers/artwork_track_parts.cjs').parse;
+  const quality=(artist,title,aliases=null)=>exact(artist,title,'ATC',wanted,false,false,aliases)?4:0;
+  const code=strings(block('auto matchQuality =')).replaceAll('&search.artistAliases','search.artistAliases').replace('ArtworkTrackParts::parse','parse');
+  const match=new Function('search','artworkArtistsMatch','titleQuality','loadArtistAliases','albumArtTrace','artist','lookupTitle','parse','normalizeArtworkText','albumTitleForSearch','foundArtist','foundTitle',code)
+    .bind(null,h.search,artistsMatch,quality,h.load,()=>{},'ATC',wanted,parse,normalizeArtworkText,query);
+  assert.equal(match('A Touch of Class & Guest','Unrelated Song'),0);assert.equal(h.calls,0);
+  assert.equal(match('A Touch of Class & Guest','Song'),4);assert.equal(h.calls,1);
+  assert.equal(match('A Touch of Class & Wrong Guest','Song'),0);assert.equal(h.calls,1);
 });
 test('identity proof comes from a matching credit and conflicting IDs disable alias expansion', () => {
   const code = strings(block('auto rememberArtistIdentity =')
@@ -197,23 +195,6 @@ test('loaded aliases cannot turn a matching corrected Mike credit into a mismatc
   assert.equal(artistsMatch('Mike + The Mechanics', 'Mike and the The Mechanics', ['mike the mechanics']), true);
 });
 
-let joinedExactCode = block('static bool exactTrackMatch(')
-  .replace(/const auto /g, 'const ')
-  .replace('ArtworkTitleMatch::withoutFeatureCredit', 'withoutFeatureCredit')
-  .replace('String(stripped.data(), stripped.size())', 'stripped')
-  .replace(/\bconst String (\w+) =/g, 'const $1 =')
-  .replace(/const char\* (\w+)\[\] = \{([^}]+)\};/g, 'const $1 = [$2];')
-  .replace(/for \(const char\* (\w+) : \{([^}]+)\}\)/g, 'for (const $1 of [$2])')
-  .replace(/for \(const char\* (\w+) : (\w+)\)/g, 'for (const $1 of $2)')
-  .replace(/\bString (\w+) =/g, 'let $1 =')
-  .replace(/value.remove\(([^)]+)\);/g, 'value = value.substring(0, $1);')
-  .replace(/strlen\(([^)]+)\)/g, '$1.length')
-  .replace('ArtworkTitleMatch::minorTypo', 'minorTypo');
-joinedExactCode = strings(joinedExactCode);
-const joinedExact = new Function('normalizeArtworkText', 'artworkArtistsMatch', 'minorTypo', 'withoutFeatureCredit', 'foundArtist', 'foundTitle',
-  'wantedArtist', 'wantedTitle', 'allowStudioMix', 'allowTitleTypos', joinedExactCode)
-  .bind(null, normalizeArtworkText, artistsMatch, () => false, titlePolicy.withoutFeatureCredit);
-
 test('the supplied Mike track is accepted while acoustic, cover and numbered remaster recordings remain rejected', () => {
   const wanted = 'Mike and the The Mechanics', title = 'Another Cup Of Coffee';
   for (const artist of ['Mike & the Mechanics', 'Mike + The Mechanics']) {
@@ -239,21 +220,6 @@ test('Ofenbach vs. and versus credits accept the original single and still requi
   assert.equal(joinedExact('Ofenbach & Nick Waterhouse', 'Katchi feat Nick Waterhouse Radio Edit', 'Ofenbach', 'Katchi', false, false), true);
 });
 
-let creditTitleCode = block('static bool artistCreditTitleMatch(')
-  .replace(/ArtworkTitleMatch::/g, 'policy.')
-  .replace(/std::string_view\((\w+)\.c_str\(\)\)/g, '$1')
-  .replace(/String\((\w+)\.(subtitle|main)\.data\(\), \1\.\2.size\(\)\)/g, '$1.$2')
-  .replace(/String\(feature.data\(\), feature.size\(\)\)/g, 'feature')
-  .replace(/\.c_str\(\)/g, '').replace(/([\w.]+)\.empty\(\)/g, '($1.length === 0)')
-  .replace(/\bconst (?:auto|String) /g, 'const ');
-function creditTitleMatch(foundArtist, foundTitle, wantedArtist, wantedTitle) {
-  const splitSubtitle = title => {
-    const match = title.match(/^([^()[\]]+?)(\s+\([^()[\]]+\))?$/);
-    return match ? { valid: true, main: match[1].trim(), subtitle: (match[2] || '').trim() } : { valid: false };
-  };
-  return new Function('artworkArtistsMatch','normalizeArtworkText','policy','foundArtist','foundTitle','wantedArtist','wantedTitle',creditTitleCode)
-    (artistsMatch,normalizeArtworkText,{...titlePolicy,splitSubtitle},foundArtist,foundTitle,wantedArtist,wantedTitle);
-}
 test('the iTunes Katchi artist-credit title is a strong match while wrong guests, remixes and covers are rejected', () => {
   const found = 'Ofenbach & Nick Waterhouse', wanted = 'Ofenbach', title = 'Katchi feat. Nick Waterhouse';
   assert.equal(creditTitleMatch(found, 'Katchi (Ofenbach vs. Nick Waterhouse)', wanted, title), true);
