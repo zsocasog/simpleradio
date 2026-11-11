@@ -87,6 +87,32 @@ class SafetyTests(unittest.TestCase):
         validate_image(png(),'image/png')
         with self.assertRaises(ValueError):validate_image(png()[:-2],'image/png')
 
+class ColdLogoTests(unittest.IsolatedAsyncioTestCase):
+    async def test_cold_run_bounds_mutations_and_never_reuses_a_logo_url(self):
+        run=object.__new__(Run)
+        run.args=SimpleNamespace(fixture_url='http://192.0.2.1:19840')
+        run.prefix='SR-test-isolated-';run.background=[]
+        created=[];deleted=[];commands=[];images=[]
+        async def command(fields):commands.append(fields)
+        async def hold(_):pass
+        async def image_load(ids):images.extend(ids)
+        async def add(suffix,url,logo):
+            sid=100+len(created);created.append((sid,url,logo));return sid
+        async def request(path,fields=None,**kwargs):
+            if path.startswith('/api/logo/upload?'):return b'{"path":"/logos/own.png"}'
+            if path=='/api/station/delete':deleted.append(fields['id'])
+            return b'{}'
+        run.command=command;run.hold=hold;run.image_load=image_load
+        run.add_station=add;run.request=request;run.set_phase=lambda _:None
+        await run.cold_logos([dict(id=2,url='http://station/live.flac'),dict(id=8,url='http://station/live.mp3')])
+        await asyncio.gather(*run.background)
+        self.assertEqual(len(created),6)
+        self.assertEqual(len({logo for _,_,logo in created}),6)
+        self.assertTrue(all('run=SR-test-isolated-' in logo for _,_,logo in created))
+        self.assertEqual(deleted,[sid for sid,_,_ in created])
+        self.assertEqual(images,[2,8])
+        self.assertEqual(commands,[{'station':2,'play':True}])
+
 class ProbePatchTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):

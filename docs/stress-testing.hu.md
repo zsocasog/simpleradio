@@ -98,6 +98,10 @@ A képes terhelés szándékosan nem használ böngésző-gyorsítótárat: mind
 
 A `--image-parallel 6` egyszerre hat teljes állomásképet kér az alapértelmezett három helyett, a háttérben futó állapotlekéréseken és esetleges borítókérésen felül. Ezt külön terhelési szintként kell jelenteni; a három- és hatképes próbák válaszideje közvetlenül nem azonos terhelésű összevetés.
 
+A `--force-lcd-images` ugyanazokat a logókat kifejezetten az LCD/BMP tartalék útvonalon kéri. Alapesetben a végpont a megfelelő, kis tömörített képet is visszaadhatja; a terhelési összevetésnél ezt a különbséget rögzíteni kell.
+
+A `--profile cold-logos --serve-fixture --fixture-url http://A-GEP-IP-CIME:19840` hat egymást követő új állomásmentést, PNG-feltöltést, hozzárendelést és törlést végez FLAC-lejátszás és képkérések mellett. A logócímek futásonként és iterációnként eltérnek. A teljes profil új állomásának logója is futásonként új címet kap, így nem használja véletlenül az előző mérés elkészült LCD-képét. A saját állomásokat a szokásos helyreállítás kezeli; a felhasználó gyorsítótárát a teszt továbbra sem törli.
+
 ## Eredmények és helyreállítás
 
 - `events.jsonl`: időbélyeges műveletek, válaszok, állapotminták, hibák. Már futás közben lemezre kerül.

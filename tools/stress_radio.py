@@ -64,6 +64,7 @@ class Run:
         self.emit('manifest', seed=args.seed, base=self.base, exercise=args.exercise,
                   profile=getattr(args,'profile','extreme'),scale=getattr(args,'scale',1),runnerHashes=hashes,
                   imageParallel=getattr(args,'image_parallel',3),
+                  forceLcdImages=getattr(args,'force_lcd_images',False),
                   referenceSha256=hashlib.sha256(args.reference_file.read_bytes()).hexdigest() if getattr(args,'reference_file',None) else None,
                   sourceVersion=read_version(), note='No acoustic or browser-DOM certification')
 
@@ -166,6 +167,8 @@ class Run:
                           heapLargest=system['heapLargest'], psramFree=system['psramFree'],
                           buildId=system['buildId'], stable=stable, audio=diag.get('audio'),
                            performance=diag.get('performance'),
+                          allocationFailures=diag.get('allocationFailures'),
+                          previousAllocationFailures=diag.get('previousAllocationFailures'),
                           codec=self.state.get('codec',''),
                           stationId=self.state.get('stationId'),
                           artwork=status.get('artwork', {}), savePending=system.get('settingsSavePending'),
@@ -189,7 +192,8 @@ class Run:
     async def image_load(self, station_ids):
         cycle = 0
         while not self.stop_load:
-            jobs = [self.request(f'/api/artwork/station?id={sid}', expected=(200, 404),
+            suffix = '&lcd=1' if getattr(self.args,'force_lcd_images',False) else ''
+            jobs = [self.request(f'/api/artwork/station?id={sid}'+suffix, expected=(200, 404),
                                  operation='station-image', image=True) for sid in self.rng.sample(station_ids, min(getattr(self.args,'image_parallel',3), len(station_ids)))]
             if cycle % 4 == 0:
                 jobs += [self.request('/api/stations'), self.request('/api/logos')]
@@ -208,7 +212,7 @@ class Run:
     def set_phase(self, name):
         self.phase = name
         self.emit('phase', expectsAudio=name in ('FLAC-baseline','images-and-web','settings-during-playback',
-                  'new-station-and-logo','rapid-switches','controlled-WAV','MP3-mixed-use','stop-start-recovery') or name.startswith(('isolation-', 'save-benchmark-')))
+                  'new-station-and-logo','rapid-switches','controlled-WAV','MP3-mixed-use','stop-start-recovery') or name.startswith(('isolation-', 'save-benchmark-', 'cold-logo-')))
         print(name, flush=True)
 
     async def save_config(self, fields):
@@ -270,6 +274,9 @@ class Run:
         if self.args.profile == 'isolation':
             await self.isolation(stations, config)
             return
+        if self.args.profile == 'cold-logos':
+            await self.cold_logos(stations)
+            return
         self.set_phase('idle-baseline'); await self.command({'play':False}); await self.hold(12)
         flac = next((s for s in stations if 'flac' in s['url'].lower() or 'flac' in s['name'].lower()), stations[0])
         mp3 = next((s for s in stations if 'danubius' in s['name'].lower()),
@@ -286,7 +293,10 @@ class Run:
             await self.command({'eqLow':i-1,'eqHigh':1-i,'balance':i*5})
             await self.hold(8)
         self.set_phase('new-station-and-logo')
-        sid = await self.add_station('clone', mp3['url'], self.args.fixture_url + '/logo-slow.png' if self.args.fixture_url else '')
+        # A new station must exercise a genuinely cold image, not reuse the
+        # previous test's identical fixture URL and prepared LCD thumbnail.
+        fixture_logo = self.args.fixture_url + '/logo-slow.png?' + urlencode({'run':self.prefix}) if self.args.fixture_url else ''
+        sid = await self.add_station('clone', mp3['url'], fixture_logo)
         body = png(); reply = json.loads(await self.request(f'/api/logo/upload?id={sid}', body=body, operation='logo-upload'))
         path = reply['path']
         await self.request('/api/station/save', dict(id=sid, name=self.prefix+'clone', url=mp3['url'],logo=path,prepareLogo=1), operation='station-logo-binding')
@@ -308,6 +318,24 @@ class Run:
             await self.command({'eqLow':0,'eqHigh':0,'balance':0}); await self.hold(12)
         self.set_phase('stop-start-recovery'); await self.command({'play':False}); await self.hold(5)
         await self.command({'play':True}); await self.hold(30)
+
+    async def cold_logos(self, stations):
+        if not self.args.fixture_url:
+            raise ValueError('cold-logos requires the LAN fixture')
+        flac = next((s for s in stations if 'flac' in s['url'].lower()), stations[0])
+        self.set_phase('cold-logo-baseline')
+        await self.command({'station':flac['id'],'play':True}); await self.hold(20)
+        self.background.append(asyncio.create_task(self.image_load([s['id'] for s in stations])))
+        for i in range(6):
+            self.set_phase(f'cold-logo-{i+1}')
+            logo=self.args.fixture_url+'/logo-slow.png?'+urlencode({'run':self.prefix,'iteration':i})
+            sid=await self.add_station(f'cold-{i}',flac['url'],logo)
+            reply=json.loads(await self.request(f'/api/logo/upload?id={sid}',body=png(),operation='logo-upload'))
+            await self.request('/api/station/save',dict(id=sid,name=self.prefix+f'cold-{i}',
+                url=flac['url'],logo=reply['path'],prepareLogo=1),operation='station-logo-binding')
+            await self.hold(5)
+            await self.request('/api/station/delete',{'id':sid},operation='cleanup-station')
+        self.set_phase('cold-logo-recovery'); await self.hold(12)
 
     async def isolation(self, stations, config):
         flac = next((s for s in stations if 'flac' in s['url'].lower() or 'flac' in s['name'].lower()),stations[0])
@@ -404,9 +432,10 @@ def main():
     parser.add_argument('--exercise',action='store_true'); parser.add_argument('--mute',action='store_true')
     parser.add_argument('--scale',type=float,default=1); parser.add_argument('--seed',type=int,default=20261109)
     parser.add_argument('--observe-seconds',type=float,default=30); parser.add_argument('--expect-build')
-    parser.add_argument('--profile', choices=('extreme','isolation','saves'),default='extreme')
+    parser.add_argument('--profile', choices=('extreme','isolation','saves','cold-logos'),default='extreme')
     parser.add_argument('--image-parallel', type=int, choices=range(1,7), default=3,
                         help='Concurrent full station-image requests (default 3; browser-pressure test 6)')
+    parser.add_argument('--force-lcd-images',action='store_true',help='Compare the same logos via their LCD/BMP representation')
     parser.add_argument('--fixture-url', help='LAN address of this PC, e.g. http://192.168.0.10:19840')
     parser.add_argument('--serve-fixture', action='store_true')
     parser.add_argument('--reference-file',type=Path,help='Optional long local FLAC/Ogg/MP3/WAV for controlled isolation runs')

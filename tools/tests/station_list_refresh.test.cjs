@@ -65,7 +65,10 @@ function browser() {
     section('async function uploadStationLogo(', 'async function cacheArtworkViaBrowser('), c);
   const badges = list => list.querySelectorAll('.station-badge');
   return { c, quick, manager, requests, pending, controls, badges,
-    async finish() { await tick(); pending.splice(0).forEach(image => image.onload()); await tick(); }
+    async finish() {
+      await tick();
+      for (let i=0;i<12 && pending.length;i++) { pending.splice(0).forEach(image => image.onload()); await tick(); }
+    }
   };
 }
 
@@ -87,7 +90,8 @@ test('an image still loading completes on the same mounted badge across a list r
   const h = browser(); h.c.renderStations(true); await tick();
   const badges = h.badges(h.manager), before = h.requests.length;
   await h.c.loadStations(); await h.finish();
-  assert.equal(h.requests.length, before);
+  assert.equal(before, 2, 'the idle pool starts only two of the three unique logos');
+  assert.equal(h.requests.length, 3, 'each queued URL still starts exactly once across the refresh');
   badges.forEach((badge, i) => { assert.equal(h.badges(h.manager)[i], badge); assert.ok(badge.classList.contains('has-logo')); });
 });
 

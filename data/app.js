@@ -1134,7 +1134,8 @@ async function logoPngBlobFromFile(file) {
 }
 
 async function uploadStationLogo(stationId, logoUrl) {
-  if (!stationId || !remoteUrl(logoUrl)) return "";
+  if (!["number", "string"].includes(typeof stationId) || String(stationId).trim() === "" ||
+      !Number.isSafeInteger(Number(stationId)) || Number(stationId) < 0 || !remoteUrl(logoUrl)) return "";
 
   try {
     const blob = await logoPngBlob(logoUrl);
@@ -2506,24 +2507,76 @@ function stationLogoPaths(stationId, logo) {
   const paths = [logoUrl(logo, `${stationId}|${logo}`)];
   if (remoteUrl(logo) && Number.isInteger(Number(stationId)) && Number(stationId) >= 0) {
     paths.unshift(`/api/artwork/station?id=${encodeURIComponent(stationId)}&source=${encodeURIComponent(logo)}`);
+    paths.splice(1, 0, `${paths[0]}&lcd=1`); // Keep the proven LCD fallback if a compressed file is damaged.
   }
   return paths;
 }
 
 const artworkImageRequests = new Map();
-function artworkImageReady(url) {
+const artworkImageQueue = [];
+let artworkImagesActive = 0;
+function trimArtworkImageRequests() {
+  for (const [url, entry] of artworkImageRequests) {
+    if (artworkImageRequests.size <= 96) break;
+    if (!entry.pending) artworkImageRequests.delete(url);
+  }
+}
+function drainArtworkImages() {
+  // Albums use their direct route. Station/search tiles share this small pool;
+  // a long list must not open a burst of connections while music is playing.
+  const limit = typeof playing !== "undefined" && playing ? 1 : 2;
+  while (artworkImagesActive < limit && artworkImageQueue.length) {
+    ++artworkImagesActive;
+    const start = artworkImageQueue.shift();
+    start(() => { --artworkImagesActive; drainArtworkImages(); });
+  }
+}
+function artworkImageReady(url, wanted = () => true) {
   const previous = artworkImageRequests.get(url);
-  if (previous && Date.now() - previous.at < (previous.ok ? 300000 : 5000)) return previous.promise;
-  const entry = { at: Date.now(), ok: false };
+  if (previous && (previous.pending || Date.now() - previous.at < (previous.ok ? 300000 : 5000))) {
+    if (previous.pending) previous.wanted.push(wanted);
+    return previous.promise;
+  }
+  const entry = { at: Date.now(), ok: false, pending: true, wanted: [wanted] };
   entry.promise = new Promise(resolve => {
-    const image = new Image();
-    const timeout = setTimeout(() => { image.src = ""; resolve(false); }, 8000);
-    image.onload = () => { clearTimeout(timeout); entry.ok = true; resolve(true); };
-    image.onerror = () => { clearTimeout(timeout); resolve(false); };
-    image.src = url;
+    entry.start = done => {
+      if (!entry.wanted.some(isWanted => isWanted())) {
+        entry.pending = false;
+        entry.wanted.length = 0;
+        entry.start = null;
+        if (artworkImageRequests.get(url) === entry) artworkImageRequests.delete(url);
+        resolve(false);
+        done();
+        return;
+      }
+      // The timeout starts on admission, not while this image is queued.
+      const image = new Image();
+      let settled = false;
+      const finish = ok => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timeout);
+        entry.ok = ok;
+        entry.pending = false;
+        entry.wanted.length = 0;
+        entry.start = null;
+        entry.at = Date.now();
+        trimArtworkImageRequests();
+        resolve(ok);
+        done();
+      };
+      const timeout = setTimeout(() => { image.src = ""; finish(false); }, 8000);
+      image.onload = () => finish(true);
+      image.onerror = () => finish(false);
+      image.src = url;
+    };
   });
-  if (artworkImageRequests.size >= 96) artworkImageRequests.delete(artworkImageRequests.keys().next().value);
   artworkImageRequests.set(url, entry);
+  trimArtworkImageRequests();
+  // Public originals/proxies are fetched by the browser, not the ESP. They
+  // must not queue behind slow local images or consume the radio's slots.
+  if (remoteUrl(url)) entry.start(() => {});
+  else { artworkImageQueue.push(entry.start); drainArtworkImages(); }
   return entry.promise;
 }
 
@@ -2568,9 +2621,13 @@ function applyArtworkNode(node, path, key, fallbackText = "SR", fallbackPaths = 
     const path = paths[index];
     const separator = String(path).includes("?") ? "&" : "?";
     // Leave public/signed URLs untouched; local file revisions invalidate on save.
-    const cacheSafePath = remoteUrl(path) ? path :
-      `${path}${separator}sr=${encodeURIComponent(key || stationAssetRevision)}`;
-    if (!await artworkImageReady(cacheSafePath)) return tryPath(index + 1);
+    const sharedStationImage = String(path).startsWith("/api/artwork/station?");
+    // Header, player and both station lists must share one asset URL. Local
+    // logoUrl() paths already include their upload revision; do not add a
+    // second, widget-specific cache key and download those pixels again.
+    const cacheSafePath = remoteUrl(path) || /[?&]sr=/.test(path) ? path :
+      `${path}${separator}sr=${encodeURIComponent(sharedStationImage ? stationAssetRevision : key || stationAssetRevision)}`;
+    if (!await artworkImageReady(cacheSafePath, isCurrent)) return tryPath(index + 1);
     if (!isCurrent()) return;
     node.style.backgroundImage = `url("${String(cacheSafePath).replace(/"/g, "%22")}")`;
     node.textContent = "";

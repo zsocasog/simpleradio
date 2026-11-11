@@ -1,9 +1,11 @@
 #pragma once
 
 #include <errno.h>
+#include <dirent.h>
 #include <fcntl.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <string.h>
 #include <stdio.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -22,6 +24,32 @@ inline bool exists(const char* mount, const char* path) {
   char absolute[320];
   struct stat info{};
   return fullPath(absolute, mount, path) && ::stat(absolute, &info) == 0 && S_ISREG(info.st_mode);
+}
+
+// Metadata only: Arduino openNextFile() opens every child with fopen(), which
+// can abort in newlib's mutex allocation even for a system-status request.
+template<class Visitor> bool visitFiles(const char* mount, const char* directory, Visitor visitor) {
+  char absolute[320];
+  if (!fullPath(absolute, mount, directory)) return false;
+  DIR* dir = ::opendir(absolute);
+  if (!dir) return false;
+  const size_t baseLength = strlen(absolute);
+  while (const auto* entry = ::readdir(dir)) {
+    if (!strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..")) continue;
+    const int count = snprintf(absolute + baseLength, sizeof(absolute) - baseLength, "/%s", entry->d_name);
+    if (count < 0 || static_cast<size_t>(count) >= sizeof(absolute) - baseLength) continue;
+    struct stat info{};
+    if (::stat(absolute, &info) == 0 && S_ISREG(info.st_mode) && info.st_size >= 0)
+      visitor(entry->d_name, static_cast<size_t>(info.st_size), info.st_mtime);
+  }
+  ::closedir(dir);
+  return true;
+}
+
+inline size_t directoryBytes(const char* mount, const char* directory) {
+  size_t total = 0;
+  visitFiles(mount, directory, [&](const char*, size_t bytes, time_t) { total += bytes; });
+  return total;
 }
 
 class File {

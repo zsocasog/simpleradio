@@ -11,6 +11,14 @@
 
 namespace RuntimeProbe {
 #if SIMPLE_RADIO_RUNTIME_DIAGNOSTICS
+struct AllocationFailure {
+  uint32_t count, bytes, caps, uptimeMs;
+  char task[24], function[32];
+  uint32_t callers[16];
+};
+struct AllocationFailures { AllocationFailure core[2]; };
+void begin();
+AllocationFailures allocationFailures(bool previousBoot);
 enum class Metric : uint8_t { ConfigSave, AtomicWrite, ConfigJson, SettingsWait, StationWork, ImageFill, MainLoop, Count };
 struct Timing { uint32_t count = 0, lastUs = 0, maxUs = 0; uint64_t totalUs = 0; };
 struct Performance { Timing timings[static_cast<size_t>(Metric::Count)]; };

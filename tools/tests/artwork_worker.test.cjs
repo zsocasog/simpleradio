@@ -25,15 +25,17 @@ const submitCode = body('bool ArtworkCache::queueDownloadJob(').replace('&job', 
 const loopCode = body('void ArtworkCache::downloadTask(')
   .replace('ArtworkCache* cache = static_cast<ArtworkCache*>(param);', 'const cache = param;')
   .replace('ArtworkDownloadJob* job = nullptr;', 'let job = null;')
+  .replace('const bool diskJob = job && job->kind != ArtworkJobKind::AlbumSearch && job->kind != ArtworkJobKind::PickerLogo;',
+    'const diskJob = job && job.kind !== "album" && job.kind !== "picker";')
   .replace('xQueueReceive(artworkJobQueue, &job, portMAX_DELAY)',
     'xQueueReceive(artworkJobQueue, value => job = value, portMAX_DELAY)')
-  .replace('cache->', 'cache.');
+  .replaceAll('cache->', 'cache.');
 function harness() {
   const c = vm.createContext({ artworkWorkerHandle: null, artworkJobQueue: null,
     artworkQueueStorage: {}, artworkWorkerStack: { bytes: 12288, internal: true },
     ARTWORK_TASK_STACK_BYTES: 12288, ARTWORK_TASK_PRIORITY: 0, ARTWORK_TASK_CORE: -1,
     portMAX_DELAY: Infinity, pdTRUE: 1, nullptr: null,
-    queueCreates: 0, taskCreates: 0, pending: [], received: [], done: 0, traces: [],
+    queueCreates: 0, taskCreates: 0, pending: [], received: [], done: 0, stats: 0, traces: [],
     heap: { total: 44744, largest: 12276 },
     queueFailure: false, taskFailure: false, allocations: 0, heldResources: 0,
     xQueueCreateStatic: (count, size) => {
@@ -68,7 +70,7 @@ function harness() {
     function startWorker() ${initCode}
     function queueDownloadJob(job) ${submitCode}`, c);
   c.run = () => {
-    try { c.downloadTask({ markDownloadFinished() {
+    try { c.downloadTask({ refreshCacheStats() { assert.equal(c.heldResources,0); ++c.stats; }, markDownloadFinished() {
       assert.equal(c.heldResources, 0); ++c.done;
     } }); } catch (e) { if (e !== finished) throw e; }
   };
@@ -97,6 +99,7 @@ test('repeated album, logo, picker, thumbnail and embedded jobs reuse one stack 
     assert.equal(c.received[i], job); assert.equal(c.done, i + 1);
   }
   assert.equal(c.taskCreates, 1); assert.equal(c.queueCreates, 1); assert.equal(c.allocations, 0);
+  assert.equal(c.stats,c.received.filter(job=>job.kind!=='album'&&job.kind!=='picker').length);
   assert.doesNotMatch(source, /xTaskCreatePinnedToCore\(|vTaskDelete\(/);
 });
 

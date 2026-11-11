@@ -32,9 +32,13 @@ public:
   void cancelPendingPlayback();
   bool prepareStationForPlayback(int stationId, String& outPath, uint32_t budgetMs = 5200);
   bool stationArtworkReady(int stationId, String* outPath = nullptr) const;
+  bool stationWebArtworkPath(int stationId, String& outPath) const;
   bool importLocalImage(const String& url, const String& tempPath, String& outPath);
   bool queueBrowserArtworkImport(const String& url, const String& tempPath);
   size_t cacheBytes() const;
+  size_t filesystemTotalBytes() const { return filesystemTotalSnapshot.load(); }
+  size_t filesystemUsedBytes() const { return filesystemUsedSnapshot.load(); }
+  unsigned long cacheStatsAgeMs() const { return millis() - cacheStatsAtMs.load(); }
   size_t cacheLimitBytes() const;
   size_t cacheTargetBytes() const;
   void enforceCacheBudget(size_t incomingBytes = 0, const String& keepPath = "");
@@ -130,6 +134,7 @@ private:
   bool markDownloadStarted(const String& label, bool idlePrewarm = false);
   bool startWorker();
   bool queueDownloadJob(ArtworkDownloadJob* job);
+  void refreshCacheStats();
   void markDownloadFinished();
   bool idlePrewarmCancellationRequested();
   bool writeBufferYielding(File& file, const uint8_t* data, size_t length);
@@ -146,6 +151,10 @@ private:
   static void runDownloadJob(ArtworkDownloadJob* job);
 
   String lastUrl;
+  std::atomic<size_t> cacheBytesSnapshot{0};
+  std::atomic<size_t> filesystemTotalSnapshot{0};
+  std::atomic<size_t> filesystemUsedSnapshot{0};
+  std::atomic<uint32_t> cacheStatsAtMs{0};
   unsigned long lastAttemptMs = 0;
   bool downloadInProgress = false;
   bool downloadIsIdlePrewarm = false;

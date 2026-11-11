@@ -72,6 +72,21 @@ test('an existing local logo keeps the single-save path without browser conversi
   assert.equal(calls.length, 1); assert.equal(calls[0].prepareLogo, '1');
 });
 
+test('browser conversion accepts the first station id zero and rejects invalid ids before conversion or upload', async () => {
+  for (const id of [0, '0', 7, null, undefined, '', ' ', false, [], {}, -1, 1.5, Infinity, 'bad', 1e30]) {
+    let converted = 0, uploaded = 0;
+    const c = vm.createContext({ remoteUrl: () => true, stationLogoRevisions: new Map(), console,
+      logoPngBlob: async () => { ++converted; return 'PNG'; },
+      fetch: async url => { ++uploaded; assert.ok(url.endsWith('id=' + encodeURIComponent(id)));
+        return { ok: true, json: async () => ({ path: '/logos/first.png' }) }; }
+    });
+    vm.runInContext('async function uploadStationLogo(stationId, logoUrl) ' + body(app, 'uploadStationLogo'), c);
+    const good = id === 0 || id === '0' || id === 7;
+    assert.equal(await c.uploadStationLogo(id, 'https://original.example/logo.png'), good ? '/logos/first.png' : '');
+    assert.equal(converted, good ? 1 : 0); assert.equal(uploaded, good ? 1 : 0);
+  }
+});
+
 function workerHarness() {
   const saves = [], prewarm = [], reload = [], replies = [], disposed = [], starts = [];
   const gate = new Gate();

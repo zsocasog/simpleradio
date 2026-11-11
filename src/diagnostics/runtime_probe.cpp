@@ -3,7 +3,11 @@
 #include <Arduino.h>
 #include <esp_err.h>
 #include <esp_timer.h>
+#include <esp_heap_caps.h>
+#include <esp_debug_helpers.h>
+#include <esp_system.h>
 #include <freertos/FreeRTOS.h>
+#include <string.h>
 
 namespace {
 DRAM_ATTR portMUX_TYPE probeMux = portMUX_INITIALIZER_UNLOCKED;
@@ -14,9 +18,54 @@ DRAM_ATTR bool feedLate = false;
 DRAM_ATTR uint32_t lastDecoderUs = 0;
 portMUX_TYPE performanceMux = portMUX_INITIALIZER_UNLOCKED;
 RuntimeProbe::Performance performanceCounters{};
+// Retained only in diagnostic firmware. A panic otherwise loses the brief
+// allocation failure between HTTP samples. No logging, allocation or flash I/O
+// in this hook; each CPU has its own bounded record.
+struct RetainedFailures { uint32_t magic; RuntimeProbe::AllocationFailures failures; };
+RTC_NOINIT_ATTR RetainedFailures retainedFailures;
+RuntimeProbe::AllocationFailures previousFailures{};
+portMUX_TYPE allocationMux = portMUX_INITIALIZER_UNLOCKED;
+constexpr uint32_t allocationMagic = 0x53524631;
+
+void allocationFailed(size_t bytes, uint32_t caps, const char* function) {
+  portENTER_CRITICAL(&allocationMux);
+  auto& row = retainedFailures.failures.core[xPortGetCoreID()];
+  ++row.count; row.bytes = bytes; row.caps = caps;
+  row.uptimeMs = static_cast<uint32_t>(esp_timer_get_time() / 1000);
+  const char* task = pcTaskGetName(nullptr);
+  size_t i = 0;
+  for (; task && task[i] && i + 1 < sizeof(row.task); ++i) row.task[i] = task[i];
+  row.task[i] = 0;
+  i = 0;
+  for (; function && function[i] && i + 1 < sizeof(row.function); ++i) row.function[i] = function[i];
+  row.function[i] = 0;
+  esp_backtrace_frame_t frame{};
+  esp_backtrace_get_start(&frame.pc, &frame.sp, &frame.next_pc);
+  memset(row.callers, 0, sizeof(row.callers));
+  for (i = 0; i < 16; ++i) {
+    row.callers[i] = frame.pc;
+    if (!frame.next_pc || !esp_backtrace_get_next_frame(&frame)) break;
+  }
+  portEXIT_CRITICAL(&allocationMux);
+}
 }
 
 namespace RuntimeProbe {
+void begin() {
+  const auto reason = esp_reset_reason();
+  if (retainedFailures.magic == allocationMagic &&
+      (reason == ESP_RST_PANIC || reason == ESP_RST_SW || reason == ESP_RST_TASK_WDT))
+    previousFailures = retainedFailures.failures;
+  memset(&retainedFailures.failures, 0, sizeof(retainedFailures.failures));
+  retainedFailures.magic = allocationMagic;
+  heap_caps_register_failed_alloc_callback(allocationFailed);
+}
+AllocationFailures allocationFailures(bool previousBoot) {
+  portENTER_CRITICAL(&allocationMux);
+  const auto result = previousBoot ? previousFailures : retainedFailures.failures;
+  portEXIT_CRITICAL(&allocationMux);
+  return result;
+}
 void record(Metric metric, uint32_t elapsedUs) {
   portENTER_CRITICAL(&performanceMux);
   auto& timing = performanceCounters.timings[static_cast<size_t>(metric)];

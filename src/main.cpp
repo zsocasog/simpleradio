@@ -53,6 +53,9 @@ static void configureLocalTime() {
 }
 
 void setup() {
+#if SIMPLE_RADIO_RUNTIME_DIAGNOSTICS
+  RuntimeProbe::begin();
+#endif
   Serial.begin(115200);
   delay(200);
 

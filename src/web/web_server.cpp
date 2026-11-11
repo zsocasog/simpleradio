@@ -37,6 +37,7 @@
 #include "webui_compatibility.h"
 #include "../diagnostics/runtime_probe.h"
 #include "artwork_etag.h"
+#include "station_web_image_response.h"
 
 #ifndef SIMPLE_RADIO_OTA_PASSWORD
 #define SIMPLE_RADIO_OTA_PASSWORD "simpleradio"
@@ -591,12 +592,13 @@ static String systemStatusJson() {
   webui["reason"] = webuiInfo.reason;
 
   JsonObject filesystem = doc["filesystem"].to<JsonObject>();
-  const size_t fsTotal = LittleFS.totalBytes();
-  const size_t fsUsed = LittleFS.usedBytes();
+  const size_t fsTotal = ArtworkCache::instance().filesystemTotalBytes();
+  const size_t fsUsed = ArtworkCache::instance().filesystemUsedBytes();
   filesystem["totalBytes"] = fsTotal;
   filesystem["usedBytes"] = fsUsed;
   filesystem["freeBytes"] = fsTotal > fsUsed ? fsTotal - fsUsed : 0;
   filesystem["artworkCacheBytes"] = ArtworkCache::instance().cacheBytes();
+  filesystem["artworkCacheStatsAgeMs"] = ArtworkCache::instance().cacheStatsAgeMs();
   filesystem["artworkCacheLimitBytes"] = ArtworkCache::instance().cacheLimitBytes();
   filesystem["artworkCacheTargetBytes"] = ArtworkCache::instance().cacheTargetBytes();
 
@@ -797,6 +799,7 @@ static bool commitLogoUpload(const String& tempPath, const String& targetPath, S
     return false;
   }
 
+  ArtworkRevision::Publication publication;
   String backupPath = targetPath + ".bak";
   if (LittleFS.exists(backupPath)) LittleFS.remove(backupPath);
 
@@ -999,32 +1002,17 @@ static int stationIdFromLogoUploadPath(const String& path) {
 }
 
 static void removeOldStationLogoUploads(int id, const String& keepPath) {
-  if (!LittleFS.exists("/logos")) return;
-
   String exact = "/logos/station-" + String(id) + ".png";
   String prefix = "/logos/station-" + String(id) + "-";
-
-  File root = LittleFS.open("/logos");
-  if (!root || !root.isDirectory()) return;
-
-  File file = root.openNextFile();
-  while (file) {
-    if (!file.isDirectory()) {
-      String path = file.path();
-      if (!path.length()) path = file.name();
+  ReadOnlyStorage::visitFiles(LittleFS.mountpoint(), "/logos", [&](const char* name, size_t, time_t) {
+      String path = String("/logos/") + name;
       String lower = path;
       lower.toLowerCase();
       bool owned = path == exact || (path.startsWith(prefix) && lower.endsWith(".png"));
-      file.close();
       if (owned && path != keepPath) {
         removeLocalLogoWithThumbnail(path);
       }
-    } else {
-      file.close();
-    }
-    file = root.openNextFile();
-  }
-  root.close();
+  });
 }
 
 static String logoBasename(String path) {
@@ -1622,23 +1610,30 @@ void webServerBegin() {
     if (!request->hasParam("id")) { request->send(400); return; }
     String imagePath;
     ArtworkCache& cache = ArtworkCache::instance();
+    auto sendImage = [request](auto* response) {
+      if (!response) { request->send(503); return true; }
+      if (!response->_sourceValid()) { delete response; return false; }
+      const String etag = response->entityTag();
+      if (etag.length()) {
+        response->addHeader("ETag", etag);
+        const String condition = request->header("If-None-Match");
+        if (ArtworkEtag::matches({condition.c_str(), condition.length()}, {etag.c_str(), etag.length()})) {
+          response->notModified();
+        }
+      }
+      response->addHeader("Cache-Control", "no-cache");
+      request->send(response);
+      return true;
+    };
+    if (!request->hasParam("lcd") &&
+        cache.stationWebArtworkPath(request->getParam("id")->value().toInt(), imagePath)) {
+      if (sendImage(new (std::nothrow) StationWebImageResponse(LittleFS.mountpoint(), imagePath.c_str()))) return;
+    }
     if (!cache.stationArtworkReady(request->getParam("id")->value().toInt(), &imagePath) || !imagePath.length()) {
       request->send(404); return;
     }
     const String path = cache.lcdThumbnailPath(imagePath);
-    auto* response = new (std::nothrow) StationArtworkResponse(LittleFS.mountpoint(), path.c_str());
-    if (!response) { request->send(503); return; }
-    if (!response->_sourceValid()) { delete response; request->send(404); return; }
-    const String etag = response->entityTag();
-    if (etag.length()) {
-      response->addHeader("ETag", etag);
-      const String condition = request->header("If-None-Match");
-      if (ArtworkEtag::matches({condition.c_str(), condition.length()}, {etag.c_str(), etag.length()})) {
-        response->notModified();
-      }
-    }
-    response->addHeader("Cache-Control", "no-cache");
-    request->send(response);
+    if (!sendImage(new (std::nothrow) StationArtworkResponse(LittleFS.mountpoint(), path.c_str()))) request->send(404);
   });
 
   server.on("/api/stations", HTTP_GET, [](AsyncWebServerRequest* request) {
@@ -2088,6 +2083,17 @@ void webServerBegin() {
     doc["schema"] = 1; doc["uptimeMs"] = millis();
     doc["heapFree"] = ESP.getFreeHeap(); doc["heapLargest"] = ESP.getMaxAllocHeap();
     doc["psramFree"] = ESP.getFreePsram();
+    for (bool previous : {false, true}) {
+      const auto failures = RuntimeProbe::allocationFailures(previous);
+      JsonArray rows = doc[previous ? "previousAllocationFailures" : "allocationFailures"].to<JsonArray>();
+      for (const auto& f : failures.core) {
+        JsonObject row = rows.add<JsonObject>();
+        row["count"] = f.count; row["bytes"] = f.bytes; row["caps"] = f.caps;
+        row["uptimeMs"] = f.uptimeMs; row["task"] = String(f.task); row["function"] = String(f.function);
+        JsonArray callers = row["callers"].to<JsonArray>();
+        for (auto pc : f.callers) if (pc) callers.add(pc);
+      }
+    }
     JsonObject audio = doc["audio"].to<JsonObject>();
 #define PROBE_FIELD(name) audio[#name] = s.name
     PROBE_FIELD(epoch); PROBE_FIELD(sampleRate); PROBE_FIELD(dmaFrames); PROBE_FIELD(active);

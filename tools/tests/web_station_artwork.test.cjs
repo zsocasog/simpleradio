@@ -48,7 +48,7 @@ function browser() {
 test('a cached station logo displays even when the external original is gone', async () => {
   const h = browser(), n = h.node();
   const paths = h.c.stationLogoPaths(2, 'https://origin.example/logo.png');
-  const local = paths[0] + '&sr=station2'; h.statuses.set(local, true);
+  const local = paths[0] + '&sr=1'; h.statuses.set(local, true);
   h.c.applyArtworkNode(n, paths[0], 'station2', 'DA', paths.slice(1)); await h.finish();
   assert.equal(n.style.backgroundImage, `url("${local}")`);
   assert.deepEqual(h.requests, [local]);
@@ -57,7 +57,7 @@ test('a cached station logo displays even when the external original is gone', a
 });
 
 test('a station badge created off-DOM loads after its row is appended', async () => {
-  const h = browser(), n = h.node(), local = '/api/artwork/station?id=5&sr=s5';
+  const h = browser(), n = h.node(), local = '/api/artwork/station?id=5&sr=1';
   n.isConnected = false;
   h.c.applyArtworkNode(n, '/api/artwork/station?id=5', 's5', 'DA');
   n.isConnected = true; // stationRow() returns, then renderStations() appends it.
@@ -93,7 +93,7 @@ test('a missing local thumbnail falls back to the advertised original without al
 });
 
 test('missing logos show initials and retry when idle prewarming has completed', async () => {
-  const h = browser(), n = h.node(), local = '/api/artwork/station?id=5&sr=s5';
+  const h = browser(), n = h.node(), local = '/api/artwork/station?id=5&sr=1';
   h.c.applyArtworkNode(n, '/api/artwork/station?id=5', 's5', 'DA'); await h.finish();
   assert.equal(n.textContent, 'DA'); assert.equal(n.style.backgroundImage, '');
   h.c.now += 5001; h.statuses.set(local, true);
@@ -102,7 +102,7 @@ test('missing logos show initials and retry when idle prewarming has completed',
 });
 
 test('cache-ready notification refreshes a missing saved logo immediately without a player-state change', async () => {
-  const h = browser(), n = h.node(), local = '/api/artwork/station?id=5&sr=s5';
+  const h = browser(), n = h.node(), local = '/api/artwork/station?id=5&sr=1';
   h.c.applyArtworkNode(n, '/api/artwork/station?id=5', 's5', 'DA'); await h.finish();
   assert.equal(n.textContent, 'DA'); assert.ok(n.dataset.artworkRetryAt > h.c.now);
   h.statuses.set(local, true);
@@ -112,22 +112,22 @@ test('cache-ready notification refreshes a missing saved logo immediately withou
 
 test('a ready notification preserves visible images and does not retry unsaved search results', async () => {
   const h = browser(), good = h.node(), missing = h.node(), search = h.node();
-  h.statuses.set('/api/artwork/station?id=1&sr=s1', true);
+  h.statuses.set('/api/artwork/station?id=1&sr=1', true);
   h.c.applyArtworkNode(good, '/api/artwork/station?id=1', 's1', 'OK');
   h.c.applyArtworkNode(missing, '/api/artwork/station?id=2', 's2', 'NO');
   h.c.applyArtworkNode(search, 'https://missing.example/search.png', 'search', 'SE');
   await h.finish();
   const generation = good.dataset.artworkGeneration;
-  h.statuses.set('/api/artwork/station?id=2&sr=s2', true);
+  h.statuses.set('/api/artwork/station?id=2&sr=1', true);
   h.c.refreshMissingStationArtwork(); await h.finish();
   assert.equal(h.requests.length, 4); assert.equal(good.dataset.artworkGeneration, generation);
-  assert.equal(good.style.backgroundImage, 'url("/api/artwork/station?id=1&sr=s1")');
-  assert.equal(missing.style.backgroundImage, 'url("/api/artwork/station?id=2&sr=s2")');
+  assert.equal(good.style.backgroundImage, 'url("/api/artwork/station?id=1&sr=1")');
+  assert.equal(missing.style.backgroundImage, 'url("/api/artwork/station?id=2&sr=1")');
   assert.equal(search.textContent, 'SE');
 });
 
 test('an old pending request for the SAME station cannot replace a notification-refreshed image', async () => {
-  const h = browser(), n = h.node(), local = '/api/artwork/station?id=5&sr=s5';
+  const h = browser(), n = h.node(), local = '/api/artwork/station?id=5&sr=1';
   h.c.applyArtworkNode(n, '/api/artwork/station?id=5', 's5', 'DA', ['https://old.example/logo.png']);
   const old = h.pending.shift();
   h.c.refreshMissingStationArtwork();
@@ -178,6 +178,17 @@ test('RAM album images retain direct display without station preloading', () => 
   h.c.applyArtworkNode(n, '/api/artwork/album?id=1234', 'song', 'SR', ['/station.png']);
   assert.equal(n.style.backgroundImage, 'url("/api/artwork/album?id=1234&sr=song")');
   assert.deepEqual(h.requests, []);
+});
+
+test('header/player/list widgets share one station asset while upload-versioned PNG URLs stay unchanged', async () => {
+  const h=browser(), nodes=[h.node(),h.node(),h.node()], path='/api/artwork/station?id=0';
+  h.statuses.set(path+'&sr=1',true);
+  nodes.forEach((n,i)=>h.c.applyArtworkNode(n,path,'widget'+i,'DA'));
+  await h.finish();assert.deepEqual(h.requests,[path+'&sr=1']);
+  assert.ok(nodes.every(n=>n.classList.contains('has-logo')));
+  const png=h.node(),versioned='/logos/zero.png?sr=upload2';h.statuses.set(versioned,true);
+  h.c.applyArtworkNode(png,versioned,'another-widget','DA');await h.finish();
+  assert.equal(h.requests.at(-1),versioned);assert.equal(png.style.backgroundImage,`url("${versioned}")`);
 });
 
 test('the real BMP streamer preserves RGB565 and arbitrary HTTP fragments', () => {

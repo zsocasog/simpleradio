@@ -4,6 +4,7 @@
 #include "album_art_store.h"
 #include "artwork_memory_gate.h"
 #include "artwork_revision.h"
+#include "web_image.h"
 #include "station_logo_policy.h"
 #include "lcd_image_policy.h"
 #include "artwork_title_match.h"
@@ -278,6 +279,7 @@ void ArtworkCache::begin() {
   }
   if (!startWorker()) albumArtTrace("search start deferred: image worker unavailable");
   enforceCacheBudget();
+  refreshCacheStats(); // Initial value before WiFi, HTTP and playback start.
   Serial.println("[artwork] cache ready");
 }
 
@@ -650,10 +652,8 @@ void ArtworkCache::loop() {
 
     String existingPath;
     if (findExistingLcdArtworkPath(sourceUrl, existingPath)) {
-      String originalPath;
-      if (findExistingCachePath(sourceUrl, originalPath)) {
-        compactRemoteArtwork(sourceUrl, originalPath, existingPath);
-      }
+      // The worker already compacted this family. A retained small web image
+      // must not trigger format probes/compaction on every main-loop pass.
       if (state.cachedArtworkPath != existingPath) {
         Serial.printf("[artwork] lcd-only cache reused: %s\n", existingPath.c_str());
         PlayerState::instance().setCachedArtworkPath(existingPath);
@@ -1247,9 +1247,13 @@ void ArtworkCache::downloadTask(void* param) {
   for (;;) {
     ArtworkDownloadJob* job = nullptr;
     if (xQueueReceive(artworkJobQueue, &job, portMAX_DELAY) != pdTRUE) continue;
+    const bool diskJob = job && job->kind != ArtworkJobKind::AlbumSearch && job->kind != ArtworkJobKind::PickerLogo;
     runDownloadJob(job);
     // runDownloadJob has returned: its Strings, vectors, HTTP clients and image
     // leases are gone before another caller may enter the image pipeline.
+    // Metadata scanning stays below audio/network priority, on the existing
+    // worker and within its existing busy lifetime. No periodic task/job/stack.
+    if (diskJob) cache->refreshCacheStats();
     cache->markDownloadFinished();
   }
 }
@@ -1268,6 +1272,7 @@ void ArtworkCache::runDownloadJob(ArtworkDownloadJob* job) {
   String title = job ? job->title : "";
   std::vector<uint32_t> segments = job ? job->segments : std::vector<uint32_t>();
   delete job;
+
 
   if (cache && kind == ArtworkJobKind::PickerLogo) {
     PickerLogoLoader::process();
@@ -2766,18 +2771,11 @@ void ArtworkCache::removeCachedArtworkFamily(const String& imagePath) {
   }
   if (!imagePath.startsWith("/cache/")) return;
   const String stem = cacheFamilyStemForPath(imagePath);
-  File root = LittleFS.open("/cache");
-  if (!root || !root.isDirectory()) return;
   std::vector<String> removePaths;
-  File file = root.openNextFile();
-  while (file) {
-    String path = file.path();
-    if (!path.length()) path = String("/cache/") + file.name();
-    if (!file.isDirectory() && cacheFamilyStemForPath(path) == stem) removePaths.push_back(path);
-    file.close();
-    file = root.openNextFile();
-  }
-  root.close();
+  if (!ReadOnlyStorage::visitFiles(LittleFS.mountpoint(), "/cache", [&](const char* name, size_t, time_t) {
+    String path = String("/cache/") + name;
+    if (cacheFamilyStemForPath(path) == stem) removePaths.push_back(path);
+  })) return;
   for (const String& path : removePaths) LittleFS.remove(path);
 }
 
@@ -2826,17 +2824,20 @@ bool ArtworkCache::compactRemoteArtwork(const String& source, const String& imag
   const char* extensions[] = { ".png", ".jpg", ".jpeg", ".bmp" };
   for (const char* extension : extensions) {
     String originalPath = cachePath(source, extension);
-    if (!LittleFS.exists(originalPath)) continue;
-    File original = LittleFS.open(originalPath, "r");
-    size_t originalBytes = original ? original.size() : 0;
-    if (original) original.close();
+    ReadOnlyStorage::File original(LittleFS.mountpoint(), originalPath.c_str());
+    if (!original) continue;
+    const size_t originalBytes = original.size();
+    const bool keepWebImage = originalPath == imagePath && WebArtwork::inspect(original) != WebArtwork::Format::None;
+    original.close();
+    if (keepWebImage) continue; // Bounded pair, managed by the existing family LRU.
+    ArtworkRevision::Publication publication;
     if (LittleFS.remove(originalPath)) removedBytes += originalBytes;
   }
 
   outPath = thumbPath;
   markThumbnailReady(thumbPath, thumbPath);
   if (removedBytes > 0) {
-    Serial.printf("[artwork] lcd-only cache kept: %s, source removed (%u bytes)\n",
+    Serial.printf("[artwork] cache compacted: %s, large/unsupported sources removed (%u bytes)\n",
                   thumbPath.c_str(),
                   static_cast<unsigned>(removedBytes));
   }
@@ -3101,17 +3102,16 @@ void ArtworkCache::notePrewarmFailure(const String& source) {
 }
 
 size_t ArtworkCache::cacheBytes() const {
-  File root = LittleFS.open("/cache");
-  if (!root || !root.isDirectory()) return 0;
+  return cacheBytesSnapshot.load();
+}
 
-  size_t total = 0;
-  File file = root.openNextFile();
-  while (file) {
-    if (!file.isDirectory()) total += file.size();
-    file = root.openNextFile();
-  }
-  root.close();
-  return total;
+void ArtworkCache::refreshCacheStats() {
+  cacheBytesSnapshot.store(ReadOnlyStorage::directoryBytes(LittleFS.mountpoint(), "/cache"));
+  // The pinned LittleFS totalBytes() and usedBytes() both recalculate usage.
+  // Keep these traversals out of the high-priority HTTP task too.
+  filesystemTotalSnapshot.store(LittleFS.totalBytes());
+  filesystemUsedSnapshot.store(LittleFS.usedBytes());
+  cacheStatsAtMs.store(millis());
 }
 
 size_t ArtworkCache::cacheLimitBytes() const {
@@ -3137,22 +3137,14 @@ void ArtworkCache::enforceCacheBudget(size_t incomingBytes, const String& keepPa
   std::vector<CacheEntry> entries;
   size_t cacheTotal = 0;
 
-  File root = LittleFS.open("/cache");
-  if (!root || !root.isDirectory()) return;
-
-  File file = root.openNextFile();
-  while (file) {
-    if (!file.isDirectory()) {
+  if (!ReadOnlyStorage::visitFiles(LittleFS.mountpoint(), "/cache", [&](const char* name, size_t bytes, time_t modified) {
       CacheEntry entry;
-      entry.path = String(file.path());
-      entry.size = file.size();
-      entry.modified = file.getLastWrite();
+      entry.path = String("/cache/") + name;
+      entry.size = bytes;
+      entry.modified = modified;
       cacheTotal += entry.size;
       entries.push_back(entry);
-    }
-    file = root.openNextFile();
-  }
-  root.close();
+  })) return;
 
   for (size_t i = 0; i < entries.size();) {
     const CacheEntry& entry = entries[i];
@@ -3863,10 +3855,13 @@ bool ArtworkCache::finalizeImagePayload(const String& sourcePath, size_t offset,
   }
 
   String finalPath = cachePath(key, extension);
-  if (LittleFS.exists(finalPath)) LittleFS.remove(finalPath);
-  if (!LittleFS.rename(payloadPath, finalPath)) {
-    LittleFS.remove(payloadPath);
-    return false;
+  {
+    ArtworkRevision::Publication publication;
+    if (LittleFS.exists(finalPath)) LittleFS.remove(finalPath);
+    if (!LittleFS.rename(payloadPath, finalPath)) {
+      LittleFS.remove(payloadPath);
+      return false;
+    }
   }
 
   outPath = finalPath;
@@ -3973,6 +3968,29 @@ bool ArtworkCache::stationArtworkReady(int stationId, String* outPath) const {
   }
 
   if (outPath) *outPath = imagePath;
+  return true;
+}
+
+bool ArtworkCache::stationWebArtworkPath(int stationId, String& outPath) const {
+  outPath = "";
+  Station station;
+  if (stationId < 0 || !StationManager::instance().getStation(stationId, station)) return false;
+  String source = station.logo;
+  source.trim();
+  if (!source.length()) return false;
+  if (isRemoteArtworkSource(source)) {
+    String cached;
+    if (!findExistingCachePath(source, cached)) return false;
+    source = cached;
+  } else {
+    source = preferredLocalArtworkPath(source);
+  }
+  String lower = source;
+  lower.toLowerCase();
+  if (!lower.endsWith(".png") && !lower.endsWith(".jpg") && !lower.endsWith(".jpeg")) return false;
+  ReadOnlyStorage::File file(LittleFS.mountpoint(), source.c_str());
+  if (WebArtwork::inspect(file) == WebArtwork::Format::None) return false;
+  outPath = source;
   return true;
 }
 
@@ -4757,14 +4775,14 @@ bool ArtworkCache::importLocalImage(const String& url, const String& tempPath, S
   }
 
   String path = cachePath(url, extension);
-  if (LittleFS.exists(path)) {
-    LittleFS.remove(path);
-  }
-
-  if (!LittleFS.rename(tempPath, path)) {
-    LittleFS.remove(tempPath);
-    noteDownloadStatus(String("browser cache rename failed ") + path);
-    return false;
+  {
+    ArtworkRevision::Publication publication;
+    if (LittleFS.exists(path)) LittleFS.remove(path);
+    if (!LittleFS.rename(tempPath, path)) {
+      LittleFS.remove(tempPath);
+      noteDownloadStatus(String("browser cache rename failed ") + path);
+      return false;
+    }
   }
 
   outPath = path;
@@ -5121,6 +5139,7 @@ bool ArtworkCache::download(const String& url, String& outPath, uint32_t budgetM
     String path = cachePath(storageKey, extension);
     {
       ArtworkPhaseTrace phase("image-commit", fillFrame);
+      ArtworkRevision::Publication publication;
       if (LittleFS.exists(path)) {
         LittleFS.remove(path);
       }
