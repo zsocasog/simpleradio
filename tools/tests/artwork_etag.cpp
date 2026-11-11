@@ -1,0 +1,25 @@
+#include "../../src/web/artwork_etag.h"
+using ArtworkEtag::matches;
+constexpr auto tag = "\"sr565-bmp1-ab12\"";
+static_assert(matches(tag, tag));
+static_assert(matches(" W/\"sr565-bmp1-ab12\"\t", tag));
+static_assert(matches("\"old\", W/\"sr565-bmp1-ab12\", \"other\"", tag));
+static_assert(matches(" * ", tag));
+static_assert(matches(tag, "W/\"sr565-bmp1-ab12\""));
+static_assert(!matches("", tag));
+static_assert(!matches(tag, ""));
+static_assert(!matches("\"old\", \"other\"", tag));
+static_assert(!matches("\"sr565-bmp1-ab123\"", tag));
+static_assert(!matches("\"prefixsr565-bmp1-ab12\"", tag));
+static_assert(!matches("sr565-bmp1-ab12", tag));
+static_assert(!matches("\"other,*,opaque\"", tag));
+constexpr auto first = ArtworkEtag::value(1, 2, 3, 0xf208);
+static_assert(std::string_view(first.data()) == "W/\"sr565-bmp1-0000000000000001-00000002-0000000000000003-0000f208\"");
+constexpr auto updated = ArtworkEtag::value(1, 3, 3, 0xf208);
+constexpr auto booted = ArtworkEtag::value(2, 2, 3, 0xf208);
+constexpr auto reassigned = ArtworkEtag::value(1, 2, 4, 0xf208);
+static_assert(std::string_view(first.data()) != updated.data());
+static_assert(std::string_view(first.data()) != booted.data());
+static_assert(std::string_view(first.data()) != reassigned.data());
+static_assert(ArtworkEtag::pathId("/cache/a.sr565") == ArtworkEtag::pathId("/cache/a.sr565"));
+static_assert(ArtworkEtag::pathId("/cache/a.sr565") != ArtworkEtag::pathId("/cache/b.sr565"));

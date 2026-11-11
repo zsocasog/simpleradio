@@ -36,6 +36,7 @@
 #include "recovery_page.h"
 #include "webui_compatibility.h"
 #include "../diagnostics/runtime_probe.h"
+#include "artwork_etag.h"
 
 #ifndef SIMPLE_RADIO_OTA_PASSWORD
 #define SIMPLE_RADIO_OTA_PASSWORD "simpleradio"
@@ -1193,6 +1194,9 @@ struct StationSaveJob {
   bool done = false;
   bool started = false;
   bool memoryClaimed = false;
+  bool allocationDeferred = false;
+  uint32_t allocationWaitStartedMs = 0;
+  uint32_t allocationAttemptMs = 0;
   int errorStatus = 500;
   bool prepareLogo = true;
   StationLogoUploadBuffer* upload = nullptr;
@@ -1215,6 +1219,7 @@ static bool storeStationLogo(StationSaveJob& job) {
   if (LittleFS.exists(tempPath)) LittleFS.remove(tempPath);
   File file = LittleFS.open(tempPath, "w");
   if (!file) { job.error = "Logo file open failed"; return false; }
+  file.setBufferSize(512);
   bool ok = true;
   for (size_t offset = 0; offset < job.upload->size;) {
     const size_t count = min(static_cast<size_t>(4096), job.upload->size - offset);
@@ -1244,6 +1249,7 @@ static void stationSaveTask(void* parameter) {
     else job->saved = StationManager::instance().saveStation(job->id, job->name, job->url, job->logo, job->outId);
   }
   job->elapsedMs = millis() - startedMs;
+  SR_PERF_WAIT(StationWork, job->elapsedMs);
   portENTER_CRITICAL(&stationSaveMux);
   job->done = true;
   portEXIT_CRITICAL(&stationSaveMux);
@@ -1253,6 +1259,8 @@ static void stationSaveTask(void* parameter) {
 static void startStationSaveJob(AsyncWebServerRequest* request, StationSaveJob* job) {
   // Copy the request's data; only the library's weak continuation pointer may
   // outlive its handler. At most one job/stack can be admitted at a time.
+  // Publish only a fully initialized continuation to the other CPU.
+  job->request = request->pause();
   bool admitted = false;
   portENTER_CRITICAL(&stationSaveMux);
   if (!pendingStationSave) {
@@ -1265,7 +1273,6 @@ static void startStationSaveJob(AsyncWebServerRequest* request, StationSaveJob* 
     request->send(503, "text/plain", "Another station save is in progress");
     return;
   }
-  job->request = request->pause();
   // No worker stack is allocated in the request handler. The main loop starts
   // it once album preparation has released the shared memory gate.
 }
@@ -1280,6 +1287,10 @@ static void dispatchPendingStationSave() {
     job->done = true;
     return;
   }
+  const uint32_t now = millis();
+  if (job->allocationDeferred) {
+    if (now - job->allocationAttemptMs < 50U) return;
+  }
   if (!ArtworkMemory::gate().beginStationSave()) return;
   job->memoryClaimed = true;
   job->started = true;
@@ -1287,9 +1298,22 @@ static void dispatchPendingStationSave() {
   // inherit its priority; this short-lived worker runs below audio on either CPU.
   if (xTaskCreatePinnedToCore(stationSaveTask, "station-save", STATION_SAVE_TASK_STACK,
                              job, 0, nullptr, tskNO_AFFINITY) != pdPASS) {
-    job->errorStatus = 503;
-    job->error = "Station save task unavailable";
-    job->done = true;
+    // A preceding worker can have replied before the idle task reclaims its
+    // stack. Full image responses can also briefly fragment internal memory.
+    // Keep this one admitted request, yield between attempts, and retain no
+    // memory claim while waiting. Never run flash I/O in the network callback.
+    ArtworkMemory::gate().endStationSave();
+    job->memoryClaimed = false;
+    job->started = false;
+    if (job->allocationDeferred && now - job->allocationWaitStartedMs >= 3000U) {
+      job->errorStatus = 503;
+      job->error = "Station save task unavailable";
+      job->done = true;
+      return;
+    }
+    if (!job->allocationDeferred) job->allocationWaitStartedMs = now;
+    job->allocationAttemptMs = now;
+    job->allocationDeferred = true;
   }
 }
 
@@ -1531,6 +1555,7 @@ static void processSettingsSave() {
   if (ArtworkHttp::backgroundNetworkActive() && !timedOut && !otaUploadActive && !rebootPending) return;
   if (auto request = job->request.lock()) {
     int status = 200;
+    SR_PERF_WAIT(SettingsWait, millis() - job->startedMs);
     String response;
     const String previousLastFmApiKey = AppConfig::instance().lastFmApiKey;
     if (timedOut || otaUploadActive || rebootPending) {
@@ -1588,6 +1613,7 @@ void webServerLoop() {
 
 void webServerBegin() {
   Serial.println("[web] begin");
+  ArtworkRevision::beginHttpSession();
   WebUiCompatibility::refresh();
   ws.onEvent(onWsEvent);
   server.addHandler(&ws);
@@ -1603,6 +1629,14 @@ void webServerBegin() {
     auto* response = new (std::nothrow) StationArtworkResponse(LittleFS.mountpoint(), path.c_str());
     if (!response) { request->send(503); return; }
     if (!response->_sourceValid()) { delete response; request->send(404); return; }
+    const String etag = response->entityTag();
+    if (etag.length()) {
+      response->addHeader("ETag", etag);
+      const String condition = request->header("If-None-Match");
+      if (ArtworkEtag::matches({condition.c_str(), condition.length()}, {etag.c_str(), etag.length()})) {
+        response->notModified();
+      }
+    }
     response->addHeader("Cache-Control", "no-cache");
     request->send(response);
   });
@@ -2069,6 +2103,15 @@ void webServerBegin() {
     PROBE_FIELD(decoderLockMaxUs); PROBE_FIELD(decoderLongGaps); PROBE_FIELD(decoderSlowCalls);
     PROBE_FIELD(decoderShortInputs); PROBE_FIELD(decoderInputAvailable); PROBE_FIELD(decoderInputNeeded);
 #undef PROBE_FIELD
+    const auto performance = RuntimeProbe::performance();
+    JsonObject timings = doc["performance"].to<JsonObject>();
+    static const char* names[] = {"configSave", "atomicWrite", "configJson", "settingsWait", "stationWork", "imageFill", "mainLoop"};
+    static_assert(sizeof(names) / sizeof(names[0]) == static_cast<size_t>(RuntimeProbe::Metric::Count), "metric names");
+    for (size_t i = 0; i < static_cast<size_t>(RuntimeProbe::Metric::Count); ++i) {
+      const auto& t = performance.timings[i];
+      JsonObject row = timings[names[i]].to<JsonObject>();
+      row["count"] = t.count; row["lastUs"] = t.lastUs; row["maxUs"] = t.maxUs; row["totalUs"] = t.totalUs;
+    }
     String out; serializeJson(doc, out);
     request->send(200, "application/json", out);
   });

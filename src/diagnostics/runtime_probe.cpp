@@ -12,9 +12,27 @@ DRAM_ATTR uint32_t lastSentUs = 0, lastFeedUs = 0, lastPumpUs = 0;
 DRAM_ATTR uint32_t startedUs = 0, dmaBudgetUs = 0, lastInputUs = 0;
 DRAM_ATTR bool feedLate = false;
 DRAM_ATTR uint32_t lastDecoderUs = 0;
+portMUX_TYPE performanceMux = portMUX_INITIALIZER_UNLOCKED;
+RuntimeProbe::Performance performanceCounters{};
 }
 
 namespace RuntimeProbe {
+void record(Metric metric, uint32_t elapsedUs) {
+  portENTER_CRITICAL(&performanceMux);
+  auto& timing = performanceCounters.timings[static_cast<size_t>(metric)];
+  ++timing.count; timing.lastUs = elapsedUs; timing.totalUs += elapsedUs;
+  if (elapsedUs > timing.maxUs) timing.maxUs = elapsedUs;
+  portEXIT_CRITICAL(&performanceMux);
+}
+Performance performance() {
+  portENTER_CRITICAL(&performanceMux);
+  const auto result = performanceCounters;
+  portEXIT_CRITICAL(&performanceMux);
+  return result;
+}
+Span::Span(Metric metric) : metric_(metric), started_(static_cast<uint32_t>(esp_timer_get_time())) {}
+Span::~Span() { record(metric_, static_cast<uint32_t>(esp_timer_get_time()) - started_); }
+
 void outputStart(uint32_t rate, uint32_t capacityFrames) {
   const uint32_t now = static_cast<uint32_t>(esp_timer_get_time());
   const uint32_t budget = rate ? static_cast<uint32_t>(uint64_t(capacityFrames) * 1000000 / rate) : 0;

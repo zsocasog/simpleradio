@@ -1,5 +1,6 @@
 #include "atomic_file.h"
 #include "buffered_writer.h"
+#include "../diagnostics/runtime_probe.h"
 
 #include <LittleFS.h>
 
@@ -14,6 +15,8 @@ static bool readJsonFile(const String& path, JsonDocument& doc) {
   return !err;
 }
 
+static void yieldFlashWriter() { vTaskDelay(1); }
+
 bool readJsonWithBackup(const char* path, JsonDocument& doc) {
   if (!path || !path[0]) return false;
 
@@ -25,6 +28,7 @@ bool readJsonWithBackup(const char* path, JsonDocument& doc) {
 }
 
 bool writeJsonAtomic(const char* path, const JsonDocument& doc, bool pretty) {
+  SR_PERF_SPAN(AtomicWrite);
   if (!path || !path[0]) return false;
 
   String target(path);
@@ -35,8 +39,11 @@ bool writeJsonAtomic(const char* path, const JsonDocument& doc, bool pretty) {
 
   File file = LittleFS.open(temp, "w");
   if (!file) return false;
+  // Before the first write: do not retain the core's 4 KB stdio buffer in
+  // internal RAM on top of our bounded JSON writer.
+  file.setBufferSize(512);
 
-  BufferedWriter<File> writer(file);
+  BufferedWriter<File> writer(file, yieldFlashWriter);
   size_t written = pretty ? serializeJsonPretty(doc, writer) : serializeJson(doc, writer);
   bool complete = writer.flush();
   file.flush();
@@ -48,14 +55,11 @@ bool writeJsonAtomic(const char* path, const JsonDocument& doc, bool pretty) {
     return false;
   }
 
-  if (LittleFS.exists(backup)) LittleFS.remove(backup);
-  if (LittleFS.exists(target) && !LittleFS.rename(target, backup)) {
-    LittleFS.remove(temp);
-    return false;
-  }
-
+  // This helper is LittleFS-specific. Its native replace-rename is atomic,
+  // including when target already exists. Keep the old target in place until
+  // the fully synced temporary file replaces it in one metadata transaction.
+  // Moving the target to .bak first needlessly committed two extra changes.
   if (!LittleFS.rename(temp, target)) {
-    if (LittleFS.exists(backup)) LittleFS.rename(backup, target);
     LittleFS.remove(temp);
     return false;
   }

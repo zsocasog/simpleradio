@@ -15,7 +15,7 @@ function body(source, marker) {
   throw Error(marker);
 }
 function translate(code) {
-  return code.replace('char absolute[320];', 'const absolute={value:""};')
+  return code.replace(/SR_PERF_(?:SPAN|WAIT)\([^;]+;/g, '').replace('char absolute[320];', 'const absolute={value:""};')
     .replace('!*mount', '!mount.length')
     .replace(/LcdBmp::/g, 'LcdBmp.')
     .replace(/'([SR56])'/g, (_, c) => c.charCodeAt(0))

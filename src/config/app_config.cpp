@@ -6,6 +6,7 @@
 #include <esp_heap_caps.h>
 #include "hardware_capabilities.h"
 #include "../storage/atomic_file.h"
+#include "../diagnostics/runtime_probe.h"
 
 static const char* CONFIG_FILE = "/config.json";
 
@@ -192,6 +193,7 @@ void AppConfig::load() {
 }
 
 bool AppConfig::save() {
+  SR_PERF_SPAN(ConfigSave);
   const int profile = IrRemotePolicy::profileIndex(irRemoteProfile.c_str());
   captureIrRemoteCodes(profile >= 0 ? profile : 0);
   ArtworkJson::Allocator jsonAllocator;
@@ -287,6 +289,7 @@ bool AppConfig::save() {
 }
 
 String AppConfig::toJson() const {
+  SR_PERF_SPAN(ConfigJson);
   ArtworkJson::Allocator jsonAllocator;
   JsonDocument doc(&jsonAllocator);
   doc["irRemoteProfilesVersion"] = 1;

@@ -19,11 +19,11 @@ function translate(code) {
     .replace(/memcpy\(buffer_ \+ used_, data \+ accepted, count\);/g,
       "buffer_.set(data.subarray(accepted, accepted + count), used_);")
     .replace(/const size_t /g, "const ").replace(/size_t /g, "let ")
-    .replace(/\b(buffer_|used_|failed_|sink_)\b/g, "this.$1")
+    .replace(/\b(buffer_|used_|failed_|sink_|cooperate_)\b/g, "this.$1")
     .replace(/!flush\(\)/g, "!this.flush()");
 }
 const Writer = vm.runInNewContext(`(class {
-  constructor(sink) { this.sink_ = sink; this.buffer_ = new Uint8Array(512); this.used_ = 0; this.failed_ = false; }
+  constructor(sink, cooperate = null) { this.sink_ = sink; this.cooperate_ = cooperate; this.buffer_ = new Uint8Array(512); this.used_ = 0; this.failed_ = false; }
   write(data, size = data.length) ${translate(body("size_t write(const uint8_t*"))}
   flush() ${translate(body("bool flush()"))}
 })`);
@@ -53,5 +53,15 @@ test("short writes latch failure and cannot publish an incomplete settings file"
   assert.equal(calls, 1);
   const atomic = fs.readFileSync(path.join(root, "src/storage/atomic_file.cpp"), "utf8");
   assert.ok(atomic.indexOf("file.flush()") < atomic.indexOf("file.size() == written"));
-  assert.ok(atomic.indexOf("if (!complete)") < atomic.indexOf("LittleFS.rename(target, backup)"));
+  assert.ok(atomic.indexOf("if (!complete)") < atomic.indexOf("LittleFS.rename(temp, target)"));
+});
+
+test('storage cooperation happens only after successful nonempty writes, never under a sink lock',()=>{
+  let locked=false,yields=0;
+  const writer=new Writer({write:(_data,size)=>{locked=true;locked=false;return size;}},()=>{assert.equal(locked,false);yields++;});
+  writer.flush();assert.equal(yields,0);
+  writer.write(new Uint8Array(1025));assert.equal(yields,2);
+  writer.flush();assert.equal(yields,3);writer.flush();assert.equal(yields,3);
+  const failed=new Writer({write:()=>0},()=>{throw Error('must not yield after a failed write');});
+  assert.equal(failed.write(new Uint8Array(512)),0);assert.equal(failed.flush(),false);
 });

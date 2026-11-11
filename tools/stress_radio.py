@@ -63,6 +63,7 @@ class Run:
             shutil.copyfile(path,sources/name);hashes[name]=hashlib.sha256(path.read_bytes()).hexdigest()
         self.emit('manifest', seed=args.seed, base=self.base, exercise=args.exercise,
                   profile=getattr(args,'profile','extreme'),scale=getattr(args,'scale',1),runnerHashes=hashes,
+                  imageParallel=getattr(args,'image_parallel',3),
                   referenceSha256=hashlib.sha256(args.reference_file.read_bytes()).hexdigest() if getattr(args,'reference_file',None) else None,
                   sourceVersion=read_version(), note='No acoustic or browser-DOM certification')
 
@@ -97,7 +98,11 @@ class Run:
             if ok and code == 200 and image: validate_image(payload, content_type)
             self.emit('http', operation=op, requestPhase=phase, status=code, ok=ok,
                       ms=round((time.monotonic() - started) * 1000, 1), ttfbMs=round(ttfb, 1), bytes=len(payload))
-            if not ok: raise RuntimeError(f'{op}: HTTP {code}')
+            if not ok:
+                # Device API failures are plain messages, not configuration
+                # payloads. Keep a bounded reason so a 503 is diagnosable.
+                reason = payload.decode('utf-8', errors='replace')[:160] if content_type.startswith('text/plain') else ''
+                raise RuntimeError(f'{op}: HTTP {code}' + (': ' + reason if reason else ''))
             return payload
         except Exception as error:
             self.emit('failure', operation=op, detail=type(error).__name__ + ': ' + str(error))
@@ -160,6 +165,7 @@ class Run:
             sample = dict(uptimeMs=system['uptimeMs'], heapFree=system['heapFree'],
                           heapLargest=system['heapLargest'], psramFree=system['psramFree'],
                           buildId=system['buildId'], stable=stable, audio=diag.get('audio'),
+                           performance=diag.get('performance'),
                           codec=self.state.get('codec',''),
                           stationId=self.state.get('stationId'),
                           artwork=status.get('artwork', {}), savePending=system.get('settingsSavePending'),
@@ -184,7 +190,7 @@ class Run:
         cycle = 0
         while not self.stop_load:
             jobs = [self.request(f'/api/artwork/station?id={sid}', expected=(200, 404),
-                                 operation='station-image', image=True) for sid in self.rng.sample(station_ids, min(3, len(station_ids)))]
+                                 operation='station-image', image=True) for sid in self.rng.sample(station_ids, min(getattr(self.args,'image_parallel',3), len(station_ids)))]
             if cycle % 4 == 0:
                 jobs += [self.request('/api/stations'), self.request('/api/logos')]
             cover = self.state.get('albumArtworkPath', '')
@@ -202,7 +208,7 @@ class Run:
     def set_phase(self, name):
         self.phase = name
         self.emit('phase', expectsAudio=name in ('FLAC-baseline','images-and-web','settings-during-playback',
-                  'new-station-and-logo','rapid-switches','controlled-WAV','MP3-mixed-use','stop-start-recovery') or name.startswith('isolation-'))
+                  'new-station-and-logo','rapid-switches','controlled-WAV','MP3-mixed-use','stop-start-recovery') or name.startswith(('isolation-', 'save-benchmark-')))
         print(name, flush=True)
 
     async def save_config(self, fields):
@@ -258,6 +264,9 @@ class Run:
         (self.directory / 'recovery.json').write_text(json.dumps(self.backup, indent=2), encoding='utf-8')
         await self.command({'volume':0})
         self.background = [asyncio.create_task(self.monitor())]
+        if self.args.profile == 'saves':
+            await self.save_benchmark(stations, config)
+            return
         if self.args.profile == 'isolation':
             await self.isolation(stations, config)
             return
@@ -324,6 +333,22 @@ class Run:
         for i in range(3):
             await self.save_config({'brightness':max(1,config['brightness']-4-i)});await self.hold(8)
 
+    async def save_benchmark(self, stations, config):
+        flac = next((s for s in stations if 'flac' in s['url'].lower()), stations[0])
+        if self.args.fixture_url:
+            suffix = self.args.reference_file.suffix.lower() if self.args.reference_file else '.wav'
+            route = '/reference'+suffix if self.args.reference_file else '/tone.wav'
+            sid = await self.add_station('save-reference', self.args.fixture_url+route, self.args.fixture_url+'/logo.png')
+        else:
+            sid = flac['id']
+        await self.command({'station':sid, 'play':True})
+        self.set_phase('save-benchmark-baseline'); await self.hold(15)
+        self.set_phase('save-benchmark-loaded')
+        self.background.append(asyncio.create_task(self.image_load([s['id'] for s in stations])))
+        for i in range(24):
+            await self.save_config({'brightness':(config['brightness']+i+1)%255+1})
+            await self.hold(1.25)
+
     async def run(self):
         ok = False
         try:
@@ -379,7 +404,9 @@ def main():
     parser.add_argument('--exercise',action='store_true'); parser.add_argument('--mute',action='store_true')
     parser.add_argument('--scale',type=float,default=1); parser.add_argument('--seed',type=int,default=20261109)
     parser.add_argument('--observe-seconds',type=float,default=30); parser.add_argument('--expect-build')
-    parser.add_argument('--profile', choices=('extreme','isolation'),default='extreme')
+    parser.add_argument('--profile', choices=('extreme','isolation','saves'),default='extreme')
+    parser.add_argument('--image-parallel', type=int, choices=range(1,7), default=3,
+                        help='Concurrent full station-image requests (default 3; browser-pressure test 6)')
     parser.add_argument('--fixture-url', help='LAN address of this PC, e.g. http://192.168.0.10:19840')
     parser.add_argument('--serve-fixture', action='store_true')
     parser.add_argument('--reference-file',type=Path,help='Optional long local FLAC/Ogg/MP3/WAV for controlled isolation runs')

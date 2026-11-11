@@ -1,14 +1,18 @@
 #pragma once
 
 #include <ESPAsyncWebServer.h>
+#include "artwork_etag.h"
+#include "../artwork/artwork_revision.h"
 #include "../storage/read_only_file.h"
 #include "../artwork/lcd_bmp_stream.h"
+#include "../diagnostics/runtime_probe.h"
 
 // Own the descriptor directly: no shared File, stdio buffer or FILE mutex is
 // retained by slow clients. The async server owns/deletes this response.
 class StationArtworkResponse final : public AsyncAbstractResponse {
 public:
-  StationArtworkResponse(const char* mount, const char* path) : file_(mount, path) {
+  StationArtworkResponse(const char* mount, const char* path) : revisionAtOpen_(ArtworkRevision::value()), file_(mount, path),
+      pathId_(ArtworkEtag::pathId(path ? path : "")) {
     uint8_t sr[8]{};
     if (!file_ || file_.read(sr, sizeof(sr)) != sizeof(sr) ||
         sr[0] != 'S' || sr[1] != 'R' || sr[2] != '5' || sr[3] != '6') return;
@@ -24,7 +28,22 @@ public:
     valid_ = true;
   }
   bool _sourceValid() const override { return valid_; }
+  String entityTag() const {
+    const uint32_t revision = ArtworkRevision::value();
+    // A file opened across a concurrent replacement must never advertise the
+    // new revision with the old pixels. Send a normal 200 without a validator.
+    if (!valid_ || !revisionAtOpen_ || revision != revisionAtOpen_) return String();
+    const auto tag = ArtworkEtag::value(ArtworkRevision::session(), revision, pathId_, file_.size());
+    return String(tag.data());
+  }
+  void notModified() {
+    _code = 304;
+    _contentLength = 0;
+    _sendContentLength = false; // A 304 has no body; omit its length header.
+    file_.close();
+  }
   size_t _fillBuffer(uint8_t* buffer, size_t maxLen) override {
+    SR_PERF_SPAN(ImageFill);
     if (!valid_) return 0;
     const size_t count = LcdBmp::read(file_, bmp_, buffer, maxLen, offset_, _contentLength);
     offset_ += count;
@@ -35,8 +54,10 @@ public:
     return count;
   }
 private:
+  uint32_t revisionAtOpen_ = 0;
   ReadOnlyStorage::File file_;
   LcdBmp::Header bmp_{};
   size_t offset_ = 0;
+  uint64_t pathId_ = 0;
   bool valid_ = false;
 };

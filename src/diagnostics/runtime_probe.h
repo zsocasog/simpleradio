@@ -11,6 +11,19 @@
 
 namespace RuntimeProbe {
 #if SIMPLE_RADIO_RUNTIME_DIAGNOSTICS
+enum class Metric : uint8_t { ConfigSave, AtomicWrite, ConfigJson, SettingsWait, StationWork, ImageFill, MainLoop, Count };
+struct Timing { uint32_t count = 0, lastUs = 0, maxUs = 0; uint64_t totalUs = 0; };
+struct Performance { Timing timings[static_cast<size_t>(Metric::Count)]; };
+void record(Metric metric, uint32_t elapsedUs);
+Performance performance();
+class Span {
+public:
+  explicit Span(Metric metric);
+  ~Span();
+private:
+  Metric metric_;
+  uint32_t started_;
+};
 struct Snapshot {
   uint32_t epoch = 0, sampleRate = 0, dmaFrames = 0;
   bool active = false;
@@ -36,3 +49,11 @@ void decoder(uint32_t started, uint32_t acquired, uint32_t finished,
 Snapshot snapshot();
 #endif
 }
+
+#if SIMPLE_RADIO_RUNTIME_DIAGNOSTICS
+#define SR_PERF_SPAN(metric) RuntimeProbe::Span srPerfSpan(RuntimeProbe::Metric::metric)
+#define SR_PERF_WAIT(metric, ms) RuntimeProbe::record(RuntimeProbe::Metric::metric, (ms) * 1000U)
+#else
+#define SR_PERF_SPAN(metric) ((void)0)
+#define SR_PERF_WAIT(metric, ms) ((void)0)
+#endif

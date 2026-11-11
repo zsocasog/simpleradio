@@ -90,6 +90,14 @@ A dekóder külön mérésében a futásközök, a teljes hívási idő és a k�
 
 Az `--profile isolation` külön FLAC-alapmérést, csak képkéréseket, terhelés utáni megnyugvást, csak mentéseket, majd a kettő együttfutását méri. Ezzel ellenőrizhető, hogy egy vegyes próba eredménye reprodukálható-e egyetlen terhelés hozzáadásával. A mentési kérés 20 másodperces megfigyelési határideje hosszabb a készülék 15 másodperces belső várakozásánál, így a rádió saját elutasítása is megkülönböztethető a kliens időtúllépésétől.
 
+Az `--profile saves` 15 másodperces alapmérés után **24 eltérő fényerőmentést** végez párhuzamos képkérések mellett. Mindegyik válasz után visszaolvassa a valóban tárolt konfigurációt. Ugyanúgy használható hozzá a saját Ogg/FLAC-minta, mint az izolált próbához. Ez jobban megmutatja a lassú mentések előfordulását, mint három kérés mediánja.
+
+A külön mérőfirmware `/api/diagnostics` válaszának `performance` mezője külön számlálja a mentési várakozást (`settingsWait`), a konfiguráció tárolását (`configSave`), az atomi fájlírást (`atomicWrite`), a válasz JSON-jának elkészítését (`configJson`), az állomásmentő munkát (`stationWork`), a képkiszolgáló adatfeltöltéseit (`imageFill`) és a főciklusokat (`mainLoop`). A `count`, `totalUs`, `lastUs`, `maxUs` mezők indulás óta gyűlnek. Két minta különbségéből számítható az adott időablak átlaga; a `maxUs` nem szakaszonkénti maximum. Ezek faliórás idők, belső várakozásokkal együtt. A főciklus az ütemezési várakozását is tartalmazza. A normál firmware-ben ezek a mérések ki vannak kapcsolva.
+
+A képes terhelés szándékosan nem használ böngésző-gyorsítótárat: mindig teljes képet kér, és ellenőrzi annak teljességét. Az ETag/304 gyorsulását külön, feltételes lekérésekkel kell mérni; egy gyors 304-választ nem szabad teljes képátvitelként elszámolni. A némított próba nem akusztikai vizsgálat, és a változó LCD-oszlopok rajzolási terhelése sem feltétlenül azonos a hallható hangerővel végzett használatéval.
+
+A `--image-parallel 6` egyszerre hat teljes állomásképet kér az alapértelmezett három helyett, a háttérben futó állapotlekéréseken és esetleges borítókérésen felül. Ezt külön terhelési szintként kell jelenteni; a három- és hatképes próbák válaszideje közvetlenül nem azonos terhelésű összevetés.
+
 ## Eredmények és helyreállítás
 
 - `events.jsonl`: időbélyeges műveletek, válaszok, állapotminták, hibák. Már futás közben lemezre kerül.

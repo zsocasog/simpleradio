@@ -3,6 +3,7 @@
 #include "artwork_release_rank.h"
 #include "album_art_store.h"
 #include "artwork_memory_gate.h"
+#include "artwork_revision.h"
 #include "station_logo_policy.h"
 #include "lcd_image_policy.h"
 #include "artwork_title_match.h"
@@ -3513,6 +3514,7 @@ void ArtworkCache::invalidateLcdThumbnail(const String& imagePath) {
   String thumbPath = lcdThumbnailPath(localPath);
   if (!thumbPath.length() || thumbPath == localPath) return;
 
+  ArtworkRevision::changed();
   clearThumbnailReady(localPath);
   if (lastThumbnailAttemptSource == localPath) {
     lastThumbnailAttemptSource = "";
@@ -3563,6 +3565,18 @@ bool ArtworkCache::ensureLcdThumbnailPrepared(const String& imagePath, bool fill
   if (validLcdThumbnailFile(thumbPath)) {
     markThumbnailReady(imagePath, thumbPath);
     return true;
+  }
+
+  // PNG/JPEG decoders and their file buffers also need internal scratch.
+  // Serialize uncached station thumbnails with the temporary save stack,
+  // just as RAM album decoding is already serialized. Cache hits stay above
+  // this gate. Wait only in the image worker, before taking thumbnailMutex.
+  ArtworkMemory::AlbumPreparation thumbnailMemoryLease;
+  const uint32_t thumbnailMemoryWaitStarted = millis();
+  while (!thumbnailMemoryLease.tryAcquire()) {
+    if (xTaskGetCurrentTaskHandle() != artworkWorkerHandle) return false;
+    if (idlePrewarmCancellationRequested() || millis() - thumbnailMemoryWaitStarted >= 3000U) return false;
+    vTaskDelay(1);
   }
 
   bool locked = false;
@@ -3715,6 +3729,7 @@ bool ArtworkCache::ensureLcdThumbnailPrepared(const String& imagePath, bool fill
       Serial.printf("[artwork] lcd thumbnail temp open failed: %s\n", tempPath.c_str());
       return false;
     }
+    out.setBufferSize(512);
     const uint8_t header[8] = {
       'S', 'R', '5', '6',
       static_cast<uint8_t>(LCD_THUMB_SIZE & 0xFF),
@@ -3755,6 +3770,7 @@ bool ArtworkCache::ensureLcdThumbnailPrepared(const String& imagePath, bool fill
         return false;
       }
     }
+    ArtworkRevision::Publication publication;
     if (LittleFS.exists(thumbPath)) LittleFS.remove(thumbPath);
     if (!LittleFS.rename(tempPath, thumbPath)) {
       LittleFS.remove(tempPath);

@@ -14,6 +14,7 @@
 #include "input/input_controller.h"
 #include "led/status_led.h"
 #include "config/logging.h"
+#include "diagnostics/runtime_probe.h"
 
 #include <esp_system.h>
 #include <esp_heap_caps.h>
@@ -109,6 +110,7 @@ void setup() {
 }
 
 void loop() {
+ SR_PERF_SPAN(MainLoop);
  if (WifiManager::instance().mode() == WifiRunMode::STA_OK) {
     bool wifiChanged = WifiManager::instance().loop();
     audioPlayer.loop();

@@ -30,7 +30,7 @@ const Gate = new Function('Atomic', `return class {
     .replace(/\b(audioReserved|settingsSaveReserved|endBackground)\(/g, 'this.$1(')
     .replace('bool expected', 'let expected')}`).join('\n')}
 }`)(Atomic);
-const translate = source => source.replace(/port(?:ENTER|EXIT)_CRITICAL\(&settingsSaveMux\);/g, '')
+const translate = source => source.replace(/SR_PERF_(?:SPAN|WAIT)\([^;]+;/g, '').replace(/port(?:ENTER|EXIT)_CRITICAL\(&settingsSaveMux\);/g, '')
   .replace('if (auto* client = request->client()) client->close(true);','if (request->client()) request->client()->close(true);')
   .replace('SettingsSaveJob* job =', 'const job =').replace('delete job;', 'dispose(job);')
   .replace(/if \(auto request = job->request.lock\(\)\)/g, 'if (request = job.request.lock())')
