@@ -82,7 +82,7 @@ test("memory LCD rendering uses the same rounded aperture and stable render keys
   assert.match(draw, /const auto frame = AlbumArtStore::instance\(\).acquire\(m.logoPath\);/);
   assert.match(draw, /for \(int y = 0; y < ART_SIZE; y \+= 4\)/);
   assert.match(draw, /writeArtRows\(frame->pixels \+ static_cast<size_t>\(y\) \* ART_SIZE, y, min\(4, ART_SIZE - y\)\)/);
-  assert.ok(draw.indexOf("writeArtRows(frame->pixels") < draw.indexOf("LittleFS.exists"));
+  assert.ok(draw.indexOf("ArtworkCache::instance().artworkExists") > draw.indexOf("writeArtRows(frame->pixels"));
   assert.match(display, /return key.startsWith\("memory:"\)/);
   assert.match(display, /bool logoMissing = [^;]*ArtworkCache::instance\(\).artworkExists\(m.logoPath\)/);
   assert.match(read("src/display/display_presenter.cpp"), /if \(memoryAlbum\) \{\s*m.logoPath = memoryAlbum->path;\s*m.isAlbumArtwork = true;/);

@@ -65,12 +65,14 @@ public:
       return;
     }
     size_ = static_cast<size_t>(info.st_size);
+    modified_ = info.st_mtime;
   }
   ~File() { close(); }
   File(const File&) = delete;
   File& operator=(const File&) = delete;
   explicit operator bool() const { return fd_ >= 0; }
   size_t size() const { return size_; }
+  time_t modified() const { return modified_; }
   bool seek(size_t offset) {
     return fd_ >= 0 && offset <= size_ &&
            ::lseek(fd_, static_cast<off_t>(offset), SEEK_SET) == static_cast<off_t>(offset);
@@ -93,5 +95,6 @@ public:
 private:
   int fd_ = -1;
   size_t size_ = 0;
+  time_t modified_ = 0;
 };
 } // namespace ReadOnlyStorage

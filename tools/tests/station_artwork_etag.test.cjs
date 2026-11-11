@@ -52,7 +52,7 @@ test('actual thumbnail commits, upload invalidation and boot initialize the revi
   const publication=commit.indexOf('ArtworkRevision::Publication publication;');
   assert.ok(publication>=0&&publication<rename);
   assert.match(source,/revisionAtOpen_\(ArtworkRevision::value\(\)\), file_\(mount, path\)/);
-  assert.match(body('void ArtworkCache::invalidateLcdThumbnail(',cache),/ArtworkRevision::changed\(\);/);
+  assert.match(body('void ArtworkCache::invalidateLcdThumbnail(',cache),/ArtworkRevision::Publication publication;/);
   const web=fs.readFileSync(path.join(root,'src/web/web_server.cpp'),'utf8');
   assert.match(body('static bool commitLogoUpload(',web),/invalidateLcdThumbnail\(targetPath\)/);
   const begin=body('void webServerBegin(',web);

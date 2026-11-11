@@ -28,11 +28,12 @@ test("remaining file-backed images preflight source plus LCD pixels before writi
   assert.match(download, /ensureLcdThumbnailPrepared\(path, fillFrame, cacheBudgetReserved\)/);
 });
 
-test("only the private download path can skip the two redundant LCD checks", () => {
+test("only the private download path can skip disk budget checks, including RAM admission fallback", () => {
   const wrapper = section("bool ArtworkCache::ensureLcdThumbnail(", "bool ArtworkCache::ensureLcdThumbnailPrepared(");
   assert.match(wrapper, /ensureLcdThumbnailPrepared\(imagePath, fillFrame, false\)/);
-  assert.equal((lcd.match(/enforceCacheBudget\(/g) || []).length, 2);
-  assert.match(lcd, /if \(!cacheBudgetReserved\) \{\s*ArtworkPhaseTrace phase\("lcd-cache-reserve", fillFrame\);\s*enforceCacheBudget\(LCD_THUMB_BYTES, imagePath\);/);
+  assert.equal((lcd.match(/enforceCacheBudget\(/g) || []).length, 3);
+  assert.match(lcd, /if \(!cacheBudgetReserved && !preferRam\) \{\s*ArtworkPhaseTrace phase\("lcd-cache-reserve", fillFrame\);\s*enforceCacheBudget\(LCD_THUMB_BYTES, imagePath\);/);
+  assert.match(lcd, /if \(!cacheBudgetReserved\) enforceCacheBudget\(LCD_THUMB_BYTES, imagePath\);/);
   assert.match(lcd, /if \(!cacheBudgetReserved\) \{\s*ArtworkPhaseTrace phase\("lcd-cache-final", fillFrame\);\s*enforceCacheBudget\(0, thumbPath\);/);
   const header = read("src/artwork/artwork_cache.h");
   assert.ok(header.indexOf("private:") < header.indexOf("bool ensureLcdThumbnailPrepared("));

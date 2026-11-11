@@ -102,6 +102,12 @@ A `--force-lcd-images` ugyanazokat a logókat kifejezetten az LCD/BMP tartalék 
 
 A `--profile cold-logos --serve-fixture --fixture-url http://A-GEP-IP-CIME:19840` hat egymást követő új állomásmentést, PNG-feltöltést, hozzárendelést és törlést végez FLAC-lejátszás és képkérések mellett. A logócímek futásonként és iterációnként eltérnek. A teljes profil új állomásának logója is futásonként új címet kap, így nem használja véletlenül az előző mérés elkészült LCD-képét. A saját állomásokat a szokásos helyreállítás kezeli; a felhasználó gyorsítótárát a teszt továbbra sem törli.
 
+A hideglogó-próba is elfogadja a `--reference-file` kapcsolót. Ilyenkor egy saját ideiglenes állomáson ugyanaz a helyi hangminta szól minden összevetésben. A `--logo-save-mode browser` a böngésző normál mentési sorrendjét követi: a kezdeti távoli logóhoz nem indít ESP-s előkészítést, csak a PNG feltöltése és hozzárendelése után. Az alapértelmezett `overlap` szándékosan egymásra engedi a távoli előkészítést és a feltöltést; ez külön, erősebb terhelési eset. A mintakép nem a böngésző vásznával készül, ezért ez a sorrend ellenőrzése, nem teljes böngészőteszt.
+
+A `--profile switches` helyi referenciát és LAN-kiszolgálót igényel. Két saját, eltérő URL-ű állomáson ugyanazt a hanganyagot adja, majd háromszor hat gyors váltás után a stabil lejátszást méri. Új logót és albumborító-keresést nem indít; a meglévő állomások képeit közben tovább kéri. Ezzel a váltás utáni késés elkülöníthető az új képek előkészítésétől. Az öt másodperces vezérlési türelmi idő miatt ez nem méri a kattintástól az első hangmintáig eltelt időt.
+
+A mérőfirmware `httpTaskPriority` és `httpTaskCore` mezői a diagnosztikai kérést kiszolgáló feladat pillanatnyi prioritását és processzormagját mutatják. A prioritás öröklés miatt átmenetileg eltérhet az alapbeállítástól. A normál firmware ezeket sem szolgálja ki.
+
 ## Eredmények és helyreállítás
 
 - `events.jsonl`: időbélyeges műveletek, válaszok, állapotminták, hibák. Már futás közben lemezre kerül.

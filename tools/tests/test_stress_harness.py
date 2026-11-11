@@ -10,6 +10,7 @@ import tempfile
 import threading
 import unittest
 from types import SimpleNamespace
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT/'tools'))
@@ -88,6 +89,57 @@ class SafetyTests(unittest.TestCase):
         with self.assertRaises(ValueError):validate_image(png()[:-2],'image/png')
 
 class ColdLogoTests(unittest.IsolatedAsyncioTestCase):
+    async def test_browser_save_uses_local_reference_without_remote_prewarm_overlap(self):
+        run=object.__new__(Run)
+        run.args=SimpleNamespace(fixture_url='http://192.0.2.1:19840',
+            reference_file=Path('reference.ogg'),logo_save_mode='browser')
+        run.prefix='SR-test-browser-';run.background=[]
+        created=[];deleted=[];bound=[];commands=[]
+        async def command(fields):commands.append(fields)
+        async def hold(_):pass
+        async def image_load(_):pass
+        async def add(suffix,url,logo,prepare_logo=True):
+            sid=100+len(created);created.append((sid,url,prepare_logo));return sid
+        async def request(path,fields=None,**kwargs):
+            if path.startswith('/api/logo/upload?'):return b'{"path":"/logos/own.png"}'
+            if path=='/api/station/delete':deleted.append(fields['id'])
+            if path=='/api/station/save':bound.append(fields)
+            return b'{}'
+        run.command=command;run.hold=hold;run.image_load=image_load
+        run.add_station=add;run.request=request;run.set_phase=lambda _:None
+        run.emit=lambda *_,**__:None
+        await run.cold_logos([dict(id=2,url='http://station/live.flac')])
+        await asyncio.gather(*run.background)
+        self.assertEqual(commands,[{'station':100,'play':True}])
+        self.assertTrue(all(url=='http://192.0.2.1:19840/reference.ogg' for _,url,_ in created))
+        self.assertTrue(created[0][2])
+        self.assertTrue(all(not prepare for _,_,prepare in created[1:]))
+        self.assertEqual(deleted,[sid for sid,_,_ in created[1:]])
+        self.assertTrue(all(fields['prepareLogo']==1 and fields['logo']=='/logos/own.png' for fields in bound))
+
+    async def test_switch_measurement_uses_distinct_owned_streams_without_new_images(self):
+        run=object.__new__(Run)
+        run.args=SimpleNamespace(fixture_url='http://192.0.2.1:19840',reference_file=Path('reference.ogg'))
+        run.prefix='SR-test-switch-';run.background=[];run.state={'stationId':101}
+        created=[];commands=[];waited=[]
+        async def add(suffix,url,logo=''):
+            sid=100+len(created);created.append((sid,url,logo));return sid
+        async def command(fields,wait=True):commands.append((fields,wait))
+        async def hold(_):pass
+        async def image_load(_):pass
+        async def wait_state(predicate):waited.append(predicate())
+        run.add_station=add;run.command=command;run.hold=hold;run.image_load=image_load
+        run.wait_state=wait_state;run.set_phase=lambda _:None;run.emit=lambda *_,**__:None
+        with patch('stress_radio.asyncio.sleep',new=hold):
+            await run.controlled_switches([dict(id=2,url='http://station/live.flac')])
+        await asyncio.gather(*run.background)
+        self.assertEqual(len(created),2)
+        self.assertNotEqual(created[0][1],created[1][1])
+        self.assertTrue(all('run=SR-test-switch-' in url and not logo for _,url,logo in created))
+        self.assertEqual([c['station'] for c,_ in commands[1:]],[100,101]*9)
+        self.assertTrue(all(not wait for _,wait in commands[1:]))
+        self.assertEqual(waited,[True]*3)
+
     async def test_cold_run_bounds_mutations_and_never_reuses_a_logo_url(self):
         run=object.__new__(Run)
         run.args=SimpleNamespace(fixture_url='http://192.0.2.1:19840')
@@ -96,7 +148,7 @@ class ColdLogoTests(unittest.IsolatedAsyncioTestCase):
         async def command(fields):commands.append(fields)
         async def hold(_):pass
         async def image_load(ids):images.extend(ids)
-        async def add(suffix,url,logo):
+        async def add(suffix,url,logo,prepare_logo=True):
             sid=100+len(created);created.append((sid,url,logo));return sid
         async def request(path,fields=None,**kwargs):
             if path.startswith('/api/logo/upload?'):return b'{"path":"/logos/own.png"}'

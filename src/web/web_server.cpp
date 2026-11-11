@@ -2083,6 +2083,13 @@ void webServerBegin() {
     doc["schema"] = 1; doc["uptimeMs"] = millis();
     doc["heapFree"] = ESP.getFreeHeap(); doc["heapLargest"] = ESP.getMaxAllocHeap();
     doc["psramFree"] = ESP.getFreePsram();
+    doc["httpTaskPriority"] = uxTaskPriorityGet(nullptr);
+    doc["httpTaskCore"] = xPortGetCoreID();
+    const auto lcdRam = LcdThumbnailRam::stats();
+    doc["lcdThumbnailRam"]["slots"] = lcdRam.slots;
+    doc["lcdThumbnailRam"]["bytes"] = lcdRam.bytes;
+    doc["lcdThumbnailRam"]["readers"] = lcdRam.readers;
+    doc["lcdThumbnailRam"]["published"] = lcdRam.published;
     for (bool previous : {false, true}) {
       const auto failures = RuntimeProbe::allocationFailures(previous);
       JsonArray rows = doc[previous ? "previousAllocationFailures" : "allocationFailures"].to<JsonArray>();

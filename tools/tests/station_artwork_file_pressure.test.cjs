@@ -25,7 +25,7 @@ function translate(code) {
     .replace(/sizeof\(out\)/g, '320').replace(/sizeof\(sr\)/g, '8')
     .replace(/::(open|close|read|lseek|stat|fstat)\(/g, 'io.$1(')
     .replace(/&info/g, 'info').replace(/\bout \+ done/g, 'out.subarray(done)')
-    .replace(/\b(fd_|size_)\b/g, 'this.$1').replace(/(?<![.\w])close\(\)/g, 'this.close()')
+    .replace(/\b(fd_|size_|modified_)\b/g, 'this.$1').replace(/(?<![.\w])close\(\)/g, 'this.close()')
     .replace(/\berrno\b/g, 'io.errno');
 }
 const fullPath = new Function('snprintf', `return function(out,mount,path) ${translate(body(storage, 'bool fullPath('))}`)(
@@ -117,7 +117,7 @@ test('metadata probes need no descriptor, and exhaustion/missing files fail with
 test('the crashing production thumbnail validator handles pressure, missing and damaged files',()=>{
   const cache=read('src/artwork/artwork_cache.cpp');
   const validator=translate(body(cache,'static bool validLcdThumbnailFile(const String& path) {'))
-    .replace('ReadOnlyStorage::File file(LittleFS.mountpoint(), path.c_str());','const file=new File("/littlefs",path);')
+    .replace('LcdThumbnailRam::File file(LittleFS.mountpoint(), path.c_str());','const file=new File("/littlefs",path);')
     .replace('if (!file)', 'if (!file.valid())').replace('uint8_t header[8] = {0};','const header=new Uint8Array(8);')
     .replace(/sizeof\(header\)/g,'8').replace('bool ok =','const ok =')
     .replace(/header \+ (4|6)/g,'header.subarray($1)');

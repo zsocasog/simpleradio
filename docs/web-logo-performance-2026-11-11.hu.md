@@ -77,3 +77,5 @@ A teljes végső körben 11 nyers hangutánpótlási figyelmeztetés maradt. A k
 A normál firmware és az új adatcsomag ellenőrzésekor az eredeti hat állomás, a teljes konfiguráció és mindkét eredeti feltöltött logó bájtra pontosan megmaradt. A kibontott webes fájlok megegyeztek a forrással. A mérési végpont a normál firmware-ben hiányzik. Az azonos fájlnevű logó lecserélésének külön készülékes próbája is sikerült. A kódellenőrzések: 560 sikeres Node-teszt és 56 sikeres Python/C++-ellenőrzés; a firmware és a LittleFS build is sikeres.
 
 A mérés részletes nyers anyagai a helyi, verziókezelésből kizárt `.pio/web-offload-*` könyvtárakban vannak; személyes állomás- és konfigurációmentéseket nem publikálunk.
+
+A megmaradt lejátszás közbeni LCD-logóírás vizsgálatának és a korlátos PSRAM-képtárnak külön [mérési jegyzete](lcd-logo-memory-performance-2026-11-11.hu.md) készült. Ez az itt közölt korábbi kontrolleredmények folytatása.

@@ -2,6 +2,7 @@
 #include "picker_logo_mailbox.h"
 #include "picker_logo_math.h"
 #include "artwork_cache.h"
+#include "lcd_thumbnail_ram.h"
 
 #include <LittleFS.h>
 #include <esp_heap_caps.h>
@@ -38,7 +39,7 @@ void load(Job& job) {
   // Reuse prepared local station pixels only: this never starts a download,
   // changes PlayerState, searches for an album, or rewrites a cache file.
   if (!ArtworkCache::instance().findExistingLcdArtworkPath(job.source, path) || !path.length()) return;
-  File file = LittleFS.open(path, "r");
+  LcdThumbnailRam::File file(LittleFS.mountpoint(), path.c_str());
   if (!file) return;
   const time_t modified = file.getLastWrite();
   if (job.knownReady && path == job.knownPath && modified == job.knownModified) return;

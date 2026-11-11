@@ -5,6 +5,7 @@
 #include "artwork_memory_gate.h"
 #include "artwork_revision.h"
 #include "web_image.h"
+#include "lcd_thumbnail_ram.h"
 #include "station_logo_policy.h"
 #include "lcd_image_policy.h"
 #include "artwork_title_match.h"
@@ -1044,14 +1045,22 @@ void ArtworkCache::processPendingBrowserImport() {
 bool ArtworkCache::thumbnailKnownReady(const String& imagePath, const String& thumbPath) const {
   return imagePath.length() &&
          thumbPath.length() &&
-         readyThumbnailSource == imagePath &&
-         readyThumbnailPath == thumbPath;
+         (LcdThumbnailRam::contains(thumbPath.c_str()) ||
+          (readyThumbnailSource == imagePath && readyThumbnailPath == thumbPath));
 }
 
 void ArtworkCache::markThumbnailReady(const String& imagePath, const String& thumbPath) {
   if (!imagePath.length() || !thumbPath.length()) return;
-  readyThumbnailSource = imagePath;
-  readyThumbnailPath = thumbPath;
+  // A RAM entry can be evicted. Never leave an unconditional ready shortcut
+  // pointing at pixels which only lived in that bounded pool.
+  if (LcdThumbnailRam::contains(thumbPath.c_str())) {
+    if (readyThumbnailSource == imagePath) {
+      readyThumbnailSource = ""; readyThumbnailPath = "";
+    }
+  } else {
+    readyThumbnailSource = imagePath;
+    readyThumbnailPath = thumbPath;
+  }
   if (lastThumbnailAttemptSource == imagePath ||
       lastThumbnailAttemptSource == imagePath + ":fill") {
     lastThumbnailAttemptSource = "";
@@ -1310,6 +1319,13 @@ void ArtworkCache::runDownloadJob(ArtworkDownloadJob* job) {
     if (cancelled) {
       // A selected station/audio connection may interrupt another queued logo.
       // Keep that request for later; cancellation is not a missing-image failure.
+      if (kind == ArtworkJobKind::Thumbnail) {
+        const String cancelledAttempt = url + (fillFrame ? ":fill" : "");
+        if (cache->lastThumbnailAttemptSource == cancelledAttempt) {
+          cache->lastThumbnailAttemptSource = "";
+          cache->lastThumbnailAttemptMs = 0;
+        }
+      }
       if (url.length()) cache->queuePrewarmItem(url, false);
       Serial.println("[artwork] idle prewarm cancelled");
     } else if (ok) {
@@ -2705,7 +2721,7 @@ String ArtworkCache::cachePath(const String& url, const String& extension) const
 }
 
 static bool artworkFileExists(const String& path) {
-  return ReadOnlyStorage::exists(LittleFS.mountpoint(), path.c_str());
+  return LcdThumbnailRam::contains(path.c_str()) || ReadOnlyStorage::exists(LittleFS.mountpoint(), path.c_str());
 }
 
 bool ArtworkCache::findExistingCachePath(const String& url, String& outPath) const {
@@ -2818,6 +2834,13 @@ bool ArtworkCache::compactRemoteArtwork(const String& source, const String& imag
   String expectedStem = cachePath(source, "");
   if (cacheFamilyStemForPath(thumbPath) != expectedStem || !validLcdThumbnailFile(thumbPath)) {
     return false;
+  }
+
+  // RAM pixels are disposable. Keep their source on disk for eviction/reboot.
+  if (LcdThumbnailRam::contains(thumbPath.c_str())) {
+    outPath = thumbPath;
+    markThumbnailReady(thumbPath, thumbPath);
+    return true;
   }
 
   size_t removedBytes = 0;
@@ -2960,7 +2983,7 @@ bool ArtworkCache::artworkSourceReady(const String& source) const {
     item = preferredLocalArtworkPath(item);
   }
 
-  if (!supportedArtworkFile(item) || !LittleFS.exists(item)) return false;
+  if (!supportedArtworkFile(item) || !artworkFileExists(item)) return false;
 
   String lower = item;
   lower.toLowerCase();
@@ -3467,7 +3490,7 @@ static uint16_t rgb565(uint8_t r, uint8_t g, uint8_t b) {
 }
 
 static bool validLcdThumbnailFile(const String& path) {
-  ReadOnlyStorage::File file(LittleFS.mountpoint(), path.c_str());
+  LcdThumbnailRam::File file(LittleFS.mountpoint(), path.c_str());
   if (!file) return false;
   if (file.size() != LCD_THUMB_BYTES) {
     file.close();
@@ -3506,7 +3529,9 @@ void ArtworkCache::invalidateLcdThumbnail(const String& imagePath) {
   String thumbPath = lcdThumbnailPath(localPath);
   if (!thumbPath.length() || thumbPath == localPath) return;
 
-  ArtworkRevision::changed();
+  ArtworkRevision::Publication publication;
+  LcdThumbnailRam::retire(thumbPath.c_str());
+  LcdThumbnailRam::retire(lcdThumbnailPath(localPath, true).c_str());
   clearThumbnailReady(localPath);
   if (lastThumbnailAttemptSource == localPath) {
     lastThumbnailAttemptSource = "";
@@ -3646,7 +3671,8 @@ bool ArtworkCache::ensureLcdThumbnailPrepared(const String& imagePath, bool fill
     return false;
   }
 
-  if (!cacheBudgetReserved) {
+  const bool preferRam = PlayerState::instance().snapshot().playing;
+  if (!cacheBudgetReserved && !preferRam) {
     ArtworkPhaseTrace phase("lcd-cache-reserve", fillFrame);
     enforceCacheBudget(LCD_THUMB_BYTES, imagePath);
   }
@@ -3707,6 +3733,34 @@ bool ArtworkCache::ensureLcdThumbnailPrepared(const String& imagePath, bool fill
     thumb.deleteSprite();
     unlock();
     return false;
+  }
+
+  // Playback can start while the decoder is preparing an idle logo.
+  if (preferRam || PlayerState::instance().snapshot().playing) {
+    bool sourceCurrent = true;
+    if (guardSourceChanges) {
+      uint64_t currentFingerprint = 0;
+      sourceCurrent = artworkFileFingerprint(imagePath, currentFingerprint) && currentFingerprint == sourceFingerprint;
+    }
+    if (!sourceCurrent) { thumb.deleteSprite(); unlock(); return false; }
+    bool published = false;
+    {
+      // Evicting a RAM entry must not remove an oversized/unsupported
+      // original's only browser representation: retain its disk BMP fallback.
+      ReadOnlyStorage::File webSource(LittleFS.mountpoint(), imagePath.c_str());
+      if (WebArtwork::inspect(webSource) != WebArtwork::Format::None) {
+        ArtworkRevision::Publication publication;
+        published = LcdThumbnailRam::publish(thumbPath.c_str(),
+            static_cast<const uint8_t*>(thumb.getBuffer()), LCD_THUMB_SIZE);
+      }
+    }
+    if (published) {
+      thumb.deleteSprite(); markThumbnailReady(imagePath, thumbPath); unlock();
+      artworkTraceSerial.printf("[artwork] LCD station logo ready in PSRAM: %s\n", thumbPath.c_str());
+      return true;
+    }
+    // All slots leased, or PSRAM low: retain the existing disk-cache fallback.
+    if (!cacheBudgetReserved) enforceCacheBudget(LCD_THUMB_BYTES, imagePath);
   }
 
   String tempPath = thumbPath + ".tmp";
@@ -3930,7 +3984,7 @@ bool ArtworkCache::lcdThumbnailReady(const String& imagePath, bool fillFrame) {
 
 bool ArtworkCache::artworkExists(const String& imagePath) const {
   if (AlbumArtStore::isPath(imagePath)) return static_cast<bool>(AlbumArtStore::instance().acquire(imagePath));
-  return imagePath.length() && LittleFS.exists(imagePath);
+  return imagePath.length() && artworkFileExists(imagePath);
 }
 
 bool ArtworkCache::stationArtworkReady(int stationId, String* outPath) const {
@@ -4268,6 +4322,8 @@ bool ArtworkCache::refreshArtworkIfThumbnailReady(const String& imagePath, const
   }
 
   String refreshKey = imagePath + (fillFrame ? ":fill" : "");
+  const auto ram = LcdThumbnailRam::acquire(thumbPath.c_str());
+  if (ram) refreshKey += ":" + String(static_cast<long>(ram.modified()));
   if (lastArtworkRefreshPath != refreshKey) {
     lastArtworkRefreshPath = refreshKey;
     artworkTraceSerial.printf("[artwork] lcd thumbnail ready, refreshing display: %s\n", imagePath.c_str());

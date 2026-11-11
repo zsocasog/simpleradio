@@ -5,6 +5,7 @@
 #include "../artwork/artwork_revision.h"
 #include "../storage/read_only_file.h"
 #include "../artwork/lcd_bmp_stream.h"
+#include "../artwork/lcd_thumbnail_ram.h"
 #include "../diagnostics/runtime_probe.h"
 
 // Own the descriptor directly: no shared File, stdio buffer or FILE mutex is
@@ -55,7 +56,7 @@ public:
   }
 private:
   uint32_t revisionAtOpen_ = 0;
-  ReadOnlyStorage::File file_;
+  LcdThumbnailRam::File file_;
   LcdBmp::Header bmp_{};
   size_t offset_ = 0;
   uint64_t pathId_ = 0;

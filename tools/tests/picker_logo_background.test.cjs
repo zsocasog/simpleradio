@@ -25,7 +25,7 @@ const load = body(loader, 'void load(Job& job)')
   .replace('ArtworkCache::instance().findExistingLcdArtworkPath(job.source, path)',
     'resolve(job.source, value => path = value)')
   .replace(/path.length\(\)/g, 'path.length')
-  .replace('File file', 'const file')
+  .replace('LcdThumbnailRam::File file(LittleFS.mountpoint(), path.c_str());', 'const file = LittleFS.open(path, "r");')
   .replace(/const (?:time_t|size_t) /g, 'const ')
   .replace('uint8_t header[8];', 'const header = new Uint8Array(8);')
   .replace(/sizeof\(header\)/g, 'header.length')

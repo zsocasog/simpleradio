@@ -6,6 +6,7 @@
 #include "../audio/spectrum_dynamics.h"
 #include "../artwork/artwork_cache.h"
 #include "../artwork/album_art_store.h"
+#include "../artwork/lcd_thumbnail_ram.h"
 #include "../artwork/picker_logo_loader.h"
 #include "../config/app_config.h"
 #include "../config/hardware_config.h"
@@ -1035,7 +1036,7 @@ static void maskArtCorners() {
 }
 
 static bool drawLcdThumbnail(const String& path) {
-  File file = LittleFS.open(path, "r");
+  LcdThumbnailRam::File file(LittleFS.mountpoint(), path.c_str());
   if (!file) return false;
 
   uint8_t header[8] = {0};
@@ -1128,7 +1129,7 @@ static void drawArt(const DisplayModel& m) {
     return;
   }
 
-  if (!m.logoPath.length() || !LittleFS.exists(m.logoPath)) {
+  if (!m.logoPath.length() || !ArtworkCache::instance().artworkExists(m.logoPath)) {
     if (m.logoPath.length()) {
       Serial.printf("[display] logo missing: %s\n", m.logoPath.c_str());
     }
@@ -1144,7 +1145,7 @@ static void drawArt(const DisplayModel& m) {
 
   String thumbPath = ArtworkCache::instance().lcdThumbnailPath(m.logoPath, m.isAlbumArtwork);
   if (thumbPath.length()) {
-    if (LittleFS.exists(thumbPath) && drawLcdThumbnail(thumbPath)) {
+    if (drawLcdThumbnail(thumbPath)) {
       return;
     }
     if (m.playing) {
@@ -1152,7 +1153,7 @@ static void drawArt(const DisplayModel& m) {
       return;
     }
     ArtworkCache::instance().ensureLcdThumbnail(m.logoPath, m.isAlbumArtwork);
-    if (LittleFS.exists(thumbPath) && drawLcdThumbnail(thumbPath)) {
+    if (drawLcdThumbnail(thumbPath)) {
       return;
     }
   }
@@ -1220,11 +1221,13 @@ String Display::artRenderKeyFor(const DisplayModel& m) const {
     return AlbumArtStore::instance().acquire(m.logoPath)
         ? String("memory:") + m.logoPath : String("placeholder:") + m.station;
   }
+  String thumbPath = ArtworkCache::instance().lcdThumbnailPath(m.logoPath, m.isAlbumArtwork);
+  const auto ram = LcdThumbnailRam::acquire(thumbPath.c_str());
+  if (ram) return String("ram-thumb:") + thumbPath + ":" + String(static_cast<long>(ram.modified()));
   if (!m.logoPath.length() || !LittleFS.exists(m.logoPath)) {
     return String("placeholder:") + m.station;
   }
 
-  String thumbPath = ArtworkCache::instance().lcdThumbnailPath(m.logoPath, m.isAlbumArtwork);
   if (thumbPath.length() && LittleFS.exists(thumbPath)) {
     return String("thumb:") + thumbPath;
   }
@@ -1245,7 +1248,7 @@ void Display::drawArtIfNeeded(const DisplayModel& m, bool force) {
 }
 
 static bool readyArtKey(const String& key) {
-  return key.startsWith("memory:") || key.startsWith("thumb:") || key.startsWith("source:");
+  return key.startsWith("memory:") || key.startsWith("ram-thumb:") || key.startsWith("thumb:") || key.startsWith("source:");
 }
 
 static void drawVolumeFooter(const DisplayModel& m);

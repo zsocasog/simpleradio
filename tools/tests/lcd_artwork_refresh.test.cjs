@@ -19,6 +19,8 @@ function body(source, marker) {
 }
 function js(source) {
   return source.replace(/auto finishRender = \[\]\(bool\) \{\};/, 'const finishRender = () => {};')
+    .replace(/const auto ram =/g,'const ram =').replace(/LcdThumbnailRam::/g,'LcdThumbnailRam.')
+    .replace('static_cast<long>(ram.modified())','ram.modified()')
     .replace(/const DisplayModel& /g, 'const ')
     .replace(/\b(?:const )?(?:DisplayFooterMode|DisplayModel|String|bool|int|uint8_t|uint32_t) /g, 'let ')
     .replace(/static_cast<uint8_t>\(([^)]+)\)/g, 'Number($1)')
@@ -36,7 +38,7 @@ function model(fields = {}) {
   };
 }
 function harness() {
-  const draws = [], files = new Set(), valid = new Set(), ready = new Set();
+  const draws = [], files = new Set(), valid = new Set(), ready = new Set(), ram = new Map();
   const thumb = (image, fill = false) => image.startsWith('/api/artwork/album?')
     ? image : `${image}${fill ? '_fill' : ''}.sr565`;
   const c = vm.createContext({ model, now: 1000, millis: () => c.now,
@@ -57,6 +59,7 @@ function harness() {
     drawPlayerSurface() {}, drawInfoRegion() {}, drawFooterRegion() {},
     drawArt: m => draws.push({ path: m.logoPath, key: c.artRenderKeyFor(m) }),
     LittleFS: { exists: image => files.has(image) },
+    LcdThumbnailRam: {acquire: image => ram.has(image) ? {modified:()=>ram.get(image)} : false},
     lcdThumbnailPath: thumb,
     stateUsesArtworkPath: (_state, image) => image === c.selectedModel.logoPath,
     thumbnailKnownReady: (_image, imageThumb) => ready.has(imageThumb),
@@ -85,7 +88,7 @@ function harness() {
     .replace(/DisplayPresenter::/g, 'DisplayPresenter.').replace(/PlayerState::/g, 'PlayerState.');
   vm.runInContext('function completed(imagePath, state, fillFrame = false) '+js(completion), c);
   files.add(c.lastModel.logoPath);
-  return { c, draws, files, valid, ready, thumb,
+  return { c, draws, files, valid, ready, thumb,ram,
     prepare(image = c.selectedModel.logoPath, fill = false) {
       files.add(image); files.add(thumb(image, fill)); valid.add(thumb(image, fill));
     },
@@ -98,6 +101,15 @@ test('a local logo becoming ready in album mode redraws even without metadata or
   const h = harness(); h.prepare(); assert.equal(h.complete(), true); h.service();
   assert.deepEqual(h.draws, [{ path: h.c.lastModel.logoPath, key: `thumb:${h.thumb(h.c.lastModel.logoPath)}` }]);
   assert.equal(h.c.lastModel.artist, ''); assert.equal(h.c.lastModel.title, '');
+});
+
+test('RAM-only station pixels refresh without a disk thumbnail and same-path replacement changes the render key',()=>{
+  const h=harness(),image=h.c.selectedModel.logoPath,t=h.thumb(image);
+  h.valid.add(t);h.ram.set(t,-1);h.complete();h.service();
+  assert.equal(h.draws.length,1);assert.equal(h.draws[0].key,`ram-thumb:${t}:-1`);
+  assert.equal(h.files.has(t),false);
+  h.ram.set(t,-2);h.complete();h.service();
+  assert.equal(h.draws.length,2);assert.equal(h.draws[1].key,`ram-thumb:${t}:-2`);
 });
 
 test('the same completion mechanism still refreshes station-logo mode', () => {

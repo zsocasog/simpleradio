@@ -86,9 +86,19 @@ test('playback logo downloads share a total deadline, and interrupted requests r
   assert.match(worker, /cache->download\(url, path, deadlineMs, allowSecureFallback\)/);
   const cancelled = body(worker, 'if (cancelled)');
   const queued = [];
-  const cancel = new Function('url', 'cache', 'Serial', cancelled
-    .replace('url.length()', 'url.length').replace('cache->', 'cache.'));
-  cancel('https://new.example/logo.png', { queuePrewarmItem: (...args) => queued.push(args) }, { println() {} });
+  const cancel = new Function('url', 'cache', 'Serial','kind','fillFrame','ArtworkJobKind', cancelled
+    .replace('url.length()', 'url.length').replace(/cache->/g, 'cache.')
+    .replace('const String cancelledAttempt','const cancelledAttempt').replace('ArtworkJobKind::Thumbnail','ArtworkJobKind.Thumbnail'));
+  cancel('https://new.example/logo.png', { queuePrewarmItem: (...args) => queued.push(args) }, { println() {} },'Download',false,{Thumbnail:'Thumbnail'});
   assert.deepEqual(queued, [['https://new.example/logo.png', false]]);
   assert.doesNotMatch(cancelled, /storeDownloadResult|notePrewarmFailure/);
+  for(const fill of [false,true]) {
+    const path='/logos/uploaded.png',marker=path+(fill?':fill':'');
+    const state={lastThumbnailAttemptSource:marker,lastThumbnailAttemptMs:2000,queuePrewarmItem(){}};
+    cancel(path,state,{println(){}},'Thumbnail',fill,{Thumbnail:'Thumbnail'});
+    assert.equal(state.lastThumbnailAttemptSource,'');assert.equal(state.lastThumbnailAttemptMs,0);
+    state.lastThumbnailAttemptSource='/logos/another.png';state.lastThumbnailAttemptMs=3000;
+    cancel(path,state,{println(){}},'Thumbnail',fill,{Thumbnail:'Thumbnail'});
+    assert.equal(state.lastThumbnailAttemptSource,'/logos/another.png');assert.equal(state.lastThumbnailAttemptMs,3000);
+  }
 });

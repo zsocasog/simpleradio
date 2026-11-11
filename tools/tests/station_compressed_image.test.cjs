@@ -81,15 +81,17 @@ test('compaction retains only the matching small original and leaves all source 
   .replace('if (!original) continue;','if (!original.valid()) continue;')
   .replace('const size_t originalBytes','const originalBytes').replace('const bool keepWebImage','const keepWebImage')
   .replace('ArtworkRevision::Publication publication;','')
+  .replace('LcdThumbnailRam::contains(thumbPath.c_str())','ramReady')
   .replace(/WebArtwork::Format::None/g,'"None"').replace(/WebArtwork::inspect/g,'inspect')
   .replace(/\.c_str\(\)/g,'').replace('static_cast<unsigned>(removedBytes)','removedBytes');
  const files=new Map(),fs={remove:p=>files.delete(p)},base='/cache/art_example';let lcdReady=true;
  const original=png(),stale=jpeg();
- const run=new Function('source','imagePath','fillFrame','LittleFS','open','inspect','lcdThumbnailPath','cachePath','cacheFamilyStemForPath','validLcdThumbnailFile','isRemoteArtworkSource','markThumbnailReady','Serial',
+ const run=new Function('source','imagePath','fillFrame','LittleFS','open','inspect','lcdThumbnailPath','cachePath','cacheFamilyStemForPath','validLcdThumbnailFile','isRemoteArtworkSource','markThumbnailReady','Serial','ramReady',
   'let outPath="";const result=(()=>'+code+')();return {result,outPath};');
- const invoke=()=>run('https://source',base+'.png',false,fs,p=>file(files.get(p)||Buffer.alloc(0),{available:files.has(p)}),f=>inspect(f,32768),()=>base+'_176.sr565',(_s,ext)=>base+ext,()=>base,()=>lcdReady,()=>true,()=>{}, {printf(){}});
+ const invoke=(ramReady=false)=>run('https://source',base+'.png',false,fs,p=>file(files.get(p)||Buffer.alloc(0),{available:files.has(p)}),f=>inspect(f,32768),()=>base+'_176.sr565',(_s,ext)=>base+ext,()=>base,()=>lcdReady,()=>true,()=>{}, {printf(){}},ramReady);
  files.set(base+'.png',original);files.set(base+'.jpg',stale);files.set(base+'.bmp',Buffer.from('uncompressed bitmap'));
  lcdReady=false;assert.equal(invoke().result,false);assert.equal(files.size,3);
  lcdReady=true;assert.equal(invoke().result,true);assert.deepEqual([...files.keys()],[base+'.png']);assert.equal(files.get(base+'.png'),original);
- files.set(base+'.png',png(32769));assert.equal(invoke().result,true);assert.equal(files.size,0);
+ files.set(base+'.png',png(32769));assert.equal(invoke(true).result,true);assert.equal(files.size,1,'RAM pixels must retain their durable source for reboot/eviction');
+ assert.equal(invoke().result,true);assert.equal(files.size,0);
 });
