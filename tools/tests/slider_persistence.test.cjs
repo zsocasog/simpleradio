@@ -24,9 +24,9 @@ const persistence=tail.slice(tail.indexOf('if ((changed && action.persistState)'
 const defaults=[...cpp.match(/struct QueuedPlayerAction \{([^]*?)\n\};/)[1].matchAll(/(?:QueuedActionType|bool|int) (\w+) = ([^;]+);/g)]
  .map(m=>m[1]+':'+m[2]).join(',');
 function harness(){
- const c=vm.createContext({Math,now:0,saves:0,broadcasts:0});
+ const c=vm.createContext({Math,now:0,saves:0,broadcasts:0,settingsBusy:false,saveOk:true});
  c.millis=()=>c.now;c.portENTER_CRITICAL=c.portEXIT_CRITICAL=()=>{};
- c.save=()=>++c.saves;c.broadcastState=()=>++c.broadcasts;
+ c.save=()=>{++c.saves;return c.saveOk;};c.settingsSavePending=()=>c.settingsBusy;c.broadcastState=()=>++c.broadcasts;
  vm.runInContext([
   'const ACTION_NONE=0,ACTION_COMMAND=1,ACTION_QUEUE_SIZE=12;',
   'let actionHead=0,actionTail=0,actionCount=0,actionQueue=Array(12);',
@@ -48,6 +48,16 @@ function harness(){
  })}));
  return c;
 }
+test('ordinary state persistence waits for a settings reply to drain, while an explicit forced save may proceed',()=>{
+ const h=harness();h.scheduleStateSave();h.now=1000;h.settingsBusy=true;h.flushScheduledStateSave();assert.equal(h.saves,0);
+ h.settingsBusy=false;h.flushScheduledStateSave();assert.equal(h.saves,1);
+ h.scheduleStateSave();h.settingsBusy=true;h.flushScheduledStateSave(true);assert.equal(h.saves,2);
+});
+test('a failed durable state write remains scheduled and retries after its normal debounce',()=>{
+ const h=harness();h.scheduleStateSave();h.now=800;h.saveOk=false;h.flushScheduledStateSave();assert.equal(h.saves,1);
+ h.now=1599;h.saveOk=true;h.flushScheduledStateSave();assert.equal(h.saves,1);
+ h.now=1600;h.flushScheduledStateSave();assert.equal(h.saves,2);h.flushScheduledStateSave();assert.equal(h.saves,2);
+});
 test('live volume, EQ and balance commands broadcast RAM changes without requesting flash writes',()=>{
  for(const value of [{volume:50},{eqLow:3,eqMid:-1,eqHigh:2},{balance:-40}]){
   const h=harness();h.command({...value,persist:false});const a=h.ordered()[0];

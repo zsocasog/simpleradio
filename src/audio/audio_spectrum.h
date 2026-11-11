@@ -8,6 +8,7 @@
 #include "spectrum_math.h"
 #include "spectrum_capture.h"
 #include "spectrum_timing.h"
+#include "../diagnostics/runtime_probe.h"
 
 struct AudioSpectrumSnapshot {
   std::array<float, SpectrumMath::BAND_COUNT> bandDb{};
@@ -31,6 +32,13 @@ public:
                uint32_t endedMs, uint32_t outputEpoch, uint32_t outputRate);
   AudioSpectrumSnapshot snapshot();
   void noteDisplayFrame(const AudioSpectrumSnapshot& sample, uint32_t startedUs, uint32_t finishedUs);
+#if SIMPLE_RADIO_RUNTIME_DIAGNOSTICS
+  struct RuntimeStatus {
+    uint32_t analyzed = 0, draws = 0, lastAnalyzedMs = 0, lastDrawMs = 0, sampleRate = 0;
+    bool enabled = false, visible = false, initialized = false;
+  };
+  RuntimeStatus runtimeStatus();
+#endif
 
 private:
   enum class BufferState : uint8_t { Free, Writing, Ready, Processing, Analyzed };
@@ -103,6 +111,9 @@ private:
   float lastMinDb_ = SpectrumMath::DB_FLOOR;
   float lastMaxDb_ = SpectrumMath::DB_FLOOR;
   Diagnostics diagnostics_;
+#if SIMPLE_RADIO_RUNTIME_DIAGNOSTICS
+  RuntimeStatus runtimeStatus_;
+#endif
   SpectrumTiming::Interval timing_;
   uint32_t timingStartedMs_ = 0;
   uint32_t dmaBufferFrames_ = 0;

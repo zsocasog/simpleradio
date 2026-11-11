@@ -8,11 +8,21 @@ const root = path.resolve(__dirname, '../..');
 const app = fs.readFileSync(path.join(root, 'data/app.js'), 'utf8');
 const web = fs.readFileSync(path.join(root, 'src/web/web_server.cpp'), 'utf8');
 const artwork = fs.readFileSync(path.join(root, 'src/artwork/artwork_cache.cpp'), 'utf8');
+test('station snapshot and published list share an allocator which outlives both sides of a transactional swap', () => {
+  const header = fs.readFileSync(path.join(root, 'src/stations/station_manager.h'), 'utf8');
+  const manager = fs.readFileSync(path.join(root, 'src/stations/station_manager.cpp'), 'utf8');
+  assert.match(header, /ArtworkJson::Allocator jsonAllocator_;\s*JsonDocument _doc\{&jsonAllocator_\};/);
+  assert.match(manager, /JsonDocument next\(&jsonAllocator_\);/);
+  assert.match(manager, /if \(!next.set\(_doc\)\) return false;/);
+  assert.doesNotMatch(manager, /ArtworkJson::Allocator\s+\w+;/);
+  assert.ok(manager.indexOf('writeJsonAtomic("/stations.json", next, true)') < manager.indexOf('swap(_doc, next)'));
+});
 function body(source, name) {
   const text = source.match(new RegExp('^(?:async function|static (?:void|bool)|bool ArtworkCache::) ?' + name + '\\([^]*?^}', 'm'))?.[0];
   assert.ok(text, name); return text.slice(text.indexOf('{'));
 }
-const plain = code => code.replace(/SR_PERF_(?:SPAN|WAIT)\([^;]+;/g, '').replace(/->/g, '.').replace(/nullptr/g, 'null')
+const plain = code => code.replace(/#if SIMPLE_RADIO_RUNTIME_DIAGNOSTICS[^]*?#endif/g,'')
+  .replace(/SR_ACTIVITY\([^;]+;/g,'').replace(/SR_PERF_(?:SPAN|WAIT)\([^;]+;/g, '').replace(/->/g, '.').replace(/nullptr/g, 'null')
   .replace(/port(?:ENTER|EXIT)_CRITICAL\(&stationSaveMux\);/g, '')
   .replace(/\.c_str\(\)/g, '').replace(/\b(?:const uint32_t|const size_t|const String|const auto) /g, 'const ')
   .replace(/static_cast<unsigned long>\(([^)]+)\)/g, '$1')
@@ -91,11 +101,12 @@ function workerHarness() {
   const saves = [], prewarm = [], reload = [], replies = [], disposed = [], starts = [];
   const gate = new Gate();
   let connected = true;
-  const request = { pause: () => weak, send: (status, type, value) => replies.push({ status, type, value }) };
+  const request = { pause: () => weak, get(){return this;}, onDisconnect(fn){this.disconnectCallback=fn;}, beginResponse:(status,type,value)=>({status,type,value}), send: (status, type, value) => replies.push({ status, type, value }) };
   const weak = { expired: () => !connected, lock: () => connected ? request : null };
-  const c = vm.createContext({ pendingStationSave: null, now: 100, pdPASS: 1, taskOk: true, ioOk: true,
+  const c = vm.createContext({ pendingStationSave: null, stationSaveImageHolds:0, dispatchStationImages(){}, now: 100, pdPASS: 1, taskOk: true, ioOk: true,
     millis: () => c.now++, Serial: { printf() {} }, vTaskDelete() {},
     ArtworkMemory: { gate: () => gate },
+    sendDeferredReply:(r,response)=>r.send(response.status,response.type,response.value),
     createTask: job => { starts.push(job); return c.taskOk ? 1 : 0; },
     dispose: job => { disposed.push(job); if (job.memoryClaimed) gate.endStationSave(); },
     StationManager: { instance: () => ({ saveStation: (id, name, url, logo, job) => {
@@ -109,7 +120,7 @@ function workerHarness() {
   let worker = plain(body(web, 'stationSaveTask'))
     .replace('auto* job = static_cast<StationSaveJob*>(parameter);', 'const job = parameter;')
     .replace('job.outId);', 'job);').replace('(*job)', '(job)').replace(/::/g, '.');
-  const start = plain(body(web, 'startStationSaveJob')).replace(/delete job;/g, 'dispose(job);');
+  const start = plain(body(web, 'startStationSaveJob')).replace(/delete job;/g, 'dispose(job);').replace(/\[\]\(\)/g,'()=>');
   const dispatch = plain(body(web, 'dispatchPendingStationSave'))
     .replace('StationSaveJob* job = null;', 'let job = null;')
     .replace(/xTaskCreatePinnedToCore\([^]*?tskNO_AFFINITY\)/, 'createTask(job)')
@@ -121,6 +132,7 @@ function workerHarness() {
     .replace('job.logo.length()', 'job.logo.length')
     .replace('job.error.length()', 'job.error.length')
     .replace('if (auto request = job.request.lock())', 'const request = job.request.lock(); if (request)')
+    .replace('auto request = job.request.lock();', 'const request = job.request.lock();')
     .replace(/ArtworkJson::Allocator jsonAllocator;\s*JsonDocument doc\(&jsonAllocator\);/, 'const doc = {};').replace('String out;', 'let out;')
     .replace('serializeJson(doc, out);', 'out = JSON.stringify(doc);').replace(/::/g, '.');
   complete = complete.slice(0, -1) + 'dispose(job); }'; // C++ unique_ptr releases the job and its memory claim.
@@ -132,7 +144,7 @@ function workerHarness() {
     prepareLogo: true, saved: false, done: false, started: false, memoryClaimed: false,
     allocationDeferred: false, allocationWaitStartedMs: 0, allocationAttemptMs: 0,
     errorStatus: 500, error: '', ...extra });
-  return { c, job, request, saves, prewarm, reload, replies, disposed, starts, gate, disconnect: () => { connected = false; } };
+  return { c, job, request, saves, prewarm, reload, replies, disposed, starts, gate, disconnect: () => { connected = false; request.disconnectCallback?.(); } };
 }
 
 test('flash save runs in the worker and success is acknowledged only after completion', () => {
@@ -375,7 +387,7 @@ function persistenceHarness() {
   code = code.replace('StationWriteLock writeLock;', 'const writeLock = { ok: () => writerAvailable };')
     .replace(/  \{\n    StationLock lock(?:\(portMAX_DELAY\))?;\n([^]*?)\n  \}/g,
       '  { readDepth++; const lock = { ok: () => true }; try {\n$1\n} finally { readDepth--; } }')
-    .replace('JsonDocument next;', 'let next;').replace('next.set(_doc)', '(next = structuredClone(_doc))')
+    .replace('JsonDocument next(&jsonAllocator_);', 'let next;').replace('next.set(_doc)', '(next = structuredClone(_doc))')
     .replace('int savedId = id;', 'let savedId = id;')
     .replace('JsonArray stations = next["stations"].as<JsonArray>();', 'let stations = next.stations;')
     .replace('stations.isNull()', '!stations').replace('next["stations"].to<JsonArray>()', '(next.stations = [])')

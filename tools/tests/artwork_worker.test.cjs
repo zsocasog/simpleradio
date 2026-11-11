@@ -27,6 +27,9 @@ const loopCode = body('void ArtworkCache::downloadTask(')
   .replace('ArtworkDownloadJob* job = nullptr;', 'let job = null;')
   .replace('const bool diskJob = job && job->kind != ArtworkJobKind::AlbumSearch && job->kind != ArtworkJobKind::PickerLogo;',
     'const diskJob = job && job.kind !== "album" && job.kind !== "picker";')
+  .replace(/const (?:bool|uint32_t) /g,'const ').replace(/job->/g,'job.')
+  .replace(/ArtworkJobKind::Thumbnail/g,'"thumbnail"').replace(/PlayerState::instance\(\)\.snapshot\(\)\.playing/g,'false')
+  .replace(/cache->lcdDiskWrites.load\(\)/g,'0')
   .replace('xQueueReceive(artworkJobQueue, &job, portMAX_DELAY)',
     'xQueueReceive(artworkJobQueue, value => job = value, portMAX_DELAY)')
   .replaceAll('cache->', 'cache.');

@@ -16,6 +16,7 @@
 #include "picker_logo_loader.h"
 #include "../config/diagnostics.h"
 #include "../storage/read_only_file.h"
+#include "../diagnostics/runtime_probe.h"
 
 #include <Arduino.h>
 #include "../audio/spectrum_log.h"
@@ -260,7 +261,7 @@ void ArtworkCache::begin() {
   lastArtworkPlaying = false;
   audioConnectionReady = false;
   audioConnectionReadyMs = 0;
-  if (!LittleFS.exists("/cache")) {
+  if (!ReadOnlyStorage::directoryExists(LittleFS.mountpoint(), "/cache")) {
     LittleFS.mkdir("/cache");
   }
   if (!resultMutex) {
@@ -493,7 +494,7 @@ void ArtworkCache::loop() {
       !state.hasStreamImage && sourceUrl.length() && !isDownloadActive() &&
       !AlbumArtStore::instance().acquire(state.albumArtworkPath)) {
     String cachedFallback;
-    const bool hasLocalFallback = state.stationLogo.startsWith("/") && LittleFS.exists(state.stationLogo);
+    const bool hasLocalFallback = state.stationLogo.startsWith("/") && ReadOnlyStorage::exists(LittleFS.mountpoint(), state.stationLogo.c_str());
     const bool hasCachedFallback = findExistingLcdArtworkPath(sourceUrl, cachedFallback) ||
                                    findExistingCachePath(sourceUrl, cachedFallback);
     if (!hasLocalFallback && !hasCachedFallback &&
@@ -686,7 +687,7 @@ void ArtworkCache::loop() {
     }
 
     const bool hasCurrentCachedArtwork =
-        state.cachedArtworkPath.length() && LittleFS.exists(state.cachedArtworkPath);
+        state.cachedArtworkPath.length() && ReadOnlyStorage::exists(LittleFS.mountpoint(), state.cachedArtworkPath.c_str());
     const unsigned long retryMs = hasCurrentCachedArtwork ? RETRY_MS : MISSING_ARTWORK_RETRY_MS;
     if (!(sourceUrl == lastUrl && now - lastAttemptMs < retryMs)) {
       lastUrl = sourceUrl;
@@ -1025,14 +1026,14 @@ void ArtworkCache::processPendingBrowserImport() {
 
   String existingPath;
   if (findExistingLcdArtworkPath(source, existingPath)) {
-    if (LittleFS.exists(tempPath)) LittleFS.remove(tempPath);
+    if (ReadOnlyStorage::exists(LittleFS.mountpoint(), tempPath.c_str())) LittleFS.remove(tempPath);
     noteDownloadStatus(String("browser cache skipped, lcd cache ready ") + existingPath);
     Serial.printf("[artwork] browser cache import skipped, lcd cache ready: %s\n",
                   existingPath.c_str());
     return;
   }
 
-  if (!LittleFS.exists(tempPath)) {
+  if (!ReadOnlyStorage::exists(LittleFS.mountpoint(), tempPath.c_str())) {
     Serial.printf("[artwork] browser cache temp missing: %s\n", tempPath.c_str());
     return;
   }
@@ -1257,12 +1258,19 @@ void ArtworkCache::downloadTask(void* param) {
     ArtworkDownloadJob* job = nullptr;
     if (xQueueReceive(artworkJobQueue, &job, portMAX_DELAY) != pdTRUE) continue;
     const bool diskJob = job && job->kind != ArtworkJobKind::AlbumSearch && job->kind != ArtworkJobKind::PickerLogo;
+    const bool thumbnailJob = job && job->kind == ArtworkJobKind::Thumbnail;
+    const uint32_t diskWritesBefore = cache->lcdDiskWrites.load();
     runDownloadJob(job);
     // runDownloadJob has returned: its Strings, vectors, HTTP clients and image
     // leases are gone before another caller may enter the image pipeline.
     // Metadata scanning stays below audio/network priority, on the existing
     // worker and within its existing busy lifetime. No periodic task/job/stack.
-    if (diskJob) cache->refreshCacheStats();
+    // RAM-only and already-cached thumbnails change no cache files. A full
+    // LittleFS usage walk here can hold the filesystem lock long enough to
+    // starve audio when a high-priority HTTP reader waits for that same lock.
+    // Keep idle refreshes and all real disk-write refreshes; do no new work.
+    const bool unchangedThumbnail = thumbnailJob && cache->lcdDiskWrites.load() == diskWritesBefore;
+    if (diskJob && (!unchangedThumbnail || !PlayerState::instance().snapshot().playing)) cache->refreshCacheStats();
     cache->markDownloadFinished();
   }
 }
@@ -1299,8 +1307,9 @@ void ArtworkCache::runDownloadJob(ArtworkDownloadJob* job) {
       path = url;
     } else if (!cancelled && kind == ArtworkJobKind::BrowserImport) {
       ok = cache->importLocalImage(key, url, path);
-      if (!ok && LittleFS.exists(url)) LittleFS.remove(url);
+      if (!ok && ReadOnlyStorage::exists(LittleFS.mountpoint(), url.c_str())) LittleFS.remove(url);
     } else if (!cancelled && kind == ArtworkJobKind::AlbumSearch) {
+      SR_ACTIVITY(AlbumWork);
       ok = cache->resolveAndDownloadAlbumArtwork(artist, title, key, path);
     } else if (!cancelled) {
       ok = cache->download(url, path, deadlineMs, allowSecureFallback);
@@ -3085,7 +3094,7 @@ void ArtworkCache::processPrewarmQueue(const PlayerStateSnapshot& state) {
   }
 
   String localPath = preferredLocalArtworkPath(source);
-  if (!supportedArtworkFile(localPath) || !LittleFS.exists(localPath)) return;
+  if (!supportedArtworkFile(localPath) || !ReadOnlyStorage::exists(LittleFS.mountpoint(), localPath.c_str())) return;
 
   artworkTraceSerial.printf("[artwork] prewarm thumbnail start: %s\n", localPath.c_str());
   requestLcdThumbnail(localPath, true);
@@ -3129,6 +3138,7 @@ size_t ArtworkCache::cacheBytes() const {
 }
 
 void ArtworkCache::refreshCacheStats() {
+  SR_ACTIVITY(CacheScan);
   cacheBytesSnapshot.store(ReadOnlyStorage::directoryBytes(LittleFS.mountpoint(), "/cache"));
   // The pinned LittleFS totalBytes() and usedBytes() both recalculate usage.
   // Keep these traversals out of the high-priority HTTP task too.
@@ -3146,7 +3156,7 @@ size_t ArtworkCache::cacheTargetBytes() const {
 }
 
 void ArtworkCache::enforceCacheBudget(size_t incomingBytes, const String& keepPath) {
-  if (!LittleFS.exists("/cache")) return;
+  if (!ReadOnlyStorage::directoryExists(LittleFS.mountpoint(), "/cache")) return;
 
   // Cache usage cannot exceed total filesystem usage. On a mostly empty
   // filesystem this avoids walking/opening every cached thumbnail for each
@@ -3539,11 +3549,11 @@ void ArtworkCache::invalidateLcdThumbnail(const String& imagePath) {
   }
 
   bool removed = false;
-  if (LittleFS.exists(thumbPath)) {
+  if (ReadOnlyStorage::exists(LittleFS.mountpoint(), thumbPath.c_str())) {
     removed = LittleFS.remove(thumbPath) || removed;
   }
   String tempPath = thumbPath + ".tmp";
-  if (LittleFS.exists(tempPath)) {
+  if (ReadOnlyStorage::exists(LittleFS.mountpoint(), tempPath.c_str())) {
     removed = LittleFS.remove(tempPath) || removed;
   }
 
@@ -3575,7 +3585,7 @@ bool ArtworkCache::ensureLcdThumbnailPrepared(const String& imagePath, bool fill
 
   String thumbPath = lcdThumbnailPath(imagePath, fillFrame);
   if (thumbnailKnownReady(imagePath, thumbPath)) return true;
-  if (!LittleFS.exists(imagePath)) {
+  if (!ReadOnlyStorage::exists(LittleFS.mountpoint(), imagePath.c_str())) {
     clearThumbnailReady(imagePath);
     return false;
   }
@@ -3646,7 +3656,7 @@ bool ArtworkCache::ensureLcdThumbnailPrepared(const String& imagePath, bool fill
       }
     }
   }
-  if (LittleFS.exists(thumbPath)) LittleFS.remove(thumbPath);
+  if (ReadOnlyStorage::exists(LittleFS.mountpoint(), thumbPath.c_str())) LittleFS.remove(thumbPath);
   if (fillFrame) albumArtTrace("timing lcd-validate: %lums",
                               static_cast<unsigned long>(millis() - validationStartedMs));
 
@@ -3711,6 +3721,7 @@ bool ArtworkCache::ensureLcdThumbnailPrepared(const String& imagePath, bool fill
   bool drawn = false;
   {
     ArtworkPhaseTrace phase("lcd-decode", fillFrame);
+    SR_ACTIVITY(ThumbnailDecode);
     if (lower.endsWith(".jpg") || lower.endsWith(".jpeg")) {
       drawn = thumb.drawJpgFile(LittleFS, imagePath.c_str(), 0, 0, LCD_THUMB_SIZE, LCD_THUMB_SIZE, 0, 0, scale, scale, middle_center);
     } else if (lower.endsWith(".png")) {
@@ -3767,7 +3778,8 @@ bool ArtworkCache::ensureLcdThumbnailPrepared(const String& imagePath, bool fill
   bool ok = false;
   {
     ArtworkPhaseTrace phase("lcd-write", fillFrame);
-    if (LittleFS.exists(tempPath)) LittleFS.remove(tempPath);
+    SR_ACTIVITY(ThumbnailWrite);
+    if (ReadOnlyStorage::exists(LittleFS.mountpoint(), tempPath.c_str())) LittleFS.remove(tempPath);
     File out = LittleFS.open(tempPath, "w");
     if (!out) {
       thumb.deleteSprite();
@@ -3817,13 +3829,14 @@ bool ArtworkCache::ensureLcdThumbnailPrepared(const String& imagePath, bool fill
       }
     }
     ArtworkRevision::Publication publication;
-    if (LittleFS.exists(thumbPath)) LittleFS.remove(thumbPath);
+    if (ReadOnlyStorage::exists(LittleFS.mountpoint(), thumbPath.c_str())) LittleFS.remove(thumbPath);
     if (!LittleFS.rename(tempPath, thumbPath)) {
       LittleFS.remove(tempPath);
       unlock();
       Serial.printf("[artwork] lcd thumbnail rename failed: %s\n", thumbPath.c_str());
       return false;
     }
+    ++lcdDiskWrites;
   }
 
   if (!cacheBudgetReserved) {
@@ -3867,7 +3880,7 @@ bool ArtworkCache::finalizeImagePayload(const String& sourcePath, size_t offset,
   }
 
   String payloadPath = cachePath(key, ".payload");
-  if (LittleFS.exists(payloadPath)) LittleFS.remove(payloadPath);
+  if (ReadOnlyStorage::exists(LittleFS.mountpoint(), payloadPath.c_str())) LittleFS.remove(payloadPath);
 
   File payload = LittleFS.open(payloadPath, "w");
   if (!payload) {
@@ -3911,7 +3924,7 @@ bool ArtworkCache::finalizeImagePayload(const String& sourcePath, size_t offset,
   String finalPath = cachePath(key, extension);
   {
     ArtworkRevision::Publication publication;
-    if (LittleFS.exists(finalPath)) LittleFS.remove(finalPath);
+    if (ReadOnlyStorage::exists(LittleFS.mountpoint(), finalPath.c_str())) LittleFS.remove(finalPath);
     if (!LittleFS.rename(payloadPath, finalPath)) {
       LittleFS.remove(payloadPath);
       return false;
@@ -3942,7 +3955,7 @@ bool ArtworkCache::requestLcdThumbnail(const String& imagePath, bool idlePrewarm
 
   String thumbPath = lcdThumbnailPath(imagePath, fillFrame);
   if (thumbnailKnownReady(imagePath, thumbPath)) return true;
-  if (!LittleFS.exists(imagePath)) {
+  if (!ReadOnlyStorage::exists(LittleFS.mountpoint(), imagePath.c_str())) {
     clearThumbnailReady(imagePath);
     return false;
   }
@@ -4172,7 +4185,7 @@ bool ArtworkCache::waitForActiveArtworkJob(const String& source, String& outPath
         outPath = existingPath;
         return true;
       }
-    } else if (LittleFS.exists(source) && ensureLcdThumbnail(source)) {
+    } else if (ReadOnlyStorage::exists(LittleFS.mountpoint(), source.c_str()) && ensureLcdThumbnail(source)) {
       outPath = source;
       return true;
     }
@@ -4200,7 +4213,7 @@ bool ArtworkCache::waitForActiveArtworkJob(const String& source, String& outPath
       outPath = existingPath;
       return true;
     }
-  } else if (LittleFS.exists(source) && ensureLcdThumbnail(source)) {
+  } else if (ReadOnlyStorage::exists(LittleFS.mountpoint(), source.c_str()) && ensureLcdThumbnail(source)) {
     outPath = source;
     return true;
   }
@@ -4216,7 +4229,7 @@ bool ArtworkCache::prepareArtworkSourceForPlayback(const String& source, String&
 
   if (!isRemoteArtworkSource(item)) {
     String localPath = preferredLocalArtworkPath(item);
-    if (!supportedArtworkFile(localPath) || !LittleFS.exists(localPath)) return false;
+    if (!supportedArtworkFile(localPath) || !ReadOnlyStorage::exists(LittleFS.mountpoint(), localPath.c_str())) return false;
     if (ensureLcdThumbnail(localPath)) {
       outPath = localPath;
       return true;
@@ -4423,7 +4436,7 @@ bool ArtworkCache::writeBmpFromIcoDib(const String& sourcePath, size_t offset, s
   dib[11] = static_cast<uint8_t>((patchedHeight >> 24) & 0xFF);
 
   String bmpPath = cachePath(key, ".bmp");
-  if (LittleFS.exists(bmpPath)) LittleFS.remove(bmpPath);
+  if (ReadOnlyStorage::exists(LittleFS.mountpoint(), bmpPath.c_str())) LittleFS.remove(bmpPath);
 
   File out = LittleFS.open(bmpPath, "w");
   if (!out) {
@@ -4619,7 +4632,7 @@ bool ArtworkCache::decodeBase64File(const String& sourcePath, const String& deco
     return false;
   }
 
-  if (LittleFS.exists(decodedPath)) LittleFS.remove(decodedPath);
+  if (ReadOnlyStorage::exists(LittleFS.mountpoint(), decodedPath.c_str())) LittleFS.remove(decodedPath);
   File out = LittleFS.open(decodedPath, "w");
   if (!out) {
     free(decoded);
@@ -4761,7 +4774,7 @@ bool ArtworkCache::downloadEmbedded(const String& url, const std::vector<uint32_
   enforceCacheBudget(total);
 
   String tempPath = cachePath(key, ".emb");
-  if (LittleFS.exists(tempPath)) LittleFS.remove(tempPath);
+  if (ReadOnlyStorage::exists(LittleFS.mountpoint(), tempPath.c_str())) LittleFS.remove(tempPath);
 
   File temp = LittleFS.open(tempPath, "w");
   if (!temp) return false;
@@ -4791,7 +4804,7 @@ bool ArtworkCache::importLocalImage(const String& url, const String& tempPath, S
 
   String existingPath;
   if (findExistingLcdArtworkPath(url, existingPath)) {
-    if (LittleFS.exists(tempPath)) LittleFS.remove(tempPath);
+    if (ReadOnlyStorage::exists(LittleFS.mountpoint(), tempPath.c_str())) LittleFS.remove(tempPath);
     outPath = existingPath;
     noteDownloadStatus(String("browser cache skipped, lcd cache ready ") + existingPath);
     Serial.printf("[artwork] browser cache import skipped after task start, lcd cache ready: %s\n",
@@ -4799,7 +4812,7 @@ bool ArtworkCache::importLocalImage(const String& url, const String& tempPath, S
     return true;
   }
 
-  if (!LittleFS.exists(tempPath)) return false;
+  if (!ReadOnlyStorage::exists(LittleFS.mountpoint(), tempPath.c_str())) return false;
 
   File file = LittleFS.open(tempPath, "r");
   if (!file) return false;
@@ -4833,7 +4846,7 @@ bool ArtworkCache::importLocalImage(const String& url, const String& tempPath, S
   String path = cachePath(url, extension);
   {
     ArtworkRevision::Publication publication;
-    if (LittleFS.exists(path)) LittleFS.remove(path);
+    if (ReadOnlyStorage::exists(LittleFS.mountpoint(), path.c_str())) LittleFS.remove(path);
     if (!LittleFS.rename(tempPath, path)) {
       LittleFS.remove(tempPath);
       noteDownloadStatus(String("browser cache rename failed ") + path);
@@ -5001,6 +5014,7 @@ bool ArtworkCache::prepareAlbumMemory(uint8_t*& data, size_t length, const Strin
   bool drawn = false;
   {
     ArtworkPhaseTrace phase("RAM-decode");
+    SR_ACTIVITY(AlbumDecode);
     vTaskDelay(1);
     lgfx::LGFX_Sprite thumb;
     thumb.setPsram(true);
@@ -5149,7 +5163,7 @@ bool ArtworkCache::download(const String& url, String& outPath, uint32_t budgetM
     bool stored = false;
     {
       ArtworkPhaseTrace phase("image-write", fillFrame);
-      if (LittleFS.exists(tempPath)) LittleFS.remove(tempPath);
+      if (ReadOnlyStorage::exists(LittleFS.mountpoint(), tempPath.c_str())) LittleFS.remove(tempPath);
       File file = LittleFS.open(tempPath, "w");
       if (!file) {
         noteDownloadStatus("temp open failed " + tempPath);
@@ -5196,7 +5210,7 @@ bool ArtworkCache::download(const String& url, String& outPath, uint32_t budgetM
     {
       ArtworkPhaseTrace phase("image-commit", fillFrame);
       ArtworkRevision::Publication publication;
-      if (LittleFS.exists(path)) {
+      if (ReadOnlyStorage::exists(LittleFS.mountpoint(), path.c_str())) {
         LittleFS.remove(path);
       }
       if (!LittleFS.rename(tempPath, path)) {

@@ -3,7 +3,7 @@ const read=p=>fs.readFileSync(path.resolve(__dirname,'../..',p),'utf8');
 const source=read('src/storage/read_only_file.h');
 const begin=source.indexOf('bool visitFiles('),end=source.indexOf('inline size_t directoryBytes(',begin);
 let body=source.slice(source.indexOf('{',begin),end).trim();
-body=body.replace('char absolute[320];','const absolute={value:""};')
+body=body.replace(/SR_READ_IO_SCOPE\(\);/g,'').replace('char absolute[320];','const absolute={value:""};')
  .replace('DIR* dir = ::opendir(absolute);','const dir=opendir(absolute.value);')
  .replace('const size_t baseLength = strlen(absolute);','const baseLength=absolute.value.length;')
  .replace('size_t total = 0;','let total=0;')

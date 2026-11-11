@@ -31,6 +31,7 @@ bool IRAM_ATTR onSent(i2s_chan_handle_t, i2s_event_data_t* event, void*) {
   const size_t frames = event->size / (2 * sizeof(int32_t));
 #if SIMPLE_RADIO_RUNTIME_DIAGNOSTICS
   RuntimeProbe::outputSent(frames, static_cast<uint32_t>(startedUs));
+  RuntimeProbe::outputBlock(static_cast<const int32_t*>(event->dma_buf), frames, static_cast<uint32_t>(startedUs));
 #endif
   int index = -1;
   TaskHandle_t consumer = nullptr;

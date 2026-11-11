@@ -536,8 +536,15 @@ void AudioPlayer::loop() {
 }
 
 void AudioPlayer::service() {
+#if SIMPLE_RADIO_RUNTIME_DIAGNOSTICS
+  RuntimeProbe::setPumpStage(1);
+  struct PumpStageExit { ~PumpStageExit() { RuntimeProbe::setPumpStage(0); } } pumpStageExit;
+#endif
   processAudioEvents(4);
   PlayerStateSnapshot s = PlayerState::instance().snapshot();
+#if SIMPLE_RADIO_RUNTIME_DIAGNOSTICS
+  RuntimeProbe::setPumpStage(2);
+#endif
   AppConfig& config = AppConfig::instance();
   bool streamControlOperation = false;
   bool wifiConnected = WiFi.isConnected();
@@ -647,10 +654,14 @@ void AudioPlayer::service() {
   }
 
   uint32_t audioLoopStartUs = micros();
+#if SIMPLE_RADIO_RUNTIME_DIAGNOSTICS
+  RuntimeProbe::setPumpStage(3);
+#endif
   audio.loop();
   uint32_t audioLoopDurationUs = micros() - audioLoopStartUs;
 #if SIMPLE_RADIO_RUNTIME_DIAGNOSTICS
   RuntimeProbe::pump(audioLoopDurationUs, audio.inBufferFilled(), audio.getInBufferSize(), audio.isRunning());
+  RuntimeProbe::setPumpStage(4);
 #endif
   if (s.playing && !streamControlOperation && audioLoopDurationUs > AUDIO_LOOP_STALL_ABORT_US) {
     if (audioLoopStallCount < AUDIO_LOOP_STALL_ABORT_COUNT) ++audioLoopStallCount;

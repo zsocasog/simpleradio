@@ -8,6 +8,8 @@ const inspectCode=body(policy,'Format inspect(').replace('!file ||','!file.valid
  .replace(/sizeof\((header|tail|png)\)/g,'8').replace('bool isPng','let isPng').replace('size_t i','let i')
  .replace(/Format::(\w+)/g,'"$1"').replace(/'([IEND])'/g,(_,c)=>c.charCodeAt(0));
 const inspect=new Function('file','MaxBytes',inspectCode);
+const maxBytes=128*1024;
+assert.match(policy,/MaxBytes = 128 \* 1024/);
 function png(size=80){const b=Buffer.alloc(size,31);Buffer.from([137,80,78,71,13,10,26,10]).copy(b);b.write('IEND',size-8);return b;}
 function jpeg(size=90){const b=Buffer.alloc(size,55);b[0]=255;b[1]=216;b[size-2]=255;b[size-1]=217;return b;}
 function file(data,{available=true,limit=Infinity}={}){let pos=0,closed=false,reads=0;return {valid:()=>available&&!closed,size:()=>data.length,
@@ -26,11 +28,11 @@ function harness(bytes,options){const f=file(bytes,options),revision={value:1,bu
  tag()${translate(body(source,'String entityTag('))}
  notModified()${translate(body(source,'void notModified('))}
  dispose(){this.file_.close();}
- }`)(f,{inspect:f=>inspect(f,32768),Format:{None:'None',Png:'Png',Jpeg:'Jpeg'}},
+ }`)(f,{inspect:f=>inspect(f,maxBytes),Format:{None:'None',Png:'Png',Jpeg:'Jpeg'}},
  {value:()=>revision.busy?0:revision.value,session:()=>123},{value:(...args)=>({data:()=>JSON.stringify(args)})});
  return {f,r:new Response(),revision};}
 test('small PNG/JPEG are streamed byte-for-byte with bounded fragments and descriptors close at EOF',()=>{
- for(const data of [png(),jpeg(),png(32768)])for(const chunk of [1,3,64,4096,40000]){
+ for(const data of [png(),jpeg(),png(67738),png(120*1024),png(maxBytes)])for(const chunk of [1,3,64,4096,40000]){
   const {f,r}=harness(data);assert.equal(r.valid(),true);assert.equal(r._contentLength,data.length);
   assert.equal(r._contentType,data[1]===80?'image/png':'image/jpeg');
   const parts=[];while(!f.closed()){const b=Buffer.alloc(chunk),n=r.fill(b,chunk);assert.ok(n>0);parts.push(b.subarray(0,n));}
@@ -38,7 +40,7 @@ test('small PNG/JPEG are streamed byte-for-byte with bounded fragments and descr
  }
 });
 test('oversized, missing, truncated and mislabeled payloads are rejected for LCD fallback without a decoder',()=>{
- const cases=[Buffer.from('<html>not an image</html>'),png(32769),png().subarray(0,70),jpeg().subarray(0,70),Buffer.alloc(0)];
+ const cases=[Buffer.from('<html>not an image</html>'),png(maxBytes+1),png().subarray(0,70),jpeg().subarray(0,70),Buffer.alloc(0)];
  for(const data of cases){const h=harness(data);assert.equal(h.r.valid(),false);h.r.dispose();assert.equal(h.f.closed(),true);}
  assert.equal(harness(png(),{available:false}).r.valid(),false);
  assert.equal(harness(png(),{limit:3}).r.valid(),false);
@@ -64,7 +66,7 @@ test('compressed originals are bounded and protected by the same family LRU; the
  assert.doesNotMatch(body(cache,'void ArtworkCache::loop('),/compactRemoteArtwork\(/);
  const lookup=body(cache,'bool ArtworkCache::stationWebArtworkPath(');
  assert.doesNotMatch(lookup,/LittleFS\.(exists|open)|download\(|ensureLcdThumbnail/);
- const route=web.slice(web.indexOf('server.on("/api/artwork/station"'),web.indexOf('server.on("/api/stations"'));
+ const route=body(web,'static void sendStationImage(');
  assert.ok(route.indexOf('StationWebImageResponse')<route.indexOf('StationArtworkResponse'));
  assert.match(route,/!request->hasParam\("lcd"\)/);assert.match(route,/Cache-Control.*no-cache/);
  assert.match(body(web,'static bool commitLogoUpload('),/ArtworkRevision::Publication publication/);
@@ -88,10 +90,10 @@ test('compaction retains only the matching small original and leaves all source 
  const original=png(),stale=jpeg();
  const run=new Function('source','imagePath','fillFrame','LittleFS','open','inspect','lcdThumbnailPath','cachePath','cacheFamilyStemForPath','validLcdThumbnailFile','isRemoteArtworkSource','markThumbnailReady','Serial','ramReady',
   'let outPath="";const result=(()=>'+code+')();return {result,outPath};');
- const invoke=(ramReady=false)=>run('https://source',base+'.png',false,fs,p=>file(files.get(p)||Buffer.alloc(0),{available:files.has(p)}),f=>inspect(f,32768),()=>base+'_176.sr565',(_s,ext)=>base+ext,()=>base,()=>lcdReady,()=>true,()=>{}, {printf(){}},ramReady);
+ const invoke=(ramReady=false)=>run('https://source',base+'.png',false,fs,p=>file(files.get(p)||Buffer.alloc(0),{available:files.has(p)}),f=>inspect(f,maxBytes),()=>base+'_176.sr565',(_s,ext)=>base+ext,()=>base,()=>lcdReady,()=>true,()=>{}, {printf(){}},ramReady);
  files.set(base+'.png',original);files.set(base+'.jpg',stale);files.set(base+'.bmp',Buffer.from('uncompressed bitmap'));
  lcdReady=false;assert.equal(invoke().result,false);assert.equal(files.size,3);
  lcdReady=true;assert.equal(invoke().result,true);assert.deepEqual([...files.keys()],[base+'.png']);assert.equal(files.get(base+'.png'),original);
- files.set(base+'.png',png(32769));assert.equal(invoke(true).result,true);assert.equal(files.size,1,'RAM pixels must retain their durable source for reboot/eviction');
+ files.set(base+'.png',png(maxBytes+1));assert.equal(invoke(true).result,true);assert.equal(files.size,1,'RAM pixels must retain their durable source for reboot/eviction');
  assert.equal(invoke().result,true);assert.equal(files.size,0);
 });

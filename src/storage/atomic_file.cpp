@@ -1,11 +1,13 @@
 #include "atomic_file.h"
 #include "buffered_writer.h"
+#include "write_only_file.h"
+#include "rename_retry.h"
 #include "../diagnostics/runtime_probe.h"
 
 #include <LittleFS.h>
 
 static bool readJsonFile(const String& path, JsonDocument& doc) {
-  if (!LittleFS.exists(path)) return false;
+  if (!ReadOnlyStorage::exists(LittleFS.mountpoint(), path.c_str())) return false;
 
   File file = LittleFS.open(path, "r");
   if (!file) return false;
@@ -16,6 +18,11 @@ static bool readJsonFile(const String& path, JsonDocument& doc) {
 }
 
 static void yieldFlashWriter() { vTaskDelay(1); }
+
+bool replaceFileWhenReadersClose(const String& source, const String& target) {
+  return AtomicReplace::retryBusy([&] { return LittleFS.rename(source, target); },
+                                 [] { return millis(); }, [] { vTaskDelay(1); }, 1500);
+}
 
 bool readJsonWithBackup(const char* path, JsonDocument& doc) {
   if (!path || !path[0]) return false;
@@ -35,20 +42,17 @@ bool writeJsonAtomic(const char* path, const JsonDocument& doc, bool pretty) {
   String temp = target + ".tmp";
   String backup = target + ".bak";
 
-  if (LittleFS.exists(temp)) LittleFS.remove(temp);
+  if (ReadOnlyStorage::exists(LittleFS.mountpoint(), temp.c_str())) LittleFS.remove(temp);
 
-  File file = LittleFS.open(temp, "w");
+  WriteOnlyStorage::File file(LittleFS.mountpoint(), temp.c_str());
   if (!file) return false;
-  // Before the first write: do not retain the core's 4 KB stdio buffer in
-  // internal RAM on top of our bounded JSON writer.
-  file.setBufferSize(512);
-
-  BufferedWriter<File> writer(file, yieldFlashWriter);
+  BufferedWriter<WriteOnlyStorage::File> writer(file, yieldFlashWriter);
   size_t written = pretty ? serializeJsonPretty(doc, writer) : serializeJson(doc, writer);
   bool complete = writer.flush();
-  file.flush();
-  complete = complete && written > 0 && file.size() == written;
-  file.close();
+  const bool synced = file.flush();
+  complete = complete && synced && written > 0 && file.size() == written;
+  const bool closed = file.close();
+  complete = complete && closed;
 
   if (!complete) {
     LittleFS.remove(temp);
@@ -59,11 +63,11 @@ bool writeJsonAtomic(const char* path, const JsonDocument& doc, bool pretty) {
   // including when target already exists. Keep the old target in place until
   // the fully synced temporary file replaces it in one metadata transaction.
   // Moving the target to .bak first needlessly committed two extra changes.
-  if (!LittleFS.rename(temp, target)) {
+  if (!replaceFileWhenReadersClose(temp, target)) {
     LittleFS.remove(temp);
     return false;
   }
 
-  if (LittleFS.exists(backup)) LittleFS.remove(backup);
+  if (ReadOnlyStorage::exists(LittleFS.mountpoint(), backup.c_str())) LittleFS.remove(backup);
   return true;
 }

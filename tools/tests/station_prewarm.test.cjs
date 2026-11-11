@@ -10,6 +10,7 @@ function body(name) {
   return source.slice(source.indexOf("{"));
 }
 const scheduler = body("processPrewarmQueue")
+  .replace(/ReadOnlyStorage::exists\(LittleFS.mountpoint\(\), (.*?)\.c_str\(\)\)/g,'LittleFS.exists($1)')
   .replace(/String (\w+);/g, 'let $1 = "";')
   .replace(/String (\w+) =/g, "let $1 =")
   .replace(/unsigned long now =/g, "const now =")

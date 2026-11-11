@@ -69,12 +69,21 @@ class GuardTests(unittest.TestCase):
             source = (folder / name).read_text(encoding='utf-8')
             patched = transform(source)
             self.assertEqual(transform(patched), patched)
-            restored = patched
+            restored = patcher.strip_static_priority(patched, name)
             for old, new in edits:
                 self.assertEqual(restored.count(new), 1)
                 restored = restored.replace(new, old)
             self.assertEqual(hashlib.sha256(restored.encode()).hexdigest(), sha)
             # Everything outside the reviewed buffer/partial-write edits is byte-identical.
+
+    def test_buffer_and_priority_stages_can_repeat_without_rewriting_or_losing_either_fix(self):
+        import patch_web_deferred as priority
+        folder = ROOT / '.pio/libdeps/esp32-s3-devkitc1-n16r8/ESPAsyncWebServer/src'
+        for name,transform in [('WebResponseImpl.h',patcher.patch_header),('WebResponses.cpp',patcher.patch_source),('WebHandlers.cpp',patcher.patch_handler)]:
+            _,digest,edits=next(item for item in priority.PATCH_FILES if item[0]==name)
+            first=priority.deferred_patch(transform((folder/name).read_text(encoding='utf-8')),digest,edits)
+            self.assertEqual(transform(first),first)
+            self.assertEqual(priority.deferred_patch(transform(first),digest,edits),first)
 
 
 if __name__ == '__main__':

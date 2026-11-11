@@ -7,7 +7,10 @@ counts partial writes, and spends retry credit only on bytes actually queued.
 This prevents truncation/deadlock on temporary TCP allocation pressure.
 """
 import hashlib
+import sys
 from pathlib import Path
+if '__file__' in globals():
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 HEADER_HASH = 'b90de8322a97af18e8cd6817b7a5c27999c6a5e0097f23ecd77a4e167d9ced75'
 SOURCE_HASH = '12055aa687cd0f6f719b65057c7a1d203baf6f0ef88e96b3fb4909ac68d0e6f8'
@@ -105,16 +108,34 @@ def patch(source, expected_hash, edits):
     return original
 
 
+def strip_static_priority(source, name):
+    import patch_web_deferred as priority
+    spec = next(item for item in priority.PATCH_FILES if item[0] == name)
+    if 'SR_READ_IO_SCOPE();' in source or 'SimpleRadioReadIoPriority.h' in source:
+        return priority.clean_source(source, spec[1], spec[2])
+    return source
+
+
+def preserve_static_priority(source, name, digest, edits):
+    import patch_web_deferred as priority
+    base = strip_static_priority(source, name)
+    result = patch(base, digest, edits)
+    if base != source:
+        spec = next(item for item in priority.PATCH_FILES if item[0] == name)
+        result = priority.deferred_patch(result, spec[1], spec[2])
+    return result
+
+
 def patch_header(source):
-    return patch(source, HEADER_HASH, HEADER_EDITS)
+    return preserve_static_priority(source, 'WebResponseImpl.h', HEADER_HASH, HEADER_EDITS)
 
 
 def patch_source(source):
-    return patch(source, SOURCE_HASH, SOURCE_EDITS)
+    return preserve_static_priority(source, 'WebResponses.cpp', SOURCE_HASH, SOURCE_EDITS)
 
 
 def patch_handler(source):
-    return patch(source, HANDLER_HASH, HANDLER_EDITS)
+    return preserve_static_priority(source, 'WebHandlers.cpp', HANDLER_HASH, HANDLER_EDITS)
 
 
 def apply_to_dependency(env):

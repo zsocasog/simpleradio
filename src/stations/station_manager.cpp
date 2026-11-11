@@ -153,7 +153,7 @@ bool StationManager::saveStation(int id, const String& name, const String& url, 
   if (!writeLock.ok()) return false;
   if (!name.length() || !url.length()) return false;
 
-  JsonDocument next;
+  JsonDocument next(&jsonAllocator_);
   int savedId = id;
   {
     StationLock lock;

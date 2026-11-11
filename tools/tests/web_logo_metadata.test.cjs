@@ -3,6 +3,7 @@ const root=path.resolve(__dirname,'../..'),web=fs.readFileSync(path.join(root,'s
 const start=web.indexOf('server.on("/api/logos"'),end=web.indexOf('server.on("/api/station/save"',start);
 const route=web.slice(web.indexOf('{',start),web.lastIndexOf('});',end)+1);
 const code=route.replace('ArtworkJson::Allocator jsonAllocator;','')
+ .replace('ReadOnlyStorage::visitFiles(LittleFS.mountpoint(), "/logos", [&](const char* filename, size_t bytes, time_t)', 'visitFiles(LittleFS.mountpoint(), "/logos", (filename, bytes)=>')
  .replace('JsonDocument doc(&jsonAllocator);','const doc={logos:[],overflowed:()=>overflow};')
  .replace('JsonArray arr = doc["logos"].to<JsonArray>();','const arr=doc.logos;')
  .replace('char absolute[320];','const absolute={value:""};').replace('struct stat info{};','const info={};')
@@ -13,11 +14,14 @@ const code=route.replace('ArtworkJson::Allocator jsonAllocator;','')
  .replace(/static_cast<size_t>\((length|count)\)/g,'$1').replace(/sizeof\(absolute\)/g,'320')
  .replace(/::stat\(absolute, &info\)/g,'stat(absolute,info)').replace(/\.length\(\)/g,'.length')
  .replace(/\.c_str\(\)/g,'').replace('static_cast<uint32_t>(info.st_size)','(info.st_size>>>0)')
+ .replace('static_cast<uint32_t>(bytes)','(bytes>>>0)')
  .replace('String out;','let out;').replace('serializeJson(doc, out);','out=JSON.stringify(doc);')
  .replace(/request->/g,'request.');
 function run({entries=[{name:'radio.png',size:31100},{name:'other.JPG',size:9468}],overflow=false,mounted=true,missing=false,rounds=1}={}){
  let opened=0,closed=0;const replies=[];
  const c=vm.createContext({overflow,
+  visitFiles(mount,directory,visitor){assert.equal(directory,'/logos');if(!mount||missing)return false;opened++;
+   try{for(const e of entries)if(!e.directory&&!e.vanished)visitor('/logos/'+e.name,e.size);}finally{closed++;}return true;},
   LittleFS:{mountpoint:()=>mounted?'/littlefs':null,open(p){assert.equal(p,'/logos','logo content must never be opened');opened++;return {index:0,isDirectory:()=>true,close(){closed++;}};}},
   nextName(dir,setDir){const e=entries[dir.index++];if(!e)return '';setDir(!!e.directory);return '/logos/'+e.name;},
   snprintf(buffer,limit,format,...args){let n=0;const full=format.replace(/%s/g,()=>args[n++]);buffer.value=full.slice(0,limit-1);return full.length;},
@@ -33,7 +37,7 @@ function run({entries=[{name:'radio.png',size:31100},{name:'other.JPG',size:9468
 test('the crashing logo-list path now reads metadata without opening any image FILE streams',()=>{
  const r=run();assert.equal(r.opened,1);assert.equal(r.closed,1);
  assert.deepEqual(r.logos,[{name:'radio.png',path:'/logos/radio.png',size:31100},{name:'other.JPG',path:'/logos/other.JPG',size:9468}]);
- assert.doesNotMatch(route,/openNextFile\(|file\.size\(|LittleFS.exists\(/);
+ assert.doesNotMatch(route,/openNextFile\(|file\.size\(|LittleFS.exists\(|LittleFS.open\(/);
 });
 test('directories, unsupported files and entries deleted during enumeration are safely skipped',()=>{
  const r=run({entries:[{name:'folder.png',directory:true},{name:'readme.txt',size:50},{name:'gone.png',size:20,vanished:true},{name:'Rádió.png',size:4096}]});

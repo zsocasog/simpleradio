@@ -2,10 +2,12 @@
 #include <stddef.h>
 #include <stdint.h>
 
-// Keep only small, already compressed originals for web clients. Validation
-// reads a fixed header/tail; it never allocates or decodes an image.
+// Retain bounded compressed originals, including the full 120 KiB browser
+// upload range. Streaming still reads a fixed header/tail and bounded chunks;
+// increasing this disk-file limit allocates no full image buffer or internal RAM.
+// It also lets playback keep LCD pixels in its existing bounded PSRAM pool.
 namespace WebArtwork {
-constexpr size_t MaxBytes = 32 * 1024;
+constexpr size_t MaxBytes = 128 * 1024;
 enum class Format { None, Png, Jpeg };
 template<class File> Format inspect(File& file) {
   if (!file || file.size() < 12 || file.size() > MaxBytes) return Format::None;

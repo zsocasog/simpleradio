@@ -16,7 +16,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT/'tools'))
 from stress_report import AudioAudit, summarize, percentile, write_report, feed_balances
 from stress_radio import Run, owned_stations, station_digest, validate_image
-from stress_fixture import PCM, RATE, png, FixtureHandler
+from stress_fixture import PCM, RATE, png, upload_png, FixtureHandler
 import patch_runtime_probe
 
 def sample(**audio):
@@ -26,6 +26,33 @@ def sample(**audio):
 class ReportTests(unittest.TestCase):
     def test_absent_audio_measurements_are_inconclusive(self):
         self.assertEqual(summarize([])['result'],'INCONCLUSIVE_AUDIO')
+
+    def test_one_percent_requires_observed_fft_and_lcd_progress(self):
+        manifest=dict(kind='manifest',testVolume=1)
+        samples=[]
+        for i in range(4):
+            s=sample();s.update(kind='sample',phase='fixture',t=i,uptimeMs=5000+i*1000)
+            s['audio'].update(sampleRate=44100,dmaFrames=8192,writeMaxUs=1,sentFrames=i*44100,acceptedBytes=i*44100*8)
+            s['spectrumLoad']=dict(enabled=True,visible=True,analyzed=40*i,draws=27*i)
+            samples.append(s)
+        summary=summarize([manifest,*samples])
+        self.assertEqual(summary['spectrumMovingPairs'],3)
+        self.assertEqual(summary['result'],'NO_FAILURE_OBSERVED')
+        for s in samples:s['spectrumLoad']['draws']=0
+        self.assertEqual(summarize([manifest,*samples])['result'],'INCONCLUSIVE_SPECTRUM')
+        for s in samples:s['spectrumLoad']=None
+        self.assertEqual(summarize([manifest,*samples])['result'],'INCONCLUSIVE_SPECTRUM')
+
+    def test_sent_silence_counts_exclude_control_transitions_and_absent_telemetry(self):
+        rows=[]
+        for i in range(4):
+            s=sample();s.update(kind='sample',phase='fixture',t=i,uptimeMs=5000+1000*i)
+            s['audio'].update(sampleRate=44100,dmaFrames=8192,writeMaxUs=1,sentFrames=i*44100,acceptedBytes=i*44100*8,
+                              observedBlocks=i*172,zeroBlocks=i)
+            rows.append(s)
+        report=summarize(rows);self.assertEqual(report['observedSentBlocks'],516);self.assertEqual(report['allZeroSentBlocks'],3)
+        rows[1]['stable']=False
+        self.assertEqual(summarize(rows)['allZeroSentBlocks'],1)
 
     def test_interrupted_scenario_cannot_be_reported_as_complete(self):
         self.assertEqual(summarize([dict(kind='manifest',exercise=True)])['result'],'INCOMPLETE')
@@ -44,6 +71,36 @@ class ReportTests(unittest.TestCase):
     def test_starvation_is_risk_and_not_acoustic_proof(self):
         a=AudioAudit();a.observe(sample());s=sample();s['audio'].update(sentFrames=5000,feedDeadlineMisses=1)
         f=a.observe(s);self.assertEqual(len(f),1);self.assertEqual(f[0]['kind'],'audio-risk')
+
+    def test_only_an_audited_continuous_local_source_treats_sent_silence_as_failure(self):
+        old=sample();old.update(phase='upload-large',stationId=3);old['audio']['zeroBlocks']=1
+        new=copy.deepcopy(old);new['audio'].update(sentFrames=5000,zeroBlocks=2)
+        ordinary=AudioAudit();ordinary.observe(old);self.assertEqual(ordinary.observe(new),[])
+        strict=AudioAudit(expect_continuous=True);strict.observe(old)
+        self.assertEqual(strict.observe(new)[0]['kind'],'audio-failure')
+        strict=AudioAudit(expect_continuous=True);strict.observe(old);new['phase']='soak-radio-3'
+        self.assertEqual(strict.observe(new),[])
+
+    def test_offline_report_recovers_a_missed_live_content_warning(self):
+        rows=[]
+        for i in range(3):
+            s=sample();s.update(kind='sample',phase='upload-fixture',t=i,stationId=3,uptimeMs=5000+1000*i)
+            s['audio'].update(sampleRate=44100,dmaFrames=8192,writeMaxUs=1,sentFrames=i*44100,acceptedBytes=i*44100*8,
+                              observedBlocks=i*172,zeroBlocks=i)
+            rows.append(s)
+        report=summarize([dict(kind='manifest',testVolume=1,expectContinuous=True),*rows])
+        self.assertEqual(report['result'],'FAIL')
+        self.assertEqual(sum(f.get('blocks',0) for f in report['findings']),2)
+
+    def test_a_phase_label_change_cannot_hide_a_gap_in_the_same_continuous_source(self):
+        old=sample();old.update(phase='upload-baseline',stationId=3);old['audio']['zeroBlocks']=2
+        new=copy.deepcopy(old);new.update(phase='upload-1-small',uptimeMs=6000)
+        new['audio'].update(sentFrames=5000,zeroBlocks=6)
+        audit=AudioAudit(expect_continuous=True);audit.observe(old)
+        self.assertEqual(audit.observe(new)[0]['blocks'],4)
+        new['stationId']=4
+        audit=AudioAudit(expect_continuous=True);audit.observe(old)
+        self.assertEqual(audit.observe(new),[])
 
     def test_uptime_wrap_is_not_reboot(self):
         a=AudioAudit();s=sample();s['uptimeMs']=0xfffffff0;a.observe(s)
@@ -74,6 +131,65 @@ class ReportTests(unittest.TestCase):
         self.assertEqual(feed_balances(rows),[])
 
 class SafetyTests(unittest.TestCase):
+    def test_cancelled_request_retains_http_slot_until_real_network_job_finishes(self):
+        async def check(directory):
+            entered=threading.Event();release=threading.Event();second=threading.Event()
+            args=SimpleNamespace(base='http://192.0.2.1',out=Path(directory)/'run',seed=1,
+                                 exercise=True,http_parallel=1)
+            run=Run(args)
+            def raw(path,*_args):
+                if path=='/first':
+                    entered.set()
+                    if not release.wait(2):raise TimeoutError('Test did not release first request')
+                else:second.set()
+                return 200,b'ok','text/plain',1
+            run.raw=raw
+            first=asyncio.create_task(run.request('/first'))
+            try:
+                self.assertTrue(await asyncio.to_thread(entered.wait,1))
+                first.cancel();await asyncio.gather(first,return_exceptions=True)
+                next_request=asyncio.create_task(run.request('/second'))
+                await asyncio.sleep(.03)
+                self.assertFalse(second.is_set())
+                release.set()
+                self.assertEqual(await next_request,b'ok')
+                await asyncio.gather(*run.inflight)
+                self.assertTrue(second.is_set())
+                row=next(e for e in run.events if e.get('operation')=='/second')
+                self.assertGreaterEqual(row['clientQueueMs'],20)
+                self.assertIn('networkMs',row)
+            finally:
+                release.set();await asyncio.gather(*run.inflight,return_exceptions=True);run.log.close()
+        with tempfile.TemporaryDirectory() as directory:asyncio.run(check(directory))
+
+    def test_commands_default_to_transient_but_explicit_durable_commit_is_preserved(self):
+        async def check():
+            sent=[]
+            async def send(text):sent.append(json.loads(text))
+            run=object.__new__(Run);run.args=SimpleNamespace(exercise=True);run.ws=SimpleNamespace(send=send)
+            run.state_number=1;run.emit=lambda *_args,**_kwargs:None
+            await run.command({'eqLow':1},wait=False)
+            self.assertFalse(sent[-1]['persist'])
+            run.args.durable_commands=True
+            await run.command({'eqLow':1},wait=False)
+            self.assertTrue(sent[-1]['persist'])
+            run.state={'eqLow':2}
+            async def wait_state(predicate):self.assertTrue(predicate())
+            run.wait_state=wait_state
+            await run.command({'eqLow':2,'persist':True,'commit':True})
+            self.assertTrue(sent[-1]['persist']);self.assertTrue(sent[-1]['commit'])
+        asyncio.run(check())
+
+    def test_durable_control_check_reads_the_file_instead_of_trusting_live_state(self):
+        async def check():
+            run=object.__new__(Run);run.emit=lambda *_args,**_kwargs:None;calls=[]
+            async def request(path,**kwargs):
+                calls.append(path);return json.dumps({'volume':0 if len(calls)==1 else 1}).encode()
+            run.request=request
+            await run.verify_durable_controls({'volume':1})
+            self.assertEqual(calls,['/state.json','/state.json'])
+        asyncio.run(check())
+
     def test_cleanup_never_selects_original_or_other_users_stations(self):
         s=[dict(id=1,name='SR-test-own-original'),dict(id=2,name='SR-test-own-clone'),dict(id=3,name='SR-test-other-clone')]
         self.assertEqual([x['id'] for x in owned_stations(s,'SR-test-own-',[1])],[2])
@@ -88,7 +204,49 @@ class SafetyTests(unittest.TestCase):
         validate_image(png(),'image/png')
         with self.assertRaises(ValueError):validate_image(png()[:-2],'image/png')
 
+    def test_upload_fixtures_cover_small_and_large_durable_originals(self):
+        self.assertEqual(upload_png(True),upload_png(True))
+        self.assertLess(len(upload_png()),32768)
+        self.assertGreater(len(upload_png(True)),32768)
+        self.assertLess(len(upload_png(True)),120*1024)
+        for body in (upload_png(),upload_png(True)):validate_image(body,'image/png')
+
 class ColdLogoTests(unittest.IsolatedAsyncioTestCase):
+    async def test_volume_guard_accepts_only_the_explicitly_permitted_level(self):
+        for permitted in (0,1):
+            run=object.__new__(Run);run.args=SimpleNamespace(exercise=True,test_volume=permitted,expect_build=None)
+            run.sample_lock=asyncio.Lock();run.telemetry=False;run.state={};run.last_control=0
+            run.recovering=False;run.phase='fixture';run.audit=AudioAudit();run.events=[];run.emit=lambda *_,**__:None
+            volume=permitted
+            async def get(_):return dict(system=dict(uptimeMs=5000,heapFree=30000,heapLargest=10000,psramFree=6000000,buildId='test'),status=dict(volume=volume))
+            run.get=get
+            await run.sample()
+            volume=2
+            with self.assertRaisesRegex(RuntimeError,'Volume changed externally'):await run.sample()
+
+    async def test_soak_is_bounded_and_only_changes_owned_stations(self):
+        run=object.__new__(Run);run.args=SimpleNamespace(fixture_url='http://192.0.2.1:19840',reference_file=Path('reference.ogg'),soak_seconds=120,scale=1)
+        run.prefix='SR-test-soak-';run.background=[]
+        now=[0];created=[];saved=[];commands=[]
+        async def add(suffix,url,logo=''):created.append((suffix,url));return 100+len(created)
+        async def hold(seconds):now[0]+=seconds
+        async def images(_):await asyncio.Future()
+        async def command(fields):commands.append(fields)
+        async def request(path,fields=None,**kwargs):
+            saved.append((path,fields));return b'{"path":"/logos/own.png"}'
+        async def config(_):pass
+        run.add_station=add;run.hold=hold;run.image_load=images;run.command=command
+        run.request=request;run.save_config=config;run.set_phase=lambda _:None;run.emit=lambda *_,**__:None
+        try:
+            with patch('stress_radio.time.monotonic',side_effect=lambda:now[0]):
+                await run.soak([dict(id=7,name='original',url='http://radio/live')],dict(brightness=100))
+        finally:
+            for task in run.background:task.cancel()
+            await asyncio.gather(*run.background,return_exceptions=True)
+        self.assertEqual(now[0],120);self.assertEqual(len(created),2)
+        self.assertEqual(commands,[dict(station=101,play=True)])
+        self.assertTrue(all(fields is None or fields['id'] in (101,102) for _,fields in saved))
+
     async def test_browser_save_uses_local_reference_without_remote_prewarm_overlap(self):
         run=object.__new__(Run)
         run.args=SimpleNamespace(fixture_url='http://192.0.2.1:19840',

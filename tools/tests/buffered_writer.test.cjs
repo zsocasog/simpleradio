@@ -53,7 +53,7 @@ test("short writes latch failure and cannot publish an incomplete settings file"
   assert.equal(calls, 1);
   const atomic = fs.readFileSync(path.join(root, "src/storage/atomic_file.cpp"), "utf8");
   assert.ok(atomic.indexOf("file.flush()") < atomic.indexOf("file.size() == written"));
-  assert.ok(atomic.indexOf("if (!complete)") < atomic.indexOf("LittleFS.rename(temp, target)"));
+  assert.ok(atomic.indexOf("if (!complete)") < atomic.indexOf("replaceFileWhenReadersClose(temp, target)"));
 });
 
 test('storage cooperation happens only after successful nonempty writes, never under a sink lock',()=>{

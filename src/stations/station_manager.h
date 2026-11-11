@@ -1,6 +1,7 @@
 #pragma once
 #include <Arduino.h>
 #include <ArduinoJson.h>
+#include "../artwork/artwork_json.h"
 
 struct Station {
   int id;
@@ -30,7 +31,11 @@ public:
 private:
   StationManager() = default;
 
-  JsonDocument _doc;
+  // Both the published list and its transactional copy use this long-lived
+  // PSRAM allocator. Swapping a document backed by a local allocator would
+  // leave a dangling allocator after the save returns. Writers are serialized.
+  ArtworkJson::Allocator jsonAllocator_;
+  JsonDocument _doc{&jsonAllocator_};
   uint32_t _revision = 1;
   bool saveFile();
   int nextId() const;

@@ -19,6 +19,7 @@ function body(text, marker) {
 test('LCD timing ignores old generations and hidden or disabled spectrum', () => {
   const records = [];
   const code = body(source, 'void AudioSpectrum::noteDisplayFrame(')
+    .replace(/#if SIMPLE_RADIO_RUNTIME_DIAGNOSTICS[^]*?#endif/g,'')
     .replace('const uint32_t now', 'const now').replace(/&mux_/g, '0')
     .replace('SpectrumMath::usableFrame', 'usableFrame');
   const note = new Function('sample','startedUs','finishedUs','enabled_','visible_','generation_',

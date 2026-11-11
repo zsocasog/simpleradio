@@ -194,6 +194,7 @@ void AppConfig::load() {
 
 bool AppConfig::save() {
   SR_PERF_SPAN(ConfigSave);
+  SR_ACTIVITY(SettingsSave);
   const int profile = IrRemotePolicy::profileIndex(irRemoteProfile.c_str());
   captureIrRemoteCodes(profile >= 0 ? profile : 0);
   ArtworkJson::Allocator jsonAllocator;

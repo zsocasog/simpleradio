@@ -5,6 +5,8 @@
 #include "../stations/station_manager.h"
 #include "../config/app_config.h"
 #include "../storage/atomic_file.h"
+#include "../storage/read_only_file.h"
+#include "../artwork/artwork_json.h"
 
 StateStorage& StateStorage::instance() {
   static StateStorage s;
@@ -12,6 +14,7 @@ StateStorage& StateStorage::instance() {
 }
 
 void StateStorage::load() {
+  persisted_.invalidate();
   JsonDocument doc;
   if (!readJsonWithBackup("/state.json", doc)) return;
 
@@ -44,17 +47,20 @@ void StateStorage::load() {
   }
 }
 
-void StateStorage::save() {
-  JsonDocument doc;
+bool StateStorage::save() {
   PlayerStateSnapshot ps = PlayerState::instance().snapshot();
-
-  doc["stationId"] = ps.stationId;
-  doc["volume"] = ps.volume;
-  doc["playing"] = ps.playing;
-  doc["eqLow"] = ps.eqLow;
-  doc["eqMid"] = ps.eqMid;
-  doc["eqHigh"] = ps.eqHigh;
-  doc["balance"] = ps.balance;
-
-  writeJsonAtomic("/state.json", doc);
+  const PersistedControls::Value value{ps.stationId, ps.volume, ps.playing,
+                                     ps.eqLow, ps.eqMid, ps.eqHigh, ps.balance};
+  return persisted_.save(value, ReadOnlyStorage::exists(LittleFS.mountpoint(), "/state.json"), [&] {
+    ArtworkJson::Allocator allocator;
+    JsonDocument doc(&allocator);
+    doc["stationId"] = value.stationId;
+    doc["volume"] = value.volume;
+    doc["playing"] = value.playing;
+    doc["eqLow"] = value.eqLow;
+    doc["eqMid"] = value.eqMid;
+    doc["eqHigh"] = value.eqHigh;
+    doc["balance"] = value.balance;
+    return !doc.overflowed() && writeJsonAtomic("/state.json", doc);
+  });
 }

@@ -4,6 +4,7 @@ The tone is a repeatable 1-second signal, not silence. PCM is checked offline;
 the ESP's muted output is monitored by timing, not by listening to this file.
 """
 import math
+import random
 import struct
 import threading
 import time
@@ -18,6 +19,13 @@ def png():
     side = 96
     rows = b''.join(b'\0' + b''.join(bytes((30 + x * 2, 90 + y, 160)) for x in range(side)) for y in range(side))
     return b'\x89PNG\r\n\x1a\n' + chunk(b'IHDR', struct.pack('>IIBBBBB', side, side, 8, 2, 0, 0, 0)) + chunk(b'IDAT', zlib.compress(rows)) + chunk(b'IEND', b'')
+
+def upload_png(noisy=False):
+    """Two repeatable 150px images with high and low compression."""
+    def chunk(name,data): return struct.pack('>I',len(data))+name+data+struct.pack('>I',zlib.crc32(name+data)&0xffffffff)
+    side=150; rng=random.Random(20261111)
+    rows=b''.join(b'\0'+(rng.randbytes(side*3) if noisy else bytes((30,110,190))*side) for _ in range(side))
+    return b'\x89PNG\r\n\x1a\n'+chunk(b'IHDR',struct.pack('>IIBBBBB',side,side,8,2,0,0,0))+chunk(b'IDAT',zlib.compress(rows))+chunk(b'IEND',b'')
 
 class FixtureHandler(BaseHTTPRequestHandler):
     protocol_version = 'HTTP/1.1'

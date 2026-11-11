@@ -155,6 +155,7 @@ private:
   std::atomic<size_t> filesystemTotalSnapshot{0};
   std::atomic<size_t> filesystemUsedSnapshot{0};
   std::atomic<uint32_t> cacheStatsAtMs{0};
+  std::atomic<uint32_t> lcdDiskWrites{0};
   unsigned long lastAttemptMs = 0;
   bool downloadInProgress = false;
   bool downloadIsIdlePrewarm = false;

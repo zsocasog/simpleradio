@@ -35,6 +35,7 @@ function harness(){
     return {write(data,n){if(!writeOk)return 0;const next=new Uint8Array(bytes.length+n);next.set(bytes);next.set(data.subarray(0,n),bytes.length);bytes=next;files.set(p,bytes);writes.push(p);return n;},
      size:()=>bytes.length,flush(){},close(){if(!files.has(p))files.set(p,bytes);},getWriteError:()=>false};}}});
  const code=source=>source.replace(/for \(const char\* path : \{([^}]+)\}\)/g,'for(const path of [$1])')
+  .replace(/ReadOnlyStorage::(?:exists|directoryExists)\(LittleFS.mountpoint\(\), (path|"\/logos")\)/g,'LittleFS.exists($1)')
   .replace(/auto capture = \[\]\(const char\* path\)/,'const capture = path =>')
   .replace(/\[&\]\(uint8_t\* data, size_t size\)/,'(data,size)=>')
   .replace(/\[\]\(const char\* path, const uint8_t\* data, size_t size\)/,'(path,data,size)=>')
@@ -82,11 +83,11 @@ test('backup limits and duplicate paths refuse capture rather than silently drop
 });
 test('OTA refuses to unmount or erase if the complete settings/logo snapshot cannot be captured',()=>{
  const events=[],request={attributes:{},setAttribute(k,v){this.attributes[k]=v;},getAttribute(k){return this.attributes[k]||'';},hasParam:()=>true,getParam:()=>({value:()=> '1'})};
- const c=vm.createContext({otaUploadActive:false,otaRuntimeBackupReady:false,otaUploadLastMs:0,otaUploadGeneration:0,OTA_UPLOAD_STALE_MS:30000,
+ const c=vm.createContext({otaUploadActive:false,storedReadInProgress:{load:()=>false},vTaskDelay(){},otaRuntimeBackupReady:false,otaUploadLastMs:0,otaUploadGeneration:0,OTA_UPLOAD_STALE_MS:30000,
   millis:()=>100,otaRequestPassword:()=> 'test',SIMPLE_RADIO_OTA_PASSWORD:'test',I18n:{OTA_BACKUP_FAILED:'backup failed'},
   stopPlaybackForMaintenance:()=>events.push('stop'),backupOtaRuntimeFiles:()=>false,clearOtaRuntimeBackups(){},
   LittleFS:{end:()=>events.push('unmount')},Update:{begin:()=>{events.push('erase');return true;}},Serial:{printf(){}},String});
- const begin=body(web,'static bool beginOtaUpload(').replace(/->/g,'.').replace(/I18n::/g,'I18n.').replace(/String\(\+\+otaUploadGeneration\).c_str\(\)/,'String(++otaUploadGeneration)');
+ const begin=body(web,'static bool beginOtaUpload(').replace(/->/g,'.').replace(/I18n::/g,'I18n.').replace(/const uint32_t /g,'const ').replace('1000U','1000').replace(/String\(\+\+otaUploadGeneration\).c_str\(\)/,'String(++otaUploadGeneration)');
  vm.runInContext('function beginOtaUpload(request,total,command,filesystemTarget)'+begin,c);
  assert.equal(c.beginOtaUpload(request,100,0,true),false);assert.deepEqual(events,['stop']);assert.equal(request.attributes.error,'backup failed');
 });

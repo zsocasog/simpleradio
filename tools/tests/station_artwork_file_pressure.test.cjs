@@ -15,7 +15,7 @@ function body(source, marker) {
   throw Error(marker);
 }
 function translate(code) {
-  return code.replace(/SR_PERF_(?:SPAN|WAIT)\([^;]+;/g, '').replace('char absolute[320];', 'const absolute={value:""};')
+  return code.replace(/SR_READ_IO_SCOPE\(\);/g,'').replace(/SR_PERF_(?:SPAN|WAIT)\([^;]+;/g, '').replace('char absolute[320];', 'const absolute={value:""};')
     .replace('!*mount', '!mount.length')
     .replace(/LcdBmp::/g, 'LcdBmp.')
     .replace(/'([SR56])'/g, (_, c) => c.charCodeAt(0))
@@ -101,7 +101,7 @@ test('the logged thumbnail lookup cannot reach Arduino fopen/exists on any local
     'static bool validLcdThumbnailFile(const String& path) {']) {
     assert.doesNotMatch(body(cache,marker),/LittleFS\.(?:exists|open)\(/,marker);
   }
-  const route=web.slice(web.indexOf('server.on("/api/artwork/station"'),web.indexOf('server.on("/api/stations"'));
+  const route=body(web,'static void sendStationImage(');
   assert.doesNotMatch(route,/make_shared|LittleFS\.open|beginResponse/);
   assert.match(route,/new \(std::nothrow\) StationArtworkResponse/);
   assert.match(route,/if \(!response\).*send\(503\)/);

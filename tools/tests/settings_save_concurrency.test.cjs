@@ -54,7 +54,9 @@ function harness() {
   const request = { weak: { expired: () => !alive, lock: () => alive ? request : null },
     _sent:false,_paused:false,_response:null,
     _client:{setRxTimeout(){},close(force){calls.push('close');alive=false;},abort(){calls.push('abort');alive=false;}},
-    client(){return this._client;},
+    client(){return this._client;},get(){return this;},
+    sendDeferred(reply){this.pending=reply;return true;},
+    poll(){if(this.pending){const reply=this.pending;this.pending=null;this.send(reply);}},
     beginResponse: (status, type, text) => ({ status, type, text, headers: {}, addHeader(k,v) { this.headers[k]=v; },
       _sourceValid(){return true;},_respond(){calls.push('reply');replies.push(this);} }) };
   request._this=request.weak;
@@ -74,11 +76,12 @@ function harness() {
       backgroundNetworkActive:()=>gate.backgroundActive() },
     AppConfig:{ instance:()=>cfg }, ArtworkCache:{ instance:()=>({retryCurrentAlbumLookup:()=>calls.push('retry-album')}) },
     StatusLed:{ instance:()=>({applyConfig:()=>calls.push('led')}) }, requestDisplayConfigRefresh:()=>calls.push('display') });
+  c.sendDeferredReply=(r,response)=>r.sendDeferred(response);
   vm.runInContext(`function queueSettingsSave(request,job) ${queueCode}
     function processSettingsSave() ${processCode}`,c);
   const job = {doc:{ brightness:80, overflowed:()=>false }, request:null, startedMs:0, replied:false};
   return {c,gate,calls,replies,request,job,cfg, queue:(j=job)=>c.queueSettingsSave(request,j),
-    process:()=>c.processSettingsSave(), disconnect:()=>{alive=false;} };
+    process:()=>{c.processSettingsSave();request.poll();}, poll:()=>request.poll(), disconnect:()=>{alive=false;} };
 }
 test('logged brightness save waits for TLS, then commits once and replies after persistence', () => {
   const h=harness(); assert.equal(h.gate.beginBackground(),true); assert.equal(h.queue(),true);

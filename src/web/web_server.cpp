@@ -13,6 +13,9 @@
 #include "../state/player_state.h"
 #include "../state/state_storage.h"
 #include "../storage/ota_backup.h"
+#include "../storage/write_only_file.h"
+#include "../storage/atomic_file.h"
+#include "stored_file_response.h"
 #include "../config/app_config.h"
 #include "../config/hardware_capabilities.h"
 #include "../stations/station_manager.h"
@@ -25,6 +28,7 @@
 #include "station_artwork_response.h"
 #include <memory>
 #include <algorithm>
+#include <atomic>
 #include <new>
 #include "../display/display.h"
 #include "../display/display_presenter.h"
@@ -36,6 +40,10 @@
 #include "recovery_page.h"
 #include "webui_compatibility.h"
 #include "../diagnostics/runtime_probe.h"
+#if SIMPLE_RADIO_RUNTIME_DIAGNOSTICS
+#include "diagnostic_json_response.h"
+#endif
+#include "../audio/audio_spectrum.h"
 #include "artwork_etag.h"
 #include "station_web_image_response.h"
 
@@ -158,7 +166,8 @@ static volatile bool displayActivityPending = false;
 static volatile bool displayConfigRefreshPending = false;
 static volatile bool rebootPending = false;
 static unsigned long rebootAt = 0;
-static bool otaUploadActive = false;
+static std::atomic<bool> otaUploadActive{false};
+static std::atomic<bool> storedReadInProgress{false};
 static bool otaUploadFailed = false;
 static bool otaUploadOk = false;
 static bool otaFilesystemTarget = false;
@@ -270,9 +279,9 @@ static bool backupOtaRuntimeFiles() {
   };
   for (const char* path : {"/wifi.json", "/config.json", "/state.json", "/stations.json",
                            "/wifi.json.bak", "/config.json.bak", "/state.json.bak", "/stations.json.bak"}) {
-    if (LittleFS.exists(path) && !capture(path)) { clearOtaRuntimeBackups(); return false; }
+    if (ReadOnlyStorage::exists(LittleFS.mountpoint(), path) && !capture(path)) { clearOtaRuntimeBackups(); return false; }
   }
-  if (LittleFS.exists("/logos")) {
+  if (ReadOnlyStorage::directoryExists(LittleFS.mountpoint(), "/logos")) {
     File root = LittleFS.open("/logos");
     if (!root || !root.isDirectory()) { clearOtaRuntimeBackups(); return false; }
     for (File file = root.openNextFile(); file; file = root.openNextFile()) {
@@ -295,7 +304,7 @@ static bool backupOtaRuntimeFiles() {
 static bool restoreOtaRuntimeFiles() {
   if (!otaRuntimeBackupReady) return true;
   return otaRuntimeBackup.restore([](const char* path, const uint8_t* data, size_t size) {
-    if (strncmp(path, "/logos/", 7) == 0 && !LittleFS.exists("/logos") && !LittleFS.mkdir("/logos")) return false;
+    if (strncmp(path, "/logos/", 7) == 0 && !ReadOnlyStorage::directoryExists(LittleFS.mountpoint(), "/logos") && !LittleFS.mkdir("/logos")) return false;
     File file = LittleFS.open(path, "w");
     if (!file) return false;
     size_t offset = 0;
@@ -395,6 +404,15 @@ static bool beginOtaUpload(AsyncWebServerRequest* request, size_t total, int com
   }
 
   otaUploadActive = true;
+  const uint32_t storedReadWaitStarted = millis();
+  while (storedReadInProgress.load()) {
+    if (millis() - storedReadWaitStarted >= 1000U) {
+      otaUploadActive = false;
+      request->setAttribute("error", I18n::OTA_BUSY);
+      return false;
+    }
+    vTaskDelay(1);
+  }
   stopPlaybackForMaintenance();
 
   if (filesystemTarget) {
@@ -649,6 +667,9 @@ void requestStateSave() {
 }
 
 static void flushScheduledStateSave(bool force = false) {
+  // Do not chain a state-file commit immediately behind a settings commit.
+  // The pending response supplies a natural refill window for the audio pump.
+  if (!force && settingsSavePending()) return;
   bool shouldSave = false;
   unsigned long now = millis();
 
@@ -661,7 +682,7 @@ static void flushScheduledStateSave(bool force = false) {
 
   if (!shouldSave) return;
 
-  StateStorage::instance().save();
+  if (!StateStorage::instance().save()) scheduleStateSave();
 }
 
 static void enqueuePlayerAction(const QueuedPlayerAction& action) {
@@ -775,11 +796,11 @@ static void queueDeleteStation(int stationId, int fallbackId, bool playAfterDele
 }
 
 static bool ensureDir(const char* path) {
-  return LittleFS.exists(path) || LittleFS.mkdir(path);
+  return ReadOnlyStorage::directoryExists(LittleFS.mountpoint(), path) || LittleFS.mkdir(path);
 }
 
 static bool isPngFile(const String& path) {
-  File file = LittleFS.open(path, "r");
+  ReadOnlyStorage::File file(LittleFS.mountpoint(), path.c_str());
   if (!file) return false;
 
   uint8_t signature[8];
@@ -793,41 +814,32 @@ static bool isPngFile(const String& path) {
 }
 
 static bool commitLogoUpload(const String& tempPath, const String& targetPath, String& error) {
-  if (!tempPath.length() || !targetPath.length() || !LittleFS.exists(tempPath) || !isPngFile(tempPath)) {
-    if (tempPath.length() && LittleFS.exists(tempPath)) LittleFS.remove(tempPath);
+  if (!tempPath.length() || !targetPath.length() || !ReadOnlyStorage::exists(LittleFS.mountpoint(), tempPath.c_str()) || !isPngFile(tempPath)) {
+    if (tempPath.length() && ReadOnlyStorage::exists(LittleFS.mountpoint(), tempPath.c_str())) LittleFS.remove(tempPath);
     error = "Invalid PNG";
     return false;
   }
 
   ArtworkRevision::Publication publication;
-  String backupPath = targetPath + ".bak";
-  if (LittleFS.exists(backupPath)) LittleFS.remove(backupPath);
-
-  bool hadTarget = LittleFS.exists(targetPath);
-  if (hadTarget && !LittleFS.rename(targetPath, backupPath)) {
-    LittleFS.remove(tempPath);
-    error = "Existing logo backup failed";
-    return false;
-  }
-
-  if (!LittleFS.rename(tempPath, targetPath)) {
-    if (hadTarget && LittleFS.exists(backupPath)) {
-      LittleFS.rename(backupPath, targetPath);
-    }
+  // LittleFS replaces an existing destination atomically. Keep the old logo
+  // available until this one commit; moving it to .bak first added two flash
+  // metadata commits and an interval with no file at the published path.
+  if (!replaceFileWhenReadersClose(tempPath, targetPath)) {
     LittleFS.remove(tempPath);
     error = "Logo replace failed";
     return false;
   }
 
   ArtworkCache::instance().invalidateLcdThumbnail(targetPath);
-  if (LittleFS.exists(backupPath)) LittleFS.remove(backupPath);
+  String backupPath = targetPath + ".bak";
+  if (ReadOnlyStorage::exists(LittleFS.mountpoint(), backupPath.c_str())) LittleFS.remove(backupPath);
   return true;
 }
 
 static void removeLocalLogoWithThumbnail(const String& path) {
   if (!path.length()) return;
   ArtworkCache::instance().invalidateLcdThumbnail(path);
-  if (LittleFS.exists(path)) LittleFS.remove(path);
+  if (ReadOnlyStorage::exists(LittleFS.mountpoint(), path.c_str())) LittleFS.remove(path);
 }
 
 static bool supportedLogoExtension(const String& filename) {
@@ -1168,6 +1180,9 @@ static bool commitPendingDelete() {
 struct StationLogoUploadBuffer {
   size_t size;
   size_t received;
+#if SIMPLE_RADIO_RUNTIME_DIAGNOSTICS
+  RuntimeProbe::UploadTrace trace;
+#endif
   uint8_t bytes[1];
 };
 
@@ -1190,6 +1205,9 @@ struct StationSaveJob {
   StationLogoUploadBuffer* upload = nullptr;
   String error;
   uint32_t elapsedMs = 0;
+#if SIMPLE_RADIO_RUNTIME_DIAGNOSTICS
+  RuntimeProbe::UploadTrace trace{};
+#endif
   ~StationSaveJob() {
     free(upload);
     if (memoryClaimed) ArtworkMemory::gate().endStationSave();
@@ -1199,15 +1217,21 @@ struct StationSaveJob {
 static portMUX_TYPE stationSaveMux = portMUX_INITIALIZER_UNLOCKED;
 static StationSaveJob* pendingStationSave = nullptr;
 static constexpr uint32_t STATION_SAVE_TASK_STACK = 6144;
+#if SIMPLE_RADIO_RUNTIME_DIAGNOSTICS
+static std::atomic<uint32_t> stationSaveStackMin{UINT32_MAX};
+#endif
 
 static bool storeStationLogo(StationSaveJob& job) {
+  SR_ACTIVITY(LogoWrite);
+#if SIMPLE_RADIO_RUNTIME_DIAGNOSTICS
+  uint32_t stageUs = micros();
+#endif
   job.logo = stationLogoUploadPath(job.id);
   const String tempPath = job.logo + ".upload";
   if (!ensureDir("/logos")) { job.error = "Logo directory unavailable"; return false; }
-  if (LittleFS.exists(tempPath)) LittleFS.remove(tempPath);
-  File file = LittleFS.open(tempPath, "w");
+  if (ReadOnlyStorage::exists(LittleFS.mountpoint(), tempPath.c_str())) LittleFS.remove(tempPath);
+  WriteOnlyStorage::File file(LittleFS.mountpoint(), tempPath.c_str());
   if (!file) { job.error = "Logo file open failed"; return false; }
-  file.setBufferSize(512);
   bool ok = true;
   for (size_t offset = 0; offset < job.upload->size;) {
     const size_t count = min(static_cast<size_t>(4096), job.upload->size - offset);
@@ -1215,21 +1239,43 @@ static bool storeStationLogo(StationSaveJob& job) {
     offset += count;
     vTaskDelay(1);
   }
-  file.flush();
-  file.close();
+  #if SIMPLE_RADIO_RUNTIME_DIAGNOSTICS
+  job.trace.writeUs = micros() - stageUs; stageUs = micros();
+  #endif
+  const bool synced = file.flush();
+  const bool closed = file.close();
+  ok = ok && synced && closed;
+  #if SIMPLE_RADIO_RUNTIME_DIAGNOSTICS
+  job.trace.flushUs = micros() - stageUs; stageUs = micros();
+  #endif
   if (!ok) {
     LittleFS.remove(tempPath);
     job.error = "Logo write failed";
     return false;
   }
-  if (!commitLogoUpload(tempPath, job.logo, job.error)) return false;
-  removeOldStationLogoUploads(job.id, job.logo);
+  {
+    SR_ACTIVITY(LogoCommit);
+    if (!commitLogoUpload(tempPath, job.logo, job.error)) return false;
+  }
+#if SIMPLE_RADIO_RUNTIME_DIAGNOSTICS
+  job.trace.commitUs = micros() - stageUs; stageUs = micros();
+#endif
+  {
+    SR_ACTIVITY(CacheScan);
+    removeOldStationLogoUploads(job.id, job.logo);
+  }
+#if SIMPLE_RADIO_RUNTIME_DIAGNOSTICS
+  job.trace.cleanupUs = micros() - stageUs;
+#endif
   return true;
 }
 
 static void stationSaveTask(void* parameter) {
   auto* job = static_cast<StationSaveJob*>(parameter);
   const uint32_t startedMs = millis();
+#if SIMPLE_RADIO_RUNTIME_DIAGNOSTICS
+  job->trace.workerUs = micros();
+#endif
   // An aborted request which never started must not create a station. Once
   // writing has begun, finish the atomic commit even if the browser goes away.
   if (!job->request.expired()) {
@@ -1237,21 +1283,35 @@ static void stationSaveTask(void* parameter) {
     else job->saved = StationManager::instance().saveStation(job->id, job->name, job->url, job->logo, job->outId);
   }
   job->elapsedMs = millis() - startedMs;
+#if SIMPLE_RADIO_RUNTIME_DIAGNOSTICS
+  job->trace.finishedUs = micros();
+#endif
   SR_PERF_WAIT(StationWork, job->elapsedMs);
+#if SIMPLE_RADIO_RUNTIME_DIAGNOSTICS
+  const uint32_t stackFree = uxTaskGetStackHighWaterMark(nullptr);
+  if (stackFree < stationSaveStackMin.load()) stationSaveStackMin.store(stackFree);
+#endif
   portENTER_CRITICAL(&stationSaveMux);
   job->done = true;
   portEXIT_CRITICAL(&stationSaveMux);
   vTaskDelete(nullptr); // The main loop owns and releases the completed job.
 }
 
+static std::atomic<uint32_t> stationSaveImageHolds{0};
+static void dispatchStationImages();
+
 static void startStationSaveJob(AsyncWebServerRequest* request, StationSaveJob* job) {
   // Copy the request's data; only the library's weak continuation pointer may
   // outlive its handler. At most one job/stack can be admitted at a time.
   // Publish only a fully initialized continuation to the other CPU.
   job->request = request->pause();
+#if SIMPLE_RADIO_RUNTIME_DIAGNOSTICS
+  job->trace.queuedUs = micros();
+#endif
   bool admitted = false;
   portENTER_CRITICAL(&stationSaveMux);
   if (!pendingStationSave) {
+    ++stationSaveImageHolds;
     pendingStationSave = job;
     admitted = true;
   }
@@ -1261,6 +1321,11 @@ static void startStationSaveJob(AsyncWebServerRequest* request, StationSaveJob* 
     request->send(503, "text/plain", "Another station save is in progress");
     return;
   }
+  // Let already active images finish, but reserve the next free internal
+  // blocks for the temporary save stack. Resume queued streams in AsyncTCP
+  // when this response closes, including client cancellation. Logo receive's
+  // token has already been released before ownership moves into this job.
+  request->onDisconnect([]() { --stationSaveImageHolds; dispatchStationImages(); });
   // No worker stack is allocated in the request handler. The main loop starts
   // it once album preparation has released the shared memory gate.
 }
@@ -1317,6 +1382,61 @@ static void queueStationSave(AsyncWebServerRequest* request, int id, const Strin
   startStationSaveJob(request, job);
 }
 
+static void sendDeferredReply(AsyncWebServerRequest* request, AsyncWebServerResponse* response) {
+  if (!response) return;
+  // Main only publishes immutable response ownership. The pinned request poll
+  // starts headers/body in AsyncTCP; ACK/poll cannot race with _respond().
+  if (!request->sendDeferred(response)) delete response;
+}
+
+struct StoredFileReadJob { AsyncWebServerRequestPtr request; const char* path; };
+static StoredFileReadJob* storedFileReads[8]{};
+static uint8_t storedReadHead = 0, storedReadTail = 0, storedReadCount = 0;
+static portMUX_TYPE storedReadMux = portMUX_INITIALIZER_UNLOCKED;
+
+static void queueStoredFileRead(AsyncWebServerRequest* request, const char* path) {
+  if (otaUploadActive || rebootPending) { request->send(503); return; }
+  auto* job = new (std::nothrow) StoredFileReadJob;
+  if (!job) { request->send(503); return; }
+  job->path = path;
+  job->request = request->pause();
+  bool accepted = false;
+  portENTER_CRITICAL(&storedReadMux);
+  if (storedReadCount < 8) {
+    storedFileReads[storedReadTail] = job; storedReadTail = (storedReadTail + 1) % 8;
+    ++storedReadCount; accepted = true;
+  }
+  portEXIT_CRITICAL(&storedReadMux);
+  if (!accepted) { delete job; request->send(503); }
+}
+
+static void processStoredFileRead() {
+  StoredFileReadJob* pending = nullptr;
+  portENTER_CRITICAL(&storedReadMux);
+  if (storedReadCount) {
+    pending = storedFileReads[storedReadHead]; storedFileReads[storedReadHead] = nullptr;
+    storedReadHead = (storedReadHead + 1) % 8; --storedReadCount;
+  }
+  portEXIT_CRITICAL(&storedReadMux);
+  if (!pending) return;
+  std::unique_ptr<StoredFileReadJob> job(pending);
+  if (auto request = job->request.lock()) {
+    int status = 503;
+    // Publish before rechecking the OTA flag. OTA publishes its flag before
+    // waiting for us: no open descriptor can race LittleFS.end().
+    storedReadInProgress.store(true);
+    auto* response = (otaUploadActive || rebootPending) ? nullptr : StoredFileResponse::create(LittleFS.mountpoint(), job->path, status);
+    storedReadInProgress.store(false);
+    if (!response) { sendDeferredReply(request.get(), request->beginResponse(status)); return; }
+    const String tag = response->entityTag();
+    const String condition = request->header("If-None-Match");
+    response->addHeader("ETag", tag);
+    response->addHeader("Cache-Control", "no-cache");
+    if (ArtworkEtag::matches({condition.c_str(), condition.length()}, {tag.c_str(), tag.length()})) response->notModified();
+    sendDeferredReply(request.get(), response);
+  }
+}
+
 static void completeStationSave() {
   StationSaveJob* completed = nullptr;
   portENTER_CRITICAL(&stationSaveMux);
@@ -1336,7 +1456,8 @@ static void completeStationSave() {
     Serial.printf("[stations] %s saved #%d in %lums\n", job->upload ? "logo" : "station",
                   job->upload ? job->id : job->outId, static_cast<unsigned long>(job->elapsedMs));
   }
-  if (auto request = job->request.lock()) {
+  auto request = job->request.lock();
+  if (request) {
     if (job->saved) {
       ArtworkJson::Allocator jsonAllocator;
       JsonDocument doc(&jsonAllocator);
@@ -1344,11 +1465,17 @@ static void completeStationSave() {
       else doc["id"] = job->outId;
       String out;
       serializeJson(doc, out);
-      request->send(200, "application/json", out);
+      sendDeferredReply(request.get(), request->beginResponse(200, "application/json", out));
     } else {
-      request->send(job->errorStatus, "text/plain", job->error.length() ? job->error : "Failed to save station");
+      sendDeferredReply(request.get(), request->beginResponse(job->errorStatus, "text/plain", job->error.length() ? job->error : "Failed to save station"));
     }
   }
+#if SIMPLE_RADIO_RUNTIME_DIAGNOSTICS
+  if (job->upload) {
+    job->trace.replyUs = micros(); job->trace.saved = job->saved; job->trace.clientGone = !request;
+    RuntimeProbe::recordUpload(job->trace);
+  }
+#endif
 }
 
 static uint32_t activeStationLogoUpload = 0;
@@ -1362,6 +1489,7 @@ static void releaseStationLogoUpload(uint32_t token) {
 
 static void receiveStationLogo(AsyncWebServerRequest* request, uint8_t* data, size_t len,
                                 size_t index, size_t total) {
+  SR_ACTIVITY(LogoReceive);
   if (request->hasAttribute("error")) return;
   if (index == 0) {
     static constexpr size_t MAX_LOGO_UPLOAD_BYTES = 120 * 1024;
@@ -1385,6 +1513,9 @@ static void receiveStationLogo(AsyncWebServerRequest* request, uint8_t* data, si
     }
     upload->size = total;
     upload->received = 0;
+#if SIMPLE_RADIO_RUNTIME_DIAGNOSTICS
+    upload->trace = {}; upload->trace.firstUs = micros(); upload->trace.bytes = total;
+#endif
     // The library frees _tempObject on disconnect; transfer it to the worker
     // only once the full, validated request body has arrived. No flash I/O here.
     request->_tempObject = upload;
@@ -1398,6 +1529,11 @@ static void receiveStationLogo(AsyncWebServerRequest* request, uint8_t* data, si
   }
   memcpy(upload->bytes + index, data, len);
   upload->received += len;
+#if SIMPLE_RADIO_RUNTIME_DIAGNOSTICS
+  const uint32_t now = micros();
+  if (upload->trace.chunks) upload->trace.maxRxGapUs = max(upload->trace.maxRxGapUs, now - upload->trace.lastUs);
+  ++upload->trace.chunks; upload->trace.lastUs = now;
+#endif
 }
 
 static void discardStationLogoUpload(AsyncWebServerRequest* request) {
@@ -1427,6 +1563,9 @@ static void queueStationLogoUpload(AsyncWebServerRequest* request) {
   }
   job->id = request->getParam("id")->value().toInt();
   job->upload = upload;
+#if SIMPLE_RADIO_RUNTIME_DIAGNOSTICS
+  job->trace = upload->trace;
+#endif
   request->_tempObject = nullptr; // The job destructor now owns the PSRAM buffer.
   startStationSaveJob(request, job);
 }
@@ -1566,47 +1705,13 @@ static void processSettingsSave() {
     }
     auto* reply = request->beginResponse(status, status == 200 ? "application/json" : "text/plain", response);
     reply->addHeader("Connection", "close");
-    request->send(reply);
+    sendDeferredReply(request.get(), reply);
     job->replied = true;
     job->startedMs = millis();
   }
 }
 
-void webServerLoop() {
-  processSettingsSave();
-  completeStationSave();
-  dispatchPendingStationSave();
-  unsigned long now = millis();
-  if (now - lastWsCleanupMs >= 1000) {
-    lastWsCleanupMs = now;
-    ws.cleanupClients();
-  }
-  processDisplayRequests();
-  processRebootRequest();
-  commitPendingDelete();
-
-  QueuedPlayerAction action;
-  uint8_t processed = 0;
-  while (processed < 4 && dequeuePlayerAction(action)) {
-    executeQueuedAction(action);
-    ++processed;
-    if (pendingDelete.active) break;
-  }
-
-  commitPendingDelete();
-  flushScheduledStateSave();
-  processDisplayRequests();
-  processRebootRequest();
-}
-
-void webServerBegin() {
-  Serial.println("[web] begin");
-  ArtworkRevision::beginHttpSession();
-  WebUiCompatibility::refresh();
-  ws.onEvent(onWsEvent);
-  server.addHandler(&ws);
-
-  server.on("/api/artwork/station", HTTP_GET, [](AsyncWebServerRequest* request) {
+static void sendStationImage(AsyncWebServerRequest* request) {
     if (!request->hasParam("id")) { request->send(400); return; }
     String imagePath;
     ArtworkCache& cache = ArtworkCache::instance();
@@ -1634,6 +1739,121 @@ void webServerBegin() {
     }
     const String path = cache.lcdThumbnailPath(imagePath);
     if (!sendImage(new (std::nothrow) StationArtworkResponse(LittleFS.mountpoint(), path.c_str()))) request->send(404);
+}
+
+struct StationImageJob { AsyncWebServerRequestPtr request; };
+static constexpr uint8_t STATION_IMAGE_QUEUE_SIZE = 8;
+static StationImageJob* stationImageQueue[STATION_IMAGE_QUEUE_SIZE]{};
+static uint8_t stationImageHead = 0, stationImageTail = 0, stationImageCount = 0;
+static std::atomic<uint32_t> stationImageActive{0};
+static portMUX_TYPE stationImageMux = portMUX_INITIALIZER_UNLOCKED;
+
+static void dispatchStationImages() {
+  if (stationSaveImageHolds.load()) return;
+  const uint32_t limit = PlayerState::instance().snapshot().playing ? 1 : 2;
+  for (uint8_t processed = 0; processed < STATION_IMAGE_QUEUE_SIZE && stationImageActive.load() < limit; ++processed) {
+    StationImageJob* pending = nullptr;
+    portENTER_CRITICAL(&stationImageMux);
+    if (stationImageCount) {
+      pending = stationImageQueue[stationImageHead];
+      stationImageQueue[stationImageHead] = nullptr;
+      stationImageHead = (stationImageHead + 1) % STATION_IMAGE_QUEUE_SIZE;
+      --stationImageCount;
+    }
+    portEXIT_CRITICAL(&stationImageMux);
+    if (!pending) return;
+    std::unique_ptr<StationImageJob> job(pending);
+    if (auto request = job->request.lock()) {
+      if (!request->client() || !request->client()->connected()) continue;
+      ++stationImageActive;
+      // A response reaching EOF still owns TCP send/retry buffers. Hold this
+      // admission until the pinned server closes the completed connection,
+      // or the client disconnects. All streaming starts stay in AsyncTCP.
+      request->onDisconnect([]() { --stationImageActive; dispatchStationImages(); });
+      sendStationImage(request.get());
+    }
+  }
+}
+
+static void queueStationImage(AsyncWebServerRequest* request) {
+  if (!request->hasParam("id")) { request->send(400); return; }
+  auto* job = new (std::nothrow) StationImageJob;
+  if (!job) { request->send(503, "text/plain", "Image queue memory unavailable"); return; }
+  job->request = request->pause();
+  bool queued = false;
+  portENTER_CRITICAL(&stationImageMux);
+  if (stationImageCount < STATION_IMAGE_QUEUE_SIZE) {
+    stationImageQueue[stationImageTail] = job;
+    stationImageTail = (stationImageTail + 1) % STATION_IMAGE_QUEUE_SIZE;
+    ++stationImageCount;
+    queued = true;
+  }
+  portEXIT_CRITICAL(&stationImageMux);
+  if (!queued) { delete job; request->send(503, "text/plain", "Image queue full"); }
+  else {
+    request->onDisconnect([]() { dispatchStationImages(); });
+    dispatchStationImages();
+  }
+}
+
+// Main may discard expired weak requests, never start a streamed response.
+static void reapStationImageRequests() {
+  for (uint8_t processed = 0; processed < STATION_IMAGE_QUEUE_SIZE; ++processed) {
+    StationImageJob* expired = nullptr;
+    portENTER_CRITICAL(&stationImageMux);
+    if (stationImageCount && stationImageQueue[stationImageHead]->request.expired()) {
+      expired = stationImageQueue[stationImageHead];
+      stationImageQueue[stationImageHead] = nullptr;
+      stationImageHead = (stationImageHead + 1) % STATION_IMAGE_QUEUE_SIZE;
+      --stationImageCount;
+    }
+    portEXIT_CRITICAL(&stationImageMux);
+    if (!expired) return;
+    delete expired;
+  }
+}
+
+void webServerLoop() {
+  processSettingsSave();
+  completeStationSave();
+  dispatchPendingStationSave();
+  reapStationImageRequests();
+  unsigned long now = millis();
+  if (now - lastWsCleanupMs >= 1000) {
+    lastWsCleanupMs = now;
+    ws.cleanupClients();
+  }
+  processDisplayRequests();
+  processRebootRequest();
+  commitPendingDelete();
+
+  QueuedPlayerAction action;
+  uint8_t processed = 0;
+  while (processed < 4 && dequeuePlayerAction(action)) {
+    executeQueuedAction(action);
+    ++processed;
+    if (pendingDelete.active) break;
+  }
+
+  commitPendingDelete();
+  flushScheduledStateSave();
+  processStoredFileRead();
+  processDisplayRequests();
+  processRebootRequest();
+}
+
+void webServerBegin() {
+  Serial.println("[web] begin");
+  ArtworkRevision::beginHttpSession();
+  WebUiCompatibility::refresh();
+  ws.onEvent(onWsEvent);
+  server.addHandler(&ws);
+  server.on("/config.json", HTTP_GET, [](AsyncWebServerRequest* request) { queueStoredFileRead(request, "/config.json"); });
+  server.on("/state.json", HTTP_GET, [](AsyncWebServerRequest* request) { queueStoredFileRead(request, "/state.json"); });
+  server.on("/stations.json", HTTP_GET, [](AsyncWebServerRequest* request) { queueStoredFileRead(request, "/stations.json"); });
+
+  server.on("/api/artwork/station", HTTP_GET, [](AsyncWebServerRequest* request) {
+    queueStationImage(request);
   });
 
   server.on("/api/stations", HTTP_GET, [](AsyncWebServerRequest* request) {
@@ -1652,35 +1872,14 @@ void webServerBegin() {
     JsonDocument doc(&jsonAllocator);
     JsonArray arr = doc["logos"].to<JsonArray>();
 
-    const char* mount = LittleFS.mountpoint();
-    char absolute[320];
-    struct stat info{};
-    const int length = mount ? snprintf(absolute, sizeof(absolute), "%s/logos", mount) : -1;
-    if (length > 0 && static_cast<size_t>(length) < sizeof(absolute) &&
-        ::stat(absolute, &info) == 0 && S_ISDIR(info.st_mode)) {
-      File root = LittleFS.open("/logos");
-      if (root && root.isDirectory()) {
-        bool directory = false;
-        String path = root.getNextFileName(&directory);
-        while (path.length()) {
-          if (!directory) {
-            const String name = logoBasename(path);
-            const int count = snprintf(absolute, sizeof(absolute), "%s/logos/%s", mount, name.c_str());
-            // Directory enumeration must not fopen() every logo: that creates
-            // newlib FILE mutexes even though only name and size are needed.
-            if (supportedLogoExtension(name) && count > 0 && static_cast<size_t>(count) < sizeof(absolute) &&
-                ::stat(absolute, &info) == 0 && S_ISREG(info.st_mode)) {
-              JsonObject item = arr.add<JsonObject>();
-              item["name"] = name;
-              item["path"] = "/logos/" + name;
-              item["size"] = static_cast<uint32_t>(info.st_size);
-            }
-          }
-          path = root.getNextFileName(&directory);
-        }
-        root.close();
-      }
-    }
+    ReadOnlyStorage::visitFiles(LittleFS.mountpoint(), "/logos", [&](const char* filename, size_t bytes, time_t) {
+      const String name = logoBasename(filename);
+      if (!supportedLogoExtension(name)) return;
+      JsonObject item = arr.add<JsonObject>();
+      item["name"] = name;
+      item["path"] = "/logos/" + name;
+      item["size"] = static_cast<uint32_t>(bytes);
+    });
 
     if (doc.overflowed()) { request->send(503, "text/plain", "Logo list memory unavailable"); return; }
     String out;
@@ -1848,7 +2047,7 @@ void webServerBegin() {
 
         if (fileActive && millis() - uploadLastMs > UPLOAD_STALE_MS) {
           if (uploadFile) uploadFile.close();
-          if (uploadTempPath.length() && LittleFS.exists(uploadTempPath)) LittleFS.remove(uploadTempPath);
+          if (uploadTempPath.length() && ReadOnlyStorage::exists(LittleFS.mountpoint(), uploadTempPath.c_str())) LittleFS.remove(uploadTempPath);
           fileActive = false;
         }
 
@@ -1873,7 +2072,7 @@ void webServerBegin() {
 
         uploadPath = "/logos/" + cleanFilename;
         uploadTempPath = uploadPath + ".upload";
-        if (LittleFS.exists(uploadTempPath)) LittleFS.remove(uploadTempPath);
+        if (ReadOnlyStorage::exists(LittleFS.mountpoint(), uploadTempPath.c_str())) LittleFS.remove(uploadTempPath);
         uploadFile = LittleFS.open(uploadTempPath, "w");
         if (!uploadFile) {
           request->setAttribute("error", "Logo file open failed");
@@ -1886,7 +2085,7 @@ void webServerBegin() {
       if (fileFailed) {
         if (final) {
           if (uploadFile) uploadFile.close();
-          if (uploadTempPath.length() && LittleFS.exists(uploadTempPath)) LittleFS.remove(uploadTempPath);
+          if (uploadTempPath.length() && ReadOnlyStorage::exists(LittleFS.mountpoint(), uploadTempPath.c_str())) LittleFS.remove(uploadTempPath);
           fileActive = false;
         }
         return;
@@ -1916,7 +2115,7 @@ void webServerBegin() {
             fileFailed = true;
           }
         }
-        if (fileFailed && uploadTempPath.length() && LittleFS.exists(uploadTempPath)) {
+        if (fileFailed && uploadTempPath.length() && ReadOnlyStorage::exists(LittleFS.mountpoint(), uploadTempPath.c_str())) {
           LittleFS.remove(uploadTempPath);
         }
       }
@@ -1963,13 +2162,13 @@ void webServerBegin() {
       String sourceUrl = request->getAttribute("url");
 
       if (error.length()) {
-        if (tempPath.length() && LittleFS.exists(tempPath)) LittleFS.remove(tempPath);
+        if (tempPath.length() && ReadOnlyStorage::exists(LittleFS.mountpoint(), tempPath.c_str())) LittleFS.remove(tempPath);
         request->send(400, "application/json", "{\"ok\":false,\"error\":\"" + error + "\"}");
         return;
       }
 
       if (!ArtworkCache::instance().queueBrowserArtworkImport(sourceUrl, tempPath)) {
-        if (tempPath.length() && LittleFS.exists(tempPath)) LittleFS.remove(tempPath);
+        if (tempPath.length() && ReadOnlyStorage::exists(LittleFS.mountpoint(), tempPath.c_str())) LittleFS.remove(tempPath);
         request->send(503, "application/json", "{\"ok\":false,\"error\":\"Artwork cache queue busy\"}");
         return;
       }
@@ -2024,7 +2223,7 @@ void webServerBegin() {
         }
         request->setAttribute("url", sourceUrl.c_str());
 
-        if (LittleFS.exists(tempPath)) LittleFS.remove(tempPath);
+        if (ReadOnlyStorage::exists(LittleFS.mountpoint(), tempPath.c_str())) LittleFS.remove(tempPath);
         uploadFile = LittleFS.open(tempPath, "w");
         if (!uploadFile) {
           request->setAttribute("error", "Artwork temp open failed");
@@ -2037,7 +2236,7 @@ void webServerBegin() {
       if (failed) {
         if (index + len >= total) {
           if (uploadFile) uploadFile.close();
-          if (tempPath.length() && LittleFS.exists(tempPath)) LittleFS.remove(tempPath);
+          if (tempPath.length() && ReadOnlyStorage::exists(LittleFS.mountpoint(), tempPath.c_str())) LittleFS.remove(tempPath);
           uploadActive = false;
         }
         return;
@@ -2056,7 +2255,7 @@ void webServerBegin() {
       if (index + len >= total) {
         if (uploadFile) uploadFile.close();
         uploadActive = false;
-        if (failed && tempPath.length() && LittleFS.exists(tempPath)) {
+        if (failed && tempPath.length() && ReadOnlyStorage::exists(LittleFS.mountpoint(), tempPath.c_str())) {
           LittleFS.remove(tempPath);
         }
       }
@@ -2085,11 +2284,62 @@ void webServerBegin() {
     doc["psramFree"] = ESP.getFreePsram();
     doc["httpTaskPriority"] = uxTaskPriorityGet(nullptr);
     doc["httpTaskCore"] = xPortGetCoreID();
+    const uint32_t stackFree = stationSaveStackMin.load();
+    if (stackFree != UINT32_MAX) doc["stationSaveStackFreeMin"] = stackFree;
+    uint8_t imagePending = 0;
+    portENTER_CRITICAL(&stationImageMux);
+    imagePending = stationImageCount;
+    portEXIT_CRITICAL(&stationImageMux);
+    doc["stationImageQueue"]["pending"] = imagePending;
+    doc["stationImageQueue"]["active"] = stationImageActive.load();
     const auto lcdRam = LcdThumbnailRam::stats();
     doc["lcdThumbnailRam"]["slots"] = lcdRam.slots;
     doc["lcdThumbnailRam"]["bytes"] = lcdRam.bytes;
     doc["lcdThumbnailRam"]["readers"] = lcdRam.readers;
     doc["lcdThumbnailRam"]["published"] = lcdRam.published;
+    const auto spectrum = AudioSpectrum::instance().runtimeStatus();
+    auto spectrumLoad = doc["spectrumLoad"].to<JsonObject>();
+    spectrumLoad["analyzed"] = spectrum.analyzed; spectrumLoad["draws"] = spectrum.draws;
+    spectrumLoad["lastAnalyzedMs"] = spectrum.lastAnalyzedMs; spectrumLoad["lastDrawMs"] = spectrum.lastDrawMs;
+    spectrumLoad["enabled"] = spectrum.enabled; spectrumLoad["visible"] = spectrum.visible;
+    spectrumLoad["initialized"] = spectrum.initialized; spectrumLoad["sampleRate"] = spectrum.sampleRate;
+    const auto feedEvents = RuntimeProbe::feedEvents();
+    const auto zeroEvents = RuntimeProbe::zeroEvents();
+    auto zeroRows = doc["zeroEvents"].to<JsonArray>();
+    for (const auto& event : zeroEvents.rows) {
+      if (!event.number) continue;
+      auto row = zeroRows.add<JsonObject>();
+      row["number"] = event.number; row["atMs"] = event.atMs; row["epoch"] = event.epoch;
+      row["task"] = event.task; row["priority"] = event.priority;
+      row["pumpStage"] = event.pumpStage; row["pumpStageAgeUs"] = event.pumpStageAgeUs;
+      row["activities"] = event.activities;
+    }
+    auto feedRows = doc["feedEvents"].to<JsonArray>();
+    static const char* activityNames[] = {"logoReceive", "logoWrite", "logoCommit", "cacheScan", "thumbnailDecode", "thumbnailWrite", "albumWork", "albumDecode", "settingsSave", "spectrum"};
+    static_assert(sizeof(activityNames) / sizeof(activityNames[0]) == static_cast<size_t>(RuntimeProbe::Activity::Count), "activity names");
+    for (const auto& event : feedEvents.rows) {
+      if (!event.number) continue;
+      auto row = feedRows.add<JsonObject>();
+      row["number"] = event.number; row["atMs"] = event.atMs; row["epoch"] = event.epoch;
+      row["gapUs"] = event.gapUs; row["completed"] = event.completed;
+      auto activities = row["activities"].to<JsonArray>();
+      for (size_t i = 0; i < static_cast<size_t>(RuntimeProbe::Activity::Count); ++i)
+        if (event.activities & (uint32_t(1) << i)) activities.add(activityNames[i]);
+    }
+    const auto uploadTraces = RuntimeProbe::uploadTraces();
+    auto uploadRows = doc["logoUploads"].to<JsonArray>();
+    for (const auto& t : uploadTraces.rows) {
+      if (!t.number) continue;
+      auto row = uploadRows.add<JsonObject>();
+      row["number"] = t.number; row["bytes"] = t.bytes; row["chunks"] = t.chunks;
+      row["rxUs"] = t.lastUs - t.firstUs; row["maxRxGapUs"] = t.maxRxGapUs;
+      row["queueUs"] = t.workerUs ? t.workerUs - t.queuedUs : 0;
+      row["workUs"] = t.finishedUs ? t.finishedUs - t.workerUs : 0;
+      row["replyUs"] = t.finishedUs ? t.replyUs - t.finishedUs : 0;
+      row["writeUs"] = t.writeUs; row["flushUs"] = t.flushUs;
+      row["commitUs"] = t.commitUs; row["cleanupUs"] = t.cleanupUs;
+      row["saved"] = t.saved; row["clientGone"] = t.clientGone;
+    }
     for (bool previous : {false, true}) {
       const auto failures = RuntimeProbe::allocationFailures(previous);
       JsonArray rows = doc[previous ? "previousAllocationFailures" : "allocationFailures"].to<JsonArray>();
@@ -2109,6 +2359,7 @@ void webServerBegin() {
     PROBE_FIELD(writeTimeouts); PROBE_FIELD(writeErrors); PROBE_FIELD(sentGapMaxUs);
     PROBE_FIELD(feedGapMaxUs); PROBE_FIELD(writeMaxUs); PROBE_FIELD(feedDeadlineMisses);
     PROBE_FIELD(feedAgeUs); PROBE_FIELD(sentAgeUs); PROBE_FIELD(pumpCalls);
+    PROBE_FIELD(observedBlocks); PROBE_FIELD(zeroBlocks); PROBE_FIELD(zeroRunMaxFrames);
     PROBE_FIELD(pumpGapMaxUs); PROBE_FIELD(pumpWorkMaxUs); PROBE_FIELD(inputBytes);
     PROBE_FIELD(inputCapacity); PROBE_FIELD(inputMinBytes); PROBE_FIELD(inputSamples);
     PROBE_FIELD(inputEmptySamples);
@@ -2125,8 +2376,13 @@ void webServerBegin() {
       JsonObject row = timings[names[i]].to<JsonObject>();
       row["count"] = t.count; row["lastUs"] = t.lastUs; row["maxUs"] = t.maxUs; row["totalUs"] = t.totalUs;
     }
-    String out; serializeJson(doc, out);
-    request->send(200, "application/json", out);
+    auto* response = new (std::nothrow) DiagnosticJsonResponse(doc);
+    if (!response || !response->_sourceValid()) {
+      delete response;
+      request->send(503, "text/plain", "Diagnostic memory unavailable");
+      return;
+    }
+    request->send(response);
   });
 #endif
 

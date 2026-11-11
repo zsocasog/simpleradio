@@ -13,7 +13,7 @@ function body(marker) {
   throw Error(marker);
 }
 function js(code) {
-  return code.replace(/Display::instance\(\)\.render\(DisplayPresenter::build\(PlayerState::instance\(\)\)\);/g, 'render();')
+  return code.replace(/ReadOnlyStorage::exists\(LittleFS.mountpoint\(\), (.*?)\.c_str\(\)\)/g,'LittleFS.exists($1)').replace(/SR_ACTIVITY\([^;]+;/g,'').replace(/Display::instance\(\)\.render\(DisplayPresenter::build\(PlayerState::instance\(\)\)\);/g, 'render();')
     .replace(/PlayerState::instance\(\)/g, 'player').replace(/ArtworkJobKind::/g, 'Job.')
     .replace(/PickerLogoLoader::/g, 'PickerLogoLoader.')
     .replace('std::vector<uint32_t> segments = job ? job->segments : std::vector<uint32_t>();', 'let segments = job ? job.segments : [];')

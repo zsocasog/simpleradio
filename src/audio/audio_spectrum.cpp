@@ -362,6 +362,7 @@ bool AudioSpectrum::takeFrame(uint8_t& index) {
 }
 
 void AudioSpectrum::processFrame(uint8_t index) {
+  SR_ACTIVITY(Spectrum);
   Frame& frame = frames_[index];
   const uint32_t nowMs = millis();
   const uint32_t queueMs = SpectrumMath::beforeDeadline(nowMs, frame.capturedMs) ? 0 : nowMs - frame.capturedMs;
@@ -416,6 +417,9 @@ void AudioSpectrum::processFrame(uint8_t index) {
     resultStorage_[index] = result;
     frame.state = BufferState::Analyzed;
     ++diagnostics_.processed;
+#if SIMPLE_RADIO_RUNTIME_DIAGNOSTICS
+    ++runtimeStatus_.analyzed; runtimeStatus_.lastAnalyzedMs = result.analyzedMs;
+#endif
     timing_.recordAnalysis(frame.readyUs, startedUs, preparedUs, transformedUs, finishedUs);
     diagnostics_.maxProcessingUs = max(diagnostics_.maxProcessingUs, static_cast<uint32_t>(micros() - startedUs));
     diagnostics_.nearClipSamples += nearClipSamples;
@@ -557,12 +561,25 @@ void AudioSpectrum::noteDisplayFrame(const AudioSpectrumSnapshot& sample, uint32
   const uint32_t now = millis();
   portENTER_CRITICAL(&mux_);
   if (enabled_ && visible_ && sample.generation == generation_) {
+#if SIMPLE_RADIO_RUNTIME_DIAGNOSTICS
+    ++runtimeStatus_.draws; runtimeStatus_.lastDrawMs = now;
+#endif
     timing_.recordRender(startedUs, finishedUs, now,
         SpectrumMath::usableFrame(sample.active, now, sample.updatedMs),
         sample.updatedMs, sample.readyMs, sample.analyzedMs);
   }
   portEXIT_CRITICAL(&mux_);
 }
+
+#if SIMPLE_RADIO_RUNTIME_DIAGNOSTICS
+AudioSpectrum::RuntimeStatus AudioSpectrum::runtimeStatus() {
+  portENTER_CRITICAL(&mux_);
+  auto result = runtimeStatus_;
+  result.enabled = enabled_; result.visible = visible_; result.initialized = initialized_; result.sampleRate = sampleRate_;
+  portEXIT_CRITICAL(&mux_);
+  return result;
+}
+#endif
 
 AudioSpectrumSnapshot AudioSpectrum::snapshot() {
   const uint32_t now = millis();
