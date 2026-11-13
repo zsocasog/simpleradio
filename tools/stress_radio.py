@@ -141,6 +141,7 @@ class Run:
         from websockets.asyncio.client import connect
         url = ('wss' if self.base.startswith('https:') else 'ws') + self.base[self.base.index(':'):] + '/ws'
         self.ws = await connect(url, proxy=None, compression=None, open_timeout=8, close_timeout=2, max_size=256 * 1024)
+        self.state = {}
         self.reader = asyncio.create_task(self.websocket_reader())
         await self.wait_state(lambda: bool(self.state), 8)
 
@@ -187,6 +188,10 @@ class Run:
                           httpTaskPriority=diag.get('httpTaskPriority'),httpTaskCore=diag.get('httpTaskCore'),
                           lcdThumbnailRam=diag.get('lcdThumbnailRam'),
                           stationImageQueue=diag.get('stationImageQueue'),
+                          httpTx=diag.get('httpTx'),
+                          dmaHeap=diag.get('dmaHeap'),httpTaskStackFreeMin=diag.get('httpTaskStackFreeMin'),
+                          httpTxTiming=diag.get('httpTxTiming'),
+                          stationSaveRuntime=diag.get('stationSaveRuntime'),
                           stationSaveStackFreeMin=diag.get('stationSaveStackFreeMin'),
                           feedEvents=diag.get('feedEvents'),zeroEvents=diag.get('zeroEvents'),logoUploads=diag.get('logoUploads'),
                           spectrumLoad=diag.get('spectrumLoad'),
@@ -198,6 +203,9 @@ class Run:
                           artworkNetworkActive=system.get('artworkNetworkActive'),
                           wifiRssi=status.get('wifi', {}).get('rssi'))
             self.emit('sample', **sample)
+            if sample.get('httpTaskStackFreeMin') is not None and sample['httpTaskStackFreeMin'] < 2048:
+                self.emit('failure',operation='http-stack-headroom',detail='HTTP task stack reserve below 2 KiB')
+                raise RuntimeError('HTTP task stack headroom too low')
             for finding in self.audit.observe(dict(phase=self.phase,**sample)): self.emit(**finding)
             if self.args.exercise and not self.recovering and status['status']['volume'] != getattr(self.args,'test_volume',0):
                 raise RuntimeError('Volume changed externally; aborting controlled-volume test')
@@ -241,7 +249,7 @@ class Run:
     def set_phase(self, name):
         self.phase = name
         self.emit('phase', expectsAudio=name in ('FLAC-baseline','images-and-web','settings-during-playback',
-                  'new-station-and-logo','rapid-switches','controlled-WAV','MP3-mixed-use','stop-start-recovery') or name.startswith(('isolation-', 'save-benchmark-', 'cold-logo-', 'switch-', 'upload-', 'soak-')))
+                  'new-station-and-logo','rapid-switches','controlled-WAV','MP3-mixed-use','stop-start-recovery') or name.startswith(('isolation-', 'save-benchmark-', 'save-preemption-', 'cold-logo-', 'switch-', 'upload-', 'soak-')))
         print(name, flush=True)
 
     async def save_config(self, fields):
@@ -262,6 +270,11 @@ class Run:
     async def restore(self):
         if not self.backup: return
         self.recovering = True; self.set_phase('restore')
+        # A timed-out load can have ended in a reboot after the last sample.
+        # Use a fresh control connection; never trust a stale socket/state.
+        if self.reader: self.reader.cancel(); await asyncio.gather(self.reader, return_exceptions=True)
+        if self.ws: await self.ws.close()
+        await self.connect_ws()
         await self.command({'play': False, 'volume': 0})
         original = self.backup['state']; await self.command({'station': original['stationId'], 'play': False})
         stations = (await self.get('/api/stations'))['stations']
@@ -315,6 +328,9 @@ class Run:
         self.background = [asyncio.create_task(self.monitor())]
         if self.args.profile == 'saves':
             await self.save_benchmark(stations, config)
+            return
+        if self.args.profile == 'save-preemption':
+            await self.save_preemption(stations,config)
             return
         if self.args.profile == 'isolation':
             await self.isolation(stations, config)
@@ -550,6 +566,43 @@ class Run:
             await self.hold(1.25)
         await self.verify_durable_controls({k:self.state[k] for k in STATE_FIELDS})
 
+    async def save_preemption(self, stations, config):
+        if not self.fixture or not self.args.reference_file:
+            raise ValueError('save-preemption requires the served continuous reference')
+        url=self.args.fixture_url+'/reference'+self.args.reference_file.suffix.lower()
+        sid=await self.add_station('preemption-source',url)
+        await self.command({'station':sid,'play':True});await self.hold(12)
+        for index,mode in enumerate(('headers','body')):
+            self.set_phase('save-preemption-'+mode)
+            route='/logo-preempt.png?'+urlencode({'mode':mode,'run':self.prefix})
+            logo_sid=await self.add_station('preemption-'+mode,url,self.args.fixture_url+route,prepare_logo=False)
+            await self.request('/api/station/logo/prepare',{'id':logo_sid},expected=(202,))
+            setup_started=time.monotonic()
+            # This is fixture setup, not the timed save. A preceding logo may
+            # still be finishing its LCD thumbnail on the serialized worker.
+            until=setup_started+30
+            while time.monotonic()<until:
+                with self.fixture.preemption_lock:row=self.fixture.preemption.get(route)
+                if row and row['started'].is_set():break
+                await self.hold(.05)
+            else:raise TimeoutError('Controlled slow artwork request never started')
+            self.emit('preemption-setup',mode=mode,seconds=round(time.monotonic()-setup_started,3))
+            started=time.monotonic()
+            await self.save_config({'brightness':(config['brightness']+index+1)%255+1})
+            elapsed=time.monotonic()-started
+            self.emit('preemption-save',mode=mode,seconds=round(elapsed,3))
+            if elapsed>getattr(self.args,'preemption_limit',4):raise TimeoutError('Save waited for controlled slow artwork')
+            until=time.monotonic()+15
+            while time.monotonic()<until:
+                image=await self.request(f'/api/artwork/station?id={logo_sid}',expected=(200,404),operation='preempted-logo')
+                if image.startswith((b'\x89PNG',b'\xff\xd8',b'BM')):
+                    validate_image(image,'image');break
+                await self.hold(.25)
+            else:raise TimeoutError('Artwork did not complete after settings save')
+            with self.fixture.preemption_lock:hits=self.fixture.preemption[route]['hits']
+            self.emit('preemption-resumed',mode=mode,requests=hits,imageBytes=len(image))
+            await self.hold(3)
+
     async def run(self):
         ok = False
         try:
@@ -574,6 +627,20 @@ class Run:
             # A cancelled asyncio waiter does not cancel urllib in its worker
             # thread. Drain bounded requests before restoring settings.
             if self.inflight: await asyncio.gather(*list(self.inflight),return_exceptions=True)
+            if not ok:
+                try:
+                    health = await self.get('/api/system/status', operation='failure-health')
+                    last = next((e for e in reversed(self.events) if e['kind']=='sample'),None)
+                    if last and health['system']['uptimeMs'] < last['uptimeMs']:
+                        self.emit('reboot',operation='failure-health',detail='Reset after last successful sample',
+                                  resetReason=health['system'].get('resetReason'))
+                    if self.telemetry:
+                        diagnostic=await self.get('/api/diagnostics',operation='failure-diagnostics')
+                        self.emit('failure-diagnostics',httpTxTiming=diagnostic.get('httpTxTiming'),
+                                  dmaHeap=diagnostic.get('dmaHeap'),allocationFailures=diagnostic.get('allocationFailures'),
+                                  previousAbort=diagnostic.get('previousAbort'),
+                                  previousAllocationFailures=diagnostic.get('previousAllocationFailures'))
+                except Exception: pass # Original failure remains; restoration is still attempted.
             if self.args.exercise and self.backup:
                 try: await self.restore()
                 except Exception as error:
@@ -607,7 +674,8 @@ def main():
                         help='Explicit 1%% output for testing the real spectrum load; default 0 requires --mute')
     parser.add_argument('--scale',type=float,default=1); parser.add_argument('--seed',type=int,default=20261109)
     parser.add_argument('--observe-seconds',type=float,default=30); parser.add_argument('--expect-build')
-    parser.add_argument('--profile', choices=('extreme','isolation','saves','cold-logos','switches','uploads','soak','disconnects'),default='extreme')
+    parser.add_argument('--profile', choices=('extreme','isolation','saves','cold-logos','switches','uploads','soak','disconnects','save-preemption'),default='extreme')
+    parser.add_argument('--preemption-limit',type=float,default=4,help='Maximum save/persistence seconds during the controlled slow artwork request')
     parser.add_argument('--soak-seconds',type=float,default=7200,help='Bounded soak duration before automatic restoration')
     parser.add_argument('--image-parallel', type=int, choices=range(1,7), default=3,
                         help='Concurrent full station-image requests (default 3; browser-pressure test 6)')
@@ -639,6 +707,7 @@ def main():
     async def execute():
         asyncio.get_running_loop().set_default_executor(ThreadPoolExecutor(max_workers=16))
         run = Run(args)
+        run.fixture=server
         if args.restore:
             run.backup=json.loads(args.restore.read_text(encoding='utf-8')); run.prefix=run.backup['prefix']
             if run.backup['base'] != run.base: raise ValueError('Recovery journal belongs to a different device URL')

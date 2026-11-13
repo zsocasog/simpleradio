@@ -1,9 +1,11 @@
 #include "artwork_http.h"
 #include "artwork_http_policy.h"
 #include "artwork_network_gate.h"
+#include "handshake_slices.h"
 #include "../config/version.h"
 
 #include <HTTPClient.h>
+#include <atomic>
 #include <NetworkClient.h>
 #include <NetworkClientSecure.h>
 #include <WiFi.h>
@@ -17,6 +19,7 @@ constexpr uint32_t CONNECT_MS = 3500;
 constexpr uint16_t READ_MS = 6000;
 constexpr uint32_t REQUEST_MS = 12000;
 NetworkGate networkGate;
+std::atomic<uint32_t> settingsYields{0};
 bool expired(uint32_t deadline);
 
 class BackgroundNetworkScope {
@@ -53,11 +56,16 @@ struct Transfer {
   uint32_t lastYieldMs = 0;
   uint32_t lastCancelCheckMs = 0;
   bool stopped = false;
+  bool settingsInterrupted = false;
 
   bool service() {
     if (stopped) return false;
     const uint32_t now = millis();
     if (networkGate.audioReserved() || expired(options.deadlineMs) || WiFi.status() != WL_CONNECTED) stopped = true;
+    if (!stopped && networkGate.settingsSaveReserved()) {
+      settingsInterrupted = true;
+      stopped = true;
+    }
     if (!stopped && options.cancelled &&
         (!lastCancelCheckMs || now - lastCancelCheckMs >= 100)) {
       lastCancelCheckMs = now;
@@ -176,7 +184,12 @@ private:
     // The core's startTLS() discards the handshake return code. Use its same
     // pinned native helper so cancellation boundaries and the real error stay
     // visible, without changing the crypto implementation or trust settings.
-    const int result = ssl_starttls_handshake(sslclient.get());
+    const uint32_t handshakeLimit = sslclient->handshake_timeout;
+    const int result = HandshakeSlices::run([&](uint32_t sliceMs) {
+      sslclient->handshake_timeout = sliceMs;
+      return ssl_starttls_handshake(sslclient.get());
+    }, [&] { return transfer.service(); }, [] { return millis(); }, handshakeLimit);
+    sslclient->handshake_timeout = handshakeLimit;
     sslclient->last_error = result;
     if (result < 0) {
       failure("TLS handshake", millis() - tlsStarted, result);
@@ -314,6 +327,7 @@ Response::~Response() { free(data); }
 
 void reserveAudioConnection() { networkGate.reserveAudio(); }
 bool backgroundNetworkActive() { return networkGate.backgroundActive(); }
+uint32_t settingsYieldCount() { return settingsYields.load(); }
 void releaseAudioConnection() { networkGate.releaseAudio(); }
 void reserveSettingsSave() { networkGate.reserveSettingsSave(); }
 void releaseSettingsSave() { networkGate.releaseSettingsSave(); }
@@ -341,12 +355,8 @@ String publicImageUrl(const String& url) {
   return url;
 }
 
-bool get(const String& url, size_t limit, Response& response, const Options& supplied) {
-  Options options = supplied;
-  if (!options.deadlineMs || (!expired(options.deadlineMs) &&
-                             options.deadlineMs - millis() > REQUEST_MS)) {
-    options.deadlineMs = millis() + REQUEST_MS;
-  }
+static bool getAttempt(const String& url, size_t limit, Response& response, const Options& options,
+                       bool& settingsInterrupted) {
   BackgroundNetworkScope network(options);
   if (!network.acquired()) {
     response.error = "background network deferred or deadline reached";
@@ -378,9 +388,43 @@ bool get(const String& url, size_t limit, Response& response, const Options& sup
     if (!response.location.length()) break;
     current = redirectUrl(current, response.location);
   }
+  settingsInterrupted = transfer.settingsInterrupted;
   if (expired(options.deadlineMs)) response.error = "network deadline reached; " + response.error;
   else if (transfer.stopped) response.error = "network cancelled; " + response.error;
   else if (!response.error.length()) response.error = "redirect limit reached";
   return false;
+}
+
+bool get(const String& url, size_t limit, Response& response, const Options& supplied) {
+  Options options = supplied;
+  if (!options.deadlineMs || (!expired(options.deadlineMs) &&
+                             options.deadlineMs - millis() > REQUEST_MS)) {
+    options.deadlineMs = millis() + REQUEST_MS;
+  }
+  for (;;) {
+    bool settingsInterrupted = false;
+    if (getAttempt(url, limit, response, options, settingsInterrupted)) return true;
+    if (settingsInterrupted) settingsYields.fetch_add(1);
+    if (!settingsInterrupted || expired(options.deadlineMs) || networkGate.audioReserved() ||
+        WiFi.status() != WL_CONNECTED || (options.cancelled && options.cancelled())) return false;
+    // A hidden transport retry must not bypass MusicBrainz's provider-level
+    // request spacing. Wait after closing the cancelled request, so even a
+    // slow DNS/TLS setup cannot make the two actual API sends too close.
+    if (host(url) == "musicbrainz.org") {
+      const uint32_t retryStarted = millis();
+      while (static_cast<uint32_t>(millis() - retryStarted) < 1100U) {
+        if (expired(options.deadlineMs) || networkGate.audioReserved() || WiFi.status() != WL_CONNECTED ||
+            (options.cancelled && options.cancelled())) return false;
+        vTaskDelay(1);
+      }
+    }
+    // getAttempt has destroyed its client, TLS buffers and network scope.
+    // The next attempt waits for the save response to drain, then resumes the
+    // same public GET/range without losing the caller's overall deadline.
+    response.status = 0;
+    response.contentType = "";
+    response.location = "";
+    response.error = "";
+  }
 }
 } // namespace ArtworkHttp

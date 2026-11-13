@@ -10,11 +10,13 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
 #include <freertos/task.h>
+#include <freertos/queue.h>
 #include "../state/player_state.h"
 #include "../state/state_storage.h"
 #include "../storage/ota_backup.h"
 #include "../storage/write_only_file.h"
 #include "../storage/atomic_file.h"
+#include "../storage/job_ptr.h"
 #include "stored_file_response.h"
 #include "../config/app_config.h"
 #include "../config/hardware_capabilities.h"
@@ -1060,6 +1062,12 @@ static void onWsEvent(
       client->text("{\"pong\":true}");
       return;
     }
+#if SIMPLE_RADIO_RUNTIME_DIAGNOSTICS
+    if (cmd["networkProbe"].as<bool>()) {
+      client->text(AsyncWebServerRequest::responseTxDebug());
+      return;
+    }
+#endif
     if (cmd["controlEdit"].is<bool>()) {
       setWebControlEditing(client->id(), cmd["controlEdit"].as<bool>());
       return;
@@ -1186,6 +1194,7 @@ struct StationLogoUploadBuffer {
   uint8_t bytes[1];
 };
 
+static std::atomic<uint32_t> stationSaveImageHolds{0};
 struct StationSaveJob {
   AsyncWebServerRequestPtr request;
   String name;
@@ -1197,6 +1206,8 @@ struct StationSaveJob {
   bool done = false;
   bool started = false;
   bool memoryClaimed = false;
+  bool httpTxHeld = false;
+  bool imagesHeld = false;
   bool allocationDeferred = false;
   uint32_t allocationWaitStartedMs = 0;
   uint32_t allocationAttemptMs = 0;
@@ -1211,15 +1222,34 @@ struct StationSaveJob {
   ~StationSaveJob() {
     free(upload);
     if (memoryClaimed) ArtworkMemory::gate().endStationSave();
+    if (httpTxHeld) AsyncWebServerRequest::releaseResponseTx();
+    if (imagesHeld) --stationSaveImageHolds;
   }
 };
 
 static portMUX_TYPE stationSaveMux = portMUX_INITIALIZER_UNLOCKED;
 static StationSaveJob* pendingStationSave = nullptr;
 static constexpr uint32_t STATION_SAVE_TASK_STACK = 6144;
+// One admitted save at a time, with one resident internal stack. A fragmented
+// heap must not decide whether the next user's save can start.
+alignas(16) static StackType_t stationSaveStack[STATION_SAVE_TASK_STACK / sizeof(StackType_t)];
+static StaticTask_t stationSaveControl;
+static StaticQueue_t stationSaveQueueControl;
+static uint8_t stationSaveQueueStorage[sizeof(StationSaveJob*)];
+static QueueHandle_t stationSaveQueue = nullptr;
+static TaskHandle_t stationSaveWorker = nullptr;
 #if SIMPLE_RADIO_RUNTIME_DIAGNOSTICS
 static std::atomic<uint32_t> stationSaveStackMin{UINT32_MAX};
+static std::atomic<uint32_t> stationSavePhase{0}, stationSaveDma{0}, stationSaveLargest{0}, stationSaveTx{0};
 #endif
+
+static void yieldLogoFlash() {
+  // An erase/program operation pauses both CPUs. Give the existing audio
+  // tasks time to refill DMA between operations, rather than another erase
+  // immediately following the previous cache-disabled interval.
+  const uint32_t pauseMs = ArtworkCache::instance().audioReady() ? 20U : 1U;
+  vTaskDelay(max(static_cast<TickType_t>(1), pdMS_TO_TICKS(pauseMs)));
+}
 
 static bool storeStationLogo(StationSaveJob& job) {
   SR_ACTIVITY(LogoWrite);
@@ -1227,6 +1257,11 @@ static bool storeStationLogo(StationSaveJob& job) {
   uint32_t stageUs = micros();
 #endif
   job.logo = stationLogoUploadPath(job.id);
+  // A browser conversion uploads first, then binds the path in a separate
+  // station save. Decode only after that binding; an in-place replacement of
+  // an already referenced logo still needs its immediate LCD refresh.
+  Station station;
+  job.prepareLogo = StationManager::instance().getStation(job.id, station) && station.logo == job.logo;
   const String tempPath = job.logo + ".upload";
   if (!ensureDir("/logos")) { job.error = "Logo directory unavailable"; return false; }
   if (ReadOnlyStorage::exists(LittleFS.mountpoint(), tempPath.c_str())) LittleFS.remove(tempPath);
@@ -1234,15 +1269,23 @@ static bool storeStationLogo(StationSaveJob& job) {
   if (!file) { job.error = "Logo file open failed"; return false; }
   bool ok = true;
   for (size_t offset = 0; offset < job.upload->size;) {
-    const size_t count = min(static_cast<size_t>(4096), job.upload->size - offset);
+    const size_t chunkLimit = ArtworkCache::instance().audioReady() ? 512U : 4096U;
+    const size_t count = min(chunkLimit, job.upload->size - offset);
+#if SIMPLE_RADIO_RUNTIME_DIAGNOSTICS
+    const uint32_t chunkStartedUs = micros();
+#endif
     if (file.write(job.upload->bytes + offset, count) != count) { ok = false; break; }
+#if SIMPLE_RADIO_RUNTIME_DIAGNOSTICS
+    job.trace.writeChunkMaxUs = max(job.trace.writeChunkMaxUs, micros() - chunkStartedUs);
+#endif
     offset += count;
-    vTaskDelay(1);
+    yieldLogoFlash();
   }
   #if SIMPLE_RADIO_RUNTIME_DIAGNOSTICS
   job.trace.writeUs = micros() - stageUs; stageUs = micros();
   #endif
   const bool synced = file.flush();
+  yieldLogoFlash();
   const bool closed = file.close();
   ok = ok && synced && closed;
   #if SIMPLE_RADIO_RUNTIME_DIAGNOSTICS
@@ -1253,6 +1296,7 @@ static bool storeStationLogo(StationSaveJob& job) {
     job.error = "Logo write failed";
     return false;
   }
+  yieldLogoFlash();
   {
     SR_ACTIVITY(LogoCommit);
     if (!commitLogoUpload(tempPath, job.logo, job.error)) return false;
@@ -1260,6 +1304,7 @@ static bool storeStationLogo(StationSaveJob& job) {
 #if SIMPLE_RADIO_RUNTIME_DIAGNOSTICS
   job.trace.commitUs = micros() - stageUs; stageUs = micros();
 #endif
+  yieldLogoFlash();
   {
     SR_ACTIVITY(CacheScan);
     removeOldStationLogoUploads(job.id, job.logo);
@@ -1294,15 +1339,34 @@ static void stationSaveTask(void* parameter) {
   portENTER_CRITICAL(&stationSaveMux);
   job->done = true;
   portEXIT_CRITICAL(&stationSaveMux);
-  vTaskDelete(nullptr); // The main loop owns and releases the completed job.
+  // Main owns and releases the completed job; the resident worker waits again.
 }
 
-static std::atomic<uint32_t> stationSaveImageHolds{0};
+static void stationSaveWorkerEntry(void*) {
+  for (;;) {
+    StationSaveJob* job = nullptr;
+    if (xQueueReceive(stationSaveQueue, &job, portMAX_DELAY) == pdTRUE && job) stationSaveTask(job);
+  }
+}
+
+static bool startStationSaveWorker() {
+  if (stationSaveWorker) return true;
+  if (!stationSaveQueue) stationSaveQueue = xQueueCreateStatic(1, sizeof(StationSaveJob*), stationSaveQueueStorage, &stationSaveQueueControl);
+  if (!stationSaveQueue) return false;
+  stationSaveWorker = xTaskCreateStaticPinnedToCore(stationSaveWorkerEntry, "station-save", STATION_SAVE_TASK_STACK,
+      nullptr, 0, stationSaveStack, &stationSaveControl, tskNO_AFFINITY);
+  return stationSaveWorker != nullptr;
+}
+
+static bool submitStationSave(StationSaveJob* job) {
+  return stationSaveWorker && stationSaveQueue && xQueueSend(stationSaveQueue, &job, 0) == pdTRUE;
+}
+
 static void dispatchStationImages();
 
 static void startStationSaveJob(AsyncWebServerRequest* request, StationSaveJob* job) {
   // Copy the request's data; only the library's weak continuation pointer may
-  // outlive its handler. At most one job/stack can be admitted at a time.
+  // outlive its handler. At most one job can be admitted at a time.
   // Publish only a fully initialized continuation to the other CPU.
   job->request = request->pause();
 #if SIMPLE_RADIO_RUNTIME_DIAGNOSTICS
@@ -1312,6 +1376,7 @@ static void startStationSaveJob(AsyncWebServerRequest* request, StationSaveJob* 
   portENTER_CRITICAL(&stationSaveMux);
   if (!pendingStationSave) {
     ++stationSaveImageHolds;
+    job->imagesHeld = true;
     pendingStationSave = job;
     admitted = true;
   }
@@ -1322,12 +1387,18 @@ static void startStationSaveJob(AsyncWebServerRequest* request, StationSaveJob* 
     return;
   }
   // Let already active images finish, but reserve the next free internal
-  // blocks for the temporary save stack. Resume queued streams in AsyncTCP
-  // when this response closes, including client cancellation. Logo receive's
-  // token has already been released before ownership moves into this job.
-  request->onDisconnect([]() { --stationSaveImageHolds; dispatchStationImages(); });
-  // No worker stack is allocated in the request handler. The main loop starts
-  // it once album preparation has released the shared memory gate.
+  // blocks for save I/O scratch. The job releases this reservation after Main
+  // has collected the worker result, even if its immutable reply is still
+  // waiting for TCP. A slow reader must not block all queued station images.
+  // The resident worker already owns its stack. Main submits the job once
+  // album preparation has released the shared memory gate.
+}
+
+static void releaseStationTxHold(StationSaveJob* job) {
+  if (job->httpTxHeld) {
+    job->httpTxHeld = false;
+    AsyncWebServerRequest::releaseResponseTx();
+  }
 }
 
 static void dispatchPendingStationSave() {
@@ -1340,22 +1411,72 @@ static void dispatchPendingStationSave() {
     job->done = true;
     return;
   }
+  // A published station is already durable. Rebinding an unchanged logo must
+  // not borrow another internal task stack or rewrite the flash snapshot.
+  if (!job->upload && StationManager::instance().matchesStation(job->id, job->name, job->url, job->logo)) {
+    job->outId = job->id;
+    job->saved = true;
+    job->done = true;
+    return;
+  }
   const uint32_t now = millis();
   if (job->allocationDeferred) {
     if (now - job->allocationAttemptMs < 50U) return;
   }
-  if (!ArtworkMemory::gate().beginStationSave()) return;
+  if (!job->httpTxHeld) {
+    AsyncWebServerRequest::holdResponseTx();
+    job->httpTxHeld = true;
+  }
+  // Pause writers only for the cross-core memory check/queue handoff.
+  // The resident stack is already included in actual free heap. Reserve
+  // small I/O scratch and a packet block; do not require another 6KB span.
+  const uint32_t dmaCaps = MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT | MALLOC_CAP_DMA;
+  const uint32_t dmaFree = heap_caps_get_free_size(dmaCaps);
+  const uint32_t dmaLargest = heap_caps_get_largest_free_block(dmaCaps);
+#if SIMPLE_RADIO_RUNTIME_DIAGNOSTICS
+  stationSaveDma.store(dmaFree); stationSaveLargest.store(dmaLargest);
+  stationSaveTx.store(AsyncWebServerRequest::responseTxOutstanding());
+#endif
+  const bool scratchFits = dmaFree >= 8192U && dmaLargest >= 2048U;
+  if (!scratchFits || !AsyncWebServerRequest::responseTxQuiescent()) {
+    // Waiting response objects also retain RAM. Let them finish when the
+    // I/O scratch does not yet fit; do not hold the network waiting for RAM.
+    if (!scratchFits) releaseStationTxHold(job);
+#if SIMPLE_RADIO_RUNTIME_DIAGNOSTICS
+    stationSavePhase.store(1);
+#endif
+    if (job->allocationDeferred && now - job->allocationWaitStartedMs >= 3000U) {
+      job->errorStatus = 503;
+      job->error = "Station save memory temporarily unavailable";
+      job->done = true;
+    } else {
+      if (!job->allocationDeferred) job->allocationWaitStartedMs = now;
+      job->allocationDeferred = true;
+      job->allocationAttemptMs = now;
+    }
+    return;
+  }
+  if (!ArtworkMemory::gate().beginStationSave()) {
+    releaseStationTxHold(job);
+#if SIMPLE_RADIO_RUNTIME_DIAGNOSTICS
+    stationSavePhase.store(2);
+#endif
+    return;
+  }
+#if SIMPLE_RADIO_RUNTIME_DIAGNOSTICS
+  stationSavePhase.store(3);
+#endif
   job->memoryClaimed = true;
   job->started = true;
   // AsyncTCP runs above the audio tasks. Flash I/O must not execute there or
-  // inherit its priority; this short-lived worker runs below audio on either CPU.
-  if (xTaskCreatePinnedToCore(stationSaveTask, "station-save", STATION_SAVE_TASK_STACK,
-                             job, 0, nullptr, tskNO_AFFINITY) != pdPASS) {
-    // A preceding worker can have replied before the idle task reclaims its
-    // stack. Full image responses can also briefly fragment internal memory.
-    // Keep this one admitted request, yield between attempts, and retain no
-    // memory claim while waiting. Never run flash I/O in the network callback.
+  // inherit its priority; the resident worker runs below audio on either CPU.
+  const bool submitted = submitStationSave(job);
+  releaseStationTxHold(job); // The resident stack was reserved before requests were admitted.
+  if (!submitted) {
+    // Keep one admitted request and yield between queue retries. No task
+    // stack is allocated here, and flash never runs in a network callback.
     ArtworkMemory::gate().endStationSave();
+    releaseStationTxHold(job);
     job->memoryClaimed = false;
     job->started = false;
     if (job->allocationDeferred && now - job->allocationWaitStartedMs >= 3000U) {
@@ -1389,16 +1510,44 @@ static void sendDeferredReply(AsyncWebServerRequest* request, AsyncWebServerResp
   if (!request->sendDeferred(response)) delete response;
 }
 
-struct StoredFileReadJob { AsyncWebServerRequestPtr request; const char* path; };
+static AsyncWebServerResponse* prepareLogoListResponse(AsyncWebServerRequest* request) {
+  ArtworkJson::Allocator jsonAllocator;
+  JsonDocument doc(&jsonAllocator);
+  JsonArray arr = doc["logos"].to<JsonArray>();
+
+  ReadOnlyStorage::visitFiles(LittleFS.mountpoint(), "/logos", [&](const char* filename, size_t bytes, time_t) {
+    const String name = logoBasename(filename);
+    if (!supportedLogoExtension(name)) return;
+    JsonObject item = arr.add<JsonObject>();
+    item["name"] = name;
+    item["path"] = "/logos/" + name;
+    item["size"] = static_cast<uint32_t>(bytes);
+  });
+
+  if (doc.overflowed()) { return request->beginResponse(503, "text/plain", "Logo list memory unavailable"); }
+  String out;
+  serializeJson(doc, out);
+  return request->beginResponse(200, "application/json", out);
+}
+
+struct StoredFileReadJob {
+  AsyncWebServerRequestPtr request;
+  const char* path;
+  const char* type;
+  bool asset;
+};
 static StoredFileReadJob* storedFileReads[8]{};
 static uint8_t storedReadHead = 0, storedReadTail = 0, storedReadCount = 0;
 static portMUX_TYPE storedReadMux = portMUX_INITIALIZER_UNLOCKED;
 
-static void queueStoredFileRead(AsyncWebServerRequest* request, const char* path) {
+static void queueStoredFileRead(AsyncWebServerRequest* request, const char* path,
+                                const char* type = "application/json", bool asset = false) {
   if (otaUploadActive || rebootPending) { request->send(503); return; }
   auto* job = new (std::nothrow) StoredFileReadJob;
   if (!job) { request->send(503); return; }
   job->path = path;
+  job->type = type;
+  job->asset = asset;
   job->request = request->pause();
   bool accepted = false;
   portENTER_CRITICAL(&storedReadMux);
@@ -1421,17 +1570,32 @@ static void processStoredFileRead() {
   if (!pending) return;
   std::unique_ptr<StoredFileReadJob> job(pending);
   if (auto request = job->request.lock()) {
+    if (!job->path) {
+      storedReadInProgress.store(true);
+      auto* reply = (otaUploadActive || rebootPending) ? request->beginResponse(503) : prepareLogoListResponse(request.get());
+      storedReadInProgress.store(false);
+      sendDeferredReply(request.get(), reply);
+      return;
+    }
     int status = 503;
     // Publish before rechecking the OTA flag. OTA publishes its flag before
     // waiting for us: no open descriptor can race LittleFS.end().
     storedReadInProgress.store(true);
     auto* response = (otaUploadActive || rebootPending) ? nullptr : StoredFileResponse::create(LittleFS.mountpoint(), job->path, status);
+    bool gzip = false;
+    if (!response && status == 404 && job->asset && !otaUploadActive && !rebootPending) {
+      const String compressedPath = String(job->path) + ".gz";
+      response = StoredFileResponse::create(LittleFS.mountpoint(), compressedPath.c_str(), status);
+      gzip = response != nullptr;
+    }
     storedReadInProgress.store(false);
     if (!response) { sendDeferredReply(request.get(), request->beginResponse(status)); return; }
+    response->setType(job->type);
+    if (gzip) response->addHeader("Content-Encoding", "gzip");
     const String tag = response->entityTag();
     const String condition = request->header("If-None-Match");
     response->addHeader("ETag", tag);
-    response->addHeader("Cache-Control", "no-cache");
+    response->addHeader("Cache-Control", job->asset ? "no-store, max-age=0" : "no-cache");
     if (ArtworkEtag::matches({condition.c_str(), condition.length()}, {tag.c_str(), tag.length()})) response->notModified();
     sendDeferredReply(request.get(), response);
   }
@@ -1447,6 +1611,9 @@ static void completeStationSave() {
   portEXIT_CRITICAL(&stationSaveMux);
   if (!completed) return;
   std::unique_ptr<StationSaveJob> job(completed);
+#if SIMPLE_RADIO_RUNTIME_DIAGNOSTICS
+  stationSavePhase.store(4);
+#endif
   if (job->saved) {
     if (job->prepareLogo && job->logo.length()) ArtworkCache::instance().requestPrewarm(job->logo, true);
     if (!job->upload) {
@@ -1711,12 +1878,15 @@ static void processSettingsSave() {
   }
 }
 
+static bool prepareStationResponse(StationWebImageResponse* response) { return response->prepare(); }
+static bool prepareStationResponse(StationArtworkResponse* response) { return response->prepare(); }
+
 static void sendStationImage(AsyncWebServerRequest* request) {
-    if (!request->hasParam("id")) { request->send(400); return; }
+    if (!request->hasParam("id")) { sendDeferredReply(request, request->beginResponse(400)); return; }
     String imagePath;
     ArtworkCache& cache = ArtworkCache::instance();
     auto sendImage = [request](auto* response) {
-      if (!response) { request->send(503); return true; }
+      if (!response) { sendDeferredReply(request, request->beginResponse(503)); return true; }
       if (!response->_sourceValid()) { delete response; return false; }
       const String etag = response->entityTag();
       if (etag.length()) {
@@ -1726,8 +1896,9 @@ static void sendStationImage(AsyncWebServerRequest* request) {
           response->notModified();
         }
       }
+      if (!prepareStationResponse(response)) { delete response; return false; }
       response->addHeader("Cache-Control", "no-cache");
-      request->send(response);
+      sendDeferredReply(request, response);
       return true;
     };
     if (!request->hasParam("lcd") &&
@@ -1735,89 +1906,98 @@ static void sendStationImage(AsyncWebServerRequest* request) {
       if (sendImage(new (std::nothrow) StationWebImageResponse(LittleFS.mountpoint(), imagePath.c_str()))) return;
     }
     if (!cache.stationArtworkReady(request->getParam("id")->value().toInt(), &imagePath) || !imagePath.length()) {
-      request->send(404); return;
+      sendDeferredReply(request, request->beginResponse(404)); return;
     }
     const String path = cache.lcdThumbnailPath(imagePath);
-    if (!sendImage(new (std::nothrow) StationArtworkResponse(LittleFS.mountpoint(), path.c_str()))) request->send(404);
+    if (!sendImage(new (std::nothrow) StationArtworkResponse(LittleFS.mountpoint(), path.c_str()))) sendDeferredReply(request, request->beginResponse(404));
 }
 
-struct StationImageJob { AsyncWebServerRequestPtr request; };
+struct StationImageJob;
+static void finishStationImage(StationImageJob* job);
+struct StationImageJob {
+  std::atomic<uint32_t> references{0};
+  AsyncWebServerRequestPtr request;
+  // Only accessed under stationImageMux. Queue and disconnect callback own
+  // independent leases; disconnect can safely cancel an in-progress copy.
+  bool counted = false, admitted = false, cancelled = false;
+  ~StationImageJob() { finishStationImage(this); }
+};
+using StationImageLease = JobPtr<StationImageJob>;
 static constexpr uint8_t STATION_IMAGE_QUEUE_SIZE = 8;
-static StationImageJob* stationImageQueue[STATION_IMAGE_QUEUE_SIZE]{};
+static StationImageLease stationImageQueue[STATION_IMAGE_QUEUE_SIZE];
 static uint8_t stationImageHead = 0, stationImageTail = 0, stationImageCount = 0;
 static std::atomic<uint32_t> stationImageActive{0};
+static uint32_t stationImageConnected = 0;
 static portMUX_TYPE stationImageMux = portMUX_INITIALIZER_UNLOCKED;
 
+static void finishStationImage(StationImageJob* job) {
+  portENTER_CRITICAL(&stationImageMux);
+  if (!job->cancelled) {
+    job->cancelled = true;
+    if (job->counted) --stationImageConnected;
+    if (job->admitted) --stationImageActive;
+  }
+  portEXIT_CRITICAL(&stationImageMux);
+}
+
 static void dispatchStationImages() {
-  if (stationSaveImageHolds.load()) return;
-  const uint32_t limit = PlayerState::instance().snapshot().playing ? 1 : 2;
-  for (uint8_t processed = 0; processed < STATION_IMAGE_QUEUE_SIZE && stationImageActive.load() < limit; ++processed) {
-    StationImageJob* pending = nullptr;
+  // Main prepares at most one immutable image per loop. AsyncTCP only queues
+  // and transmits it: a flash mutex can no longer stall all socket callbacks.
+  for (uint8_t processed = 0; processed < STATION_IMAGE_QUEUE_SIZE; ++processed) {
+    StationImageLease job;
+    bool cancelled = false;
     portENTER_CRITICAL(&stationImageMux);
     if (stationImageCount) {
-      pending = stationImageQueue[stationImageHead];
-      stationImageQueue[stationImageHead] = nullptr;
+      cancelled = stationImageQueue[stationImageHead]->cancelled;
+      if (!cancelled && (stationSaveImageHolds.load() || stationImageActive.load() >= 2)) {
+        portEXIT_CRITICAL(&stationImageMux);
+        return;
+      }
+      job.swap(stationImageQueue[stationImageHead]);
       stationImageHead = (stationImageHead + 1) % STATION_IMAGE_QUEUE_SIZE;
       --stationImageCount;
+      if (!cancelled) { job->admitted = true; ++stationImageActive; }
     }
     portEXIT_CRITICAL(&stationImageMux);
-    if (!pending) return;
-    std::unique_ptr<StationImageJob> job(pending);
+    if (!job) return;
+    if (cancelled) continue;
     if (auto request = job->request.lock()) {
-      if (!request->client() || !request->client()->connected()) continue;
-      ++stationImageActive;
-      // A response reaching EOF still owns TCP send/retry buffers. Hold this
-      // admission until the pinned server closes the completed connection,
-      // or the client disconnects. All streaming starts stay in AsyncTCP.
-      request->onDisconnect([]() { --stationImageActive; dispatchStationImages(); });
-      sendStationImage(request.get());
+      // Share the stored-file OTA barrier: publish before checking OTA, and
+      // close all image sources before allowing LittleFS.end().
+      storedReadInProgress.store(true);
+      if (otaUploadActive || rebootPending) sendDeferredReply(request.get(), request->beginResponse(503));
+      else sendStationImage(request.get());
+      storedReadInProgress.store(false);
     }
+    return;
   }
 }
 
 static void queueStationImage(AsyncWebServerRequest* request) {
   if (!request->hasParam("id")) { request->send(400); return; }
-  auto* job = new (std::nothrow) StationImageJob;
+  StationImageLease job(new (std::nothrow) StationImageJob);
   if (!job) { request->send(503, "text/plain", "Image queue memory unavailable"); return; }
   job->request = request->pause();
+  request->onDisconnect([job]() { finishStationImage(job.get()); });
   bool queued = false;
   portENTER_CRITICAL(&stationImageMux);
-  if (stationImageCount < STATION_IMAGE_QUEUE_SIZE) {
+  if (stationImageCount < STATION_IMAGE_QUEUE_SIZE && stationImageConnected < STATION_IMAGE_QUEUE_SIZE) {
+    job->counted = true;
+    ++stationImageConnected;
     stationImageQueue[stationImageTail] = job;
     stationImageTail = (stationImageTail + 1) % STATION_IMAGE_QUEUE_SIZE;
     ++stationImageCount;
     queued = true;
   }
   portEXIT_CRITICAL(&stationImageMux);
-  if (!queued) { delete job; request->send(503, "text/plain", "Image queue full"); }
-  else {
-    request->onDisconnect([]() { dispatchStationImages(); });
-    dispatchStationImages();
-  }
-}
-
-// Main may discard expired weak requests, never start a streamed response.
-static void reapStationImageRequests() {
-  for (uint8_t processed = 0; processed < STATION_IMAGE_QUEUE_SIZE; ++processed) {
-    StationImageJob* expired = nullptr;
-    portENTER_CRITICAL(&stationImageMux);
-    if (stationImageCount && stationImageQueue[stationImageHead]->request.expired()) {
-      expired = stationImageQueue[stationImageHead];
-      stationImageQueue[stationImageHead] = nullptr;
-      stationImageHead = (stationImageHead + 1) % STATION_IMAGE_QUEUE_SIZE;
-      --stationImageCount;
-    }
-    portEXIT_CRITICAL(&stationImageMux);
-    if (!expired) return;
-    delete expired;
-  }
+  if (!queued) request->send(503, "text/plain", "Image queue full");
 }
 
 void webServerLoop() {
   processSettingsSave();
   completeStationSave();
   dispatchPendingStationSave();
-  reapStationImageRequests();
+  dispatchStationImages();
   unsigned long now = millis();
   if (now - lastWsCleanupMs >= 1000) {
     lastWsCleanupMs = now;
@@ -1844,6 +2024,7 @@ void webServerLoop() {
 
 void webServerBegin() {
   Serial.println("[web] begin");
+  if (!startStationSaveWorker()) Serial.println("[web] station save worker unavailable");
   ArtworkRevision::beginHttpSession();
   WebUiCompatibility::refresh();
   ws.onEvent(onWsEvent);
@@ -1868,23 +2049,8 @@ void webServerBegin() {
   });
 
   server.on("/api/logos", HTTP_GET, [](AsyncWebServerRequest* request) {
-    ArtworkJson::Allocator jsonAllocator;
-    JsonDocument doc(&jsonAllocator);
-    JsonArray arr = doc["logos"].to<JsonArray>();
-
-    ReadOnlyStorage::visitFiles(LittleFS.mountpoint(), "/logos", [&](const char* filename, size_t bytes, time_t) {
-      const String name = logoBasename(filename);
-      if (!supportedLogoExtension(name)) return;
-      JsonObject item = arr.add<JsonObject>();
-      item["name"] = name;
-      item["path"] = "/logos/" + name;
-      item["size"] = static_cast<uint32_t>(bytes);
-    });
-
-    if (doc.overflowed()) { request->send(503, "text/plain", "Logo list memory unavailable"); return; }
-    String out;
-    serializeJson(doc, out);
-    request->send(200, "application/json", out);
+    // A null file path requests the live uploaded-logo directory snapshot.
+    queueStoredFileRead(request, nullptr);
   });
 
   server.on("/api/station/save", HTTP_POST, [](AsyncWebServerRequest* request) {
@@ -2292,6 +2458,33 @@ void webServerBegin() {
     portEXIT_CRITICAL(&stationImageMux);
     doc["stationImageQueue"]["pending"] = imagePending;
     doc["stationImageQueue"]["active"] = stationImageActive.load();
+    doc["stationImageQueue"]["waitingForSave"] = stationSaveImageHolds.load();
+    doc["httpTx"]["outstanding"] = AsyncWebServerRequest::responseTxOutstanding();
+    doc["httpTx"]["active"] = AsyncWebServerRequest::responseTxActive();
+    doc["httpTx"]["limit"] = AsyncWebServerRequest::responseTxLimit();
+    doc["httpTxTiming"]["addMaxMs"] = responseTxTimings().addMaxMs.load();
+    doc["httpTxTiming"]["sendMaxMs"] = responseTxTimings().sendMaxMs.load();
+    doc["httpTxTiming"]["fileReadMaxMs"] = ReadIoPriority::readMaximum().load();
+    doc["httpTxTiming"]["dataMaxMs"] = responseTxTimings().dataMaxMs.load();
+    doc["httpTxTiming"]["ackMaxMs"] = responseTxTimings().ackMaxMs.load();
+    doc["httpTxTiming"]["pollMaxMs"] = responseTxTimings().pollMaxMs.load();
+    doc["httpTxTiming"]["disconnectMaxMs"] = responseTxTimings().disconnectMaxMs.load();
+    const uint32_t dmaCaps = MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT | MALLOC_CAP_DMA;
+    doc["dmaHeap"]["free"] = heap_caps_get_free_size(dmaCaps);
+    doc["dmaHeap"]["largest"] = heap_caps_get_largest_free_block(dmaCaps);
+    doc["httpTaskStackFreeMin"] = uxTaskGetStackHighWaterMark(nullptr);
+    doc["stationSaveRuntime"]["phase"] = stationSavePhase.load();
+    doc["stationSaveRuntime"]["dmaFree"] = stationSaveDma.load();
+    doc["stationSaveRuntime"]["dmaLargest"] = stationSaveLargest.load();
+    doc["stationSaveRuntime"]["queuedBytes"] = stationSaveTx.load();
+    const auto abortTrace = RuntimeProbe::previousAbort();
+    if (abortTrace.uptimeMs) {
+      auto trace = doc["previousAbort"].to<JsonObject>();
+      trace["uptimeMs"] = abortTrace.uptimeMs; trace["task"] = abortTrace.task;
+      trace["reason"] = abortTrace.reason; trace["pc"] = abortTrace.pc;
+      auto callers = trace["callers"].to<JsonArray>();
+      for (const auto pc : abortTrace.callers) { if (!pc) break; callers.add(pc); }
+    }
     const auto lcdRam = LcdThumbnailRam::stats();
     doc["lcdThumbnailRam"]["slots"] = lcdRam.slots;
     doc["lcdThumbnailRam"]["bytes"] = lcdRam.bytes;
@@ -2336,7 +2529,7 @@ void webServerBegin() {
       row["queueUs"] = t.workerUs ? t.workerUs - t.queuedUs : 0;
       row["workUs"] = t.finishedUs ? t.finishedUs - t.workerUs : 0;
       row["replyUs"] = t.finishedUs ? t.replyUs - t.finishedUs : 0;
-      row["writeUs"] = t.writeUs; row["flushUs"] = t.flushUs;
+      row["writeUs"] = t.writeUs; row["writeChunkMaxUs"] = t.writeChunkMaxUs; row["flushUs"] = t.flushUs;
       row["commitUs"] = t.commitUs; row["cleanupUs"] = t.cleanupUs;
       row["saved"] = t.saved; row["clientGone"] = t.clientGone;
     }
@@ -2554,6 +2747,30 @@ void webServerBegin() {
   });
 
   if (WebUiCompatibility::info().compatible) {
+    // These are immutable UI assets, not user JSON or station artwork. Queue
+    // their actual current file bytes in Main too; a CSS/JS GET must never
+    // wait on a flash writer inside the shared AsyncTCP event loop. Match the
+    // existing static handler's plain-file-first behavior and cache policy.
+    struct AssetRoute { const char* path; const char* type; };
+    static constexpr AssetRoute assets[] = {
+      {"/index.html", "text/html"}, {"/wifi.html", "text/html"},
+      {"/app.js", "application/javascript"}, {"/ui.js", "application/javascript"},
+      {"/wifi.js", "application/javascript"}, {"/ir-profiles.js", "application/javascript"},
+      {"/ir-editor.js", "application/javascript"}, {"/i18n-catalog.js", "application/javascript"},
+      {"/i18n.js", "application/javascript"}, {"/style.css", "text/css"},
+      {"/ui.css", "text/css"}, {"/wifi.css", "text/css"},
+      {"/icons.svg", "image/svg+xml"}, {"/favicon.svg", "image/svg+xml"},
+      {"/build-info.json", "application/json"}
+    };
+    server.on("/", HTTP_GET, [](AsyncWebServerRequest* request) {
+      queueStoredFileRead(request, "/index.html", "text/html", true);
+    });
+    for (const auto& asset : assets) {
+      const AssetRoute* route = &asset;
+      server.on(route->path, HTTP_GET, [route](AsyncWebServerRequest* request) {
+        queueStoredFileRead(request, route->path, route->type, true);
+      });
+    }
     server.serveStatic("/", LittleFS, "/")
           .setDefaultFile("index.html")
           .setCacheControl("no-store, max-age=0");

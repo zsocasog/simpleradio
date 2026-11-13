@@ -16,12 +16,18 @@ function body(text,marker){
 const ctor=body(http,'TlsPriorityScope() :').replace(/nullptr/g,'null');
 const dtor=body(http,'~TlsPriorityScope()').replace(/nullptr/g,'null');
 let establish=body(http,'int establish(Connect connectSocket)')
+  .replace(/HandshakeSlices::run/g,'HandshakeSlices.run')
+  .replace(/\[&\]\(uint32_t sliceMs\)/g,'sliceMs =>').replace(/\[&\]|\[\]/g,'() =>')
   .replace('TlsPriorityScope priority;','const priority = new Priority(); try {')
   .replace(/const (?:uint32_t|int) /g,'const ').replace(/NetworkClientSecure::stop\(\)/g,'stop()')
   .replace(/sslclient->/g,'sslclient.').replace('sslclient.get()','sslclient')
   .replace(/max<uint32_t>\(/g,'Math.max(')
   .replace('(remaining(transfer.options.deadlineMs, 6000) + 999) / 1000','Math.trunc((remaining(transfer.options.deadlineMs, 6000) + 999) / 1000)');
 establish=establish.slice(0,-1)+'} finally { priority.dispose(); } }';
+const sliceCode=body(read('src/artwork/handshake_slices.h'),'int run(')
+  .replace(/const uint32_t |const int /g,'const ')
+  .replace('static_cast<uint32_t>(clock() - started)','((clock() - started) >>> 0)').replace(/(\d+)U/g,'$1');
+const runSlices=new Function('step','keepGoing','clock','limitMs',sliceCode);
 function tls({priority=0,setup=true,handshake=0,services=[true,true,true],budget=35000}={}){
   const c=vm.createContext({priority,events:[],now:0,connectionFailure_:'',_stillinPlainStart:false,
     sslclient:{last_error:0},Math,String,setup,handshake,services:[...services],budget,
@@ -32,13 +38,15 @@ function tls({priority=0,setup=true,handshake=0,services=[true,true,true],budget
   c.millis=()=>c.now;
   c.remaining=(_deadline,normal)=>Math.min(normal,c.budget);
   c.setPlainStart=()=>{c._stillinPlainStart=true;};
-  c.setHandshakeTimeout=value=>{c.timeout=value;};
+  c.setHandshakeTimeout=value=>{c.timeout=value;c.sslclient.handshake_timeout=value*1000;};
+  c.HandshakeSlices={run:runSlices};
   c.stop=()=>{++c.stops;};
   c.failure=(phase,elapsed,code)=>c.failures.push({phase,elapsed,code});
   c.ssl_starttls_handshake=()=>{
     assert.equal(c._stillinPlainStart,true);
     assert.equal(c.priority,Math.max(priority,1));
-    ++c.handshakes;c.now+=c.handshake<0?6000:100;return c.handshake;
+    ++c.handshakes;const result=Array.isArray(c.handshake)?c.handshake.shift():c.handshake;
+    c.now+=result===-1?c.sslclient.handshake_timeout+1:10;return result;
   };
   c.connectSocket=()=>{assert.equal(c.priority,Math.max(priority,1));c.now+=30;return c.setup;};
   vm.runInContext(`class Priority {
@@ -54,6 +62,15 @@ test('TLS shares display priority only during connection, and restores the idle 
 });
 test('TLS never lowers or raises callers already at display/audio priority',()=>{
   for(const priority of [1,2]){const c=tls({priority});assert.equal(c.result,1);assert.equal(c.priority,priority);assert.equal(c.events.length,0);}
+});
+test('native timeout slices resume the same TLS context and restore the full timeout',()=>{
+  const c=tls({handshake:[-1,-1,0]});assert.equal(c.result,1);assert.equal(c.handshakes,3);
+  assert.equal(c.sslclient.handshake_timeout,6000);assert.equal(c.stops,0);
+});
+test('a save/cancellation between native slices stops only in the owning worker',()=>{
+  const c=tls({handshake:-1,services:[true,true,true,false]});
+  assert.equal(c.result,0);assert.equal(c.handshakes,1);assert.ok(c.now<200);
+  assert.equal(c.sslclient.handshake_timeout,6000);assert.equal(c.stops,1);
 });
 test('TCP/setup and TLS handshake failures restore priority and retain the actual phase/code',()=>{
   const setup=tls({setup:false});assert.equal(setup.result,0);assert.equal(setup.handshakes,0);

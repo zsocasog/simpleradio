@@ -32,6 +32,10 @@ RuntimeProbe::Performance performanceCounters{};
 // in this hook; each CPU has its own bounded record.
 struct RetainedFailures { uint32_t magic; RuntimeProbe::AllocationFailures failures; };
 RTC_NOINIT_ATTR RetainedFailures retainedFailures;
+struct RetainedAbort { uint32_t magic; RuntimeProbe::AbortTrace trace; };
+RTC_NOINIT_ATTR RetainedAbort retainedAbort;
+RuntimeProbe::AbortTrace previousAbortRecord{};
+constexpr uint32_t abortMagic = 0x53524131;
 RuntimeProbe::AllocationFailures previousFailures{};
 portMUX_TYPE allocationMux = portMUX_INITIALIZER_UNLOCKED;
 constexpr uint32_t allocationMagic = 0x53524631;
@@ -57,9 +61,25 @@ void allocationFailed(size_t bytes, uint32_t caps, const char* function) {
   }
   portEXIT_CRITICAL(&allocationMux);
 }
+// Diagnostic only: use Arduino's existing panic callback and supplied bounded
+// backtrace. Do not allocate, take heap/FS locks, or print from a panic handler.
+void retainPanic(arduino_panic_info_t* info, void*) {
+  auto& row = retainedAbort.trace;
+  row = RuntimeProbe::AbortTrace{};
+  row.uptimeMs = static_cast<uint32_t>(esp_timer_get_time() / 1000);
+  row.pc = reinterpret_cast<uint32_t>(info->pc);
+  const char* task = pcTaskGetName(nullptr);
+  for (size_t i = 0; task && task[i] && i + 1 < sizeof(row.task); ++i) row.task[i] = task[i];
+  for (size_t i = 0; info->reason && info->reason[i] && i + 1 < sizeof(row.reason); ++i) row.reason[i] = info->reason[i];
+  for (size_t i = 0; i < 32 && i < info->backtrace_len; ++i) row.callers[i] = info->backtrace[i];
+  retainedAbort.magic = abortMagic;
+}
 }
 
 namespace RuntimeProbe {
+AbortTrace previousAbort() {
+  return previousAbortRecord;
+}
 ActivitySpan::ActivitySpan(Activity activity) : activity_(activity) {
   portENTER_CRITICAL(&probeMux);
   const size_t index = static_cast<size_t>(activity_);
@@ -105,6 +125,9 @@ UploadTraces uploadTraces() {
 }
 void begin() {
   const auto reason = esp_reset_reason();
+  if (retainedAbort.magic == abortMagic && reason == ESP_RST_PANIC) previousAbortRecord = retainedAbort.trace;
+  retainedAbort.magic = 0;
+  set_arduino_panic_handler(retainPanic, nullptr);
   if (retainedFailures.magic == allocationMagic &&
       (reason == ESP_RST_PANIC || reason == ESP_RST_SW || reason == ESP_RST_TASK_WDT))
     previousFailures = retainedFailures.failures;

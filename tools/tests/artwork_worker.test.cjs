@@ -28,7 +28,7 @@ const loopCode = body('void ArtworkCache::downloadTask(')
   .replace('const bool diskJob = job && job->kind != ArtworkJobKind::AlbumSearch && job->kind != ArtworkJobKind::PickerLogo;',
     'const diskJob = job && job.kind !== "album" && job.kind !== "picker";')
   .replace(/const (?:bool|uint32_t) /g,'const ').replace(/job->/g,'job.')
-  .replace(/ArtworkJobKind::Thumbnail/g,'"thumbnail"').replace(/PlayerState::instance\(\)\.snapshot\(\)\.playing/g,'false')
+  .replace(/ArtworkJobKind::Thumbnail/g,'"thumbnail"').replace(/ArtworkJobKind::CacheStats/g,'"stats"').replace(/PlayerState::instance\(\)\.snapshot\(\)\.playing/g,'false')
   .replace(/cache->lcdDiskWrites.load\(\)/g,'0')
   .replace('xQueueReceive(artworkJobQueue, &job, portMAX_DELAY)',
     'xQueueReceive(artworkJobQueue, value => job = value, portMAX_DELAY)')
@@ -73,7 +73,7 @@ function harness() {
     function startWorker() ${initCode}
     function queueDownloadJob(job) ${submitCode}`, c);
   c.run = () => {
-    try { c.downloadTask({ refreshCacheStats() { assert.equal(c.heldResources,0); ++c.stats; }, markDownloadFinished() {
+    try { c.downloadTask({ cacheStatsPending:{value:false,load(){return this.value;},store(v){this.value=v;}}, refreshCacheStats() { assert.equal(c.heldResources,0); ++c.stats; }, markDownloadFinished() {
       assert.equal(c.heldResources, 0); ++c.done;
     } }); } catch (e) { if (e !== finished) throw e; }
   };
@@ -102,7 +102,7 @@ test('repeated album, logo, picker, thumbnail and embedded jobs reuse one stack 
     assert.equal(c.received[i], job); assert.equal(c.done, i + 1);
   }
   assert.equal(c.taskCreates, 1); assert.equal(c.queueCreates, 1); assert.equal(c.allocations, 0);
-  assert.equal(c.stats,c.received.filter(job=>job.kind!=='album'&&job.kind!=='picker').length);
+  assert.equal(c.stats,c.received.filter(job=>!['album','picker','thumbnail'].includes(job.kind)).length);
   assert.doesNotMatch(source, /xTaskCreatePinnedToCore\(|vTaskDelete\(/);
 });
 

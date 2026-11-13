@@ -146,7 +146,8 @@ enum class ArtworkJobKind {
   PickerLogo,
   Embedded,
   Thumbnail,
-  BrowserImport
+  BrowserImport,
+  CacheStats
 };
 
 struct ArtworkDownloadJob {
@@ -317,6 +318,7 @@ void ArtworkCache::loop() {
     PlayerStateSnapshot currentState = PlayerState::instance().snapshot();
     processPrewarmQueue(currentState);
     processPendingPlayback(currentState);
+    processCacheStats(currentState);
   };
 
   if (state.playing != lastArtworkPlaying) {
@@ -742,12 +744,14 @@ bool ArtworkCache::writeBufferYielding(File& file, const uint8_t* data, size_t l
   size_t written = 0;
   while (written < length) {
     if (idlePrewarmCancellationRequested()) return false;
-    size_t chunk = min(CHUNK_BYTES, length - written);
+    size_t chunk = min(audioReady() ? static_cast<size_t>(512) : CHUNK_BYTES, length - written);
     if (file.write(data + written, chunk) != chunk) {
       return false;
     }
     written += chunk;
-    vTaskDelay(1);
+    // Allow decoder/output refill between flash cache-disabled intervals.
+    const uint32_t pauseMs = audioReady() ? 20U : 1U;
+    vTaskDelay(max(static_cast<TickType_t>(1), pdMS_TO_TICKS(pauseMs)));
   }
   return true;
 }
@@ -1259,6 +1263,7 @@ void ArtworkCache::downloadTask(void* param) {
     if (xQueueReceive(artworkJobQueue, &job, portMAX_DELAY) != pdTRUE) continue;
     const bool diskJob = job && job->kind != ArtworkJobKind::AlbumSearch && job->kind != ArtworkJobKind::PickerLogo;
     const bool thumbnailJob = job && job->kind == ArtworkJobKind::Thumbnail;
+    const bool statsJob = job && job->kind == ArtworkJobKind::CacheStats;
     const uint32_t diskWritesBefore = cache->lcdDiskWrites.load();
     runDownloadJob(job);
     // runDownloadJob has returned: its Strings, vectors, HTTP clients and image
@@ -1268,9 +1273,11 @@ void ArtworkCache::downloadTask(void* param) {
     // RAM-only and already-cached thumbnails change no cache files. A full
     // LittleFS usage walk here can hold the filesystem lock long enough to
     // starve audio when a high-priority HTTP reader waits for that same lock.
-    // Keep idle refreshes and all real disk-write refreshes; do no new work.
+    // Record real changes now; maintenance statistics can wait until playback
+    // stops. Budget enforcement before disk writes still measures real usage.
     const bool unchangedThumbnail = thumbnailJob && cache->lcdDiskWrites.load() == diskWritesBefore;
-    if (diskJob && (!unchangedThumbnail || !PlayerState::instance().snapshot().playing)) cache->refreshCacheStats();
+    if (diskJob && !statsJob && !unchangedThumbnail) cache->cacheStatsPending.store(true);
+    if (cache->cacheStatsPending.load() && !PlayerState::instance().snapshot().playing) cache->refreshCacheStats();
     cache->markDownloadFinished();
   }
 }
@@ -1291,6 +1298,8 @@ void ArtworkCache::runDownloadJob(ArtworkDownloadJob* job) {
   delete job;
 
 
+  if (cache && kind == ArtworkJobKind::CacheStats) return; // Post-job maintenance below runs only while stopped.
+
   if (cache && kind == ArtworkJobKind::PickerLogo) {
     PickerLogoLoader::process();
     return; // A picker result never goes through the album/station result slot.
@@ -1300,6 +1309,7 @@ void ArtworkCache::runDownloadJob(ArtworkDownloadJob* job) {
     String path;
     bool ok = false;
     bool cancelled = idlePrewarm && cache->idlePrewarmCancellationRequested();
+    const uint32_t settingsYieldsBefore = ArtworkHttp::settingsYieldCount();
     if (!cancelled && kind == ArtworkJobKind::Embedded) {
       ok = cache->downloadEmbedded(url, segments, key, path);
     } else if (!cancelled && kind == ArtworkJobKind::Thumbnail) {
@@ -1319,9 +1329,11 @@ void ArtworkCache::runDownloadJob(ArtworkDownloadJob* job) {
       const PlayerStateSnapshot current = PlayerState::instance().snapshot();
       const bool playbackChanged = searchGeneration != cache->albumSearchGeneration.load() ||
                                    !current.playing || current.artist != artist || current.title != title;
-      if (playbackChanged) {
+      const bool settingsYielded = settingsYieldsBefore != ArtworkHttp::settingsYieldCount();
+      if (playbackChanged || settingsYielded) {
         cache->storeDownloadResult(key, "", false, true);
-        albumArtTrace("search cancelled: playback changed; retry available on return");
+        albumArtTrace(playbackChanged ? "search cancelled: playback changed; retry available on return"
+                                     : "search deferred: settings interrupted network; retry available");
         return;
       }
     }
@@ -3137,14 +3149,23 @@ size_t ArtworkCache::cacheBytes() const {
   return cacheBytesSnapshot.load();
 }
 
+void ArtworkCache::processCacheStats(const PlayerStateSnapshot& state) {
+  if (state.playing || !cacheStatsPending.load() || isDownloadActive()) return;
+  if (!markDownloadStarted("cache-stats", true)) return;
+  auto* job = new (std::nothrow) ArtworkDownloadJob;
+  if (job) { job->cache = this; job->kind = ArtworkJobKind::CacheStats; job->idlePrewarm = true; }
+  if (!job || !queueDownloadJob(job)) { delete job; markDownloadFinished(); }
+}
+
 void ArtworkCache::refreshCacheStats() {
   SR_ACTIVITY(CacheScan);
   cacheBytesSnapshot.store(ReadOnlyStorage::directoryBytes(LittleFS.mountpoint(), "/cache"));
-  // The pinned LittleFS totalBytes() and usedBytes() both recalculate usage.
-  // Keep these traversals out of the high-priority HTTP task too.
-  filesystemTotalSnapshot.store(LittleFS.totalBytes());
+  // Capacity is fixed by the mounted partition. totalBytes() also traverses
+  // used blocks in this core, so do not repeat that scan to reread capacity.
+  if (!filesystemTotalSnapshot.load()) filesystemTotalSnapshot.store(LittleFS.totalBytes());
   filesystemUsedSnapshot.store(LittleFS.usedBytes());
   cacheStatsAtMs.store(millis());
+  cacheStatsPending.store(false);
 }
 
 size_t ArtworkCache::cacheLimitBytes() const {
@@ -3161,7 +3182,11 @@ void ArtworkCache::enforceCacheBudget(size_t incomingBytes, const String& keepPa
   // Cache usage cannot exceed total filesystem usage. On a mostly empty
   // filesystem this avoids walking/opening every cached thumbnail for each
   // received image, while retaining full eviction checks near the limit.
-  const size_t totalBytes = LittleFS.totalBytes();
+  size_t totalBytes = filesystemTotalSnapshot.load();
+  if (!totalBytes) {
+    totalBytes = LittleFS.totalBytes();
+    filesystemTotalSnapshot.store(totalBytes);
+  }
   const size_t usedBytes = LittleFS.usedBytes();
   size_t freeBytes = totalBytes > usedBytes ? totalBytes - usedBytes : 0;
   if (usedBytes + incomingBytes <= MAX_CACHE_BYTES &&

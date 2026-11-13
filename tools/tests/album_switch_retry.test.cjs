@@ -15,7 +15,7 @@ function body(marker) {
 function js(code) {
   return code.replace(/ReadOnlyStorage::exists\(LittleFS.mountpoint\(\), (.*?)\.c_str\(\)\)/g,'LittleFS.exists($1)').replace(/SR_ACTIVITY\([^;]+;/g,'').replace(/Display::instance\(\)\.render\(DisplayPresenter::build\(PlayerState::instance\(\)\)\);/g, 'render();')
     .replace(/PlayerState::instance\(\)/g, 'player').replace(/ArtworkJobKind::/g, 'Job.')
-    .replace(/PickerLogoLoader::/g, 'PickerLogoLoader.')
+    .replace(/PickerLogoLoader::/g, 'PickerLogoLoader.').replace(/ArtworkHttp::/g,'ArtworkHttp.')
     .replace('std::vector<uint32_t> segments = job ? job->segments : std::vector<uint32_t>();', 'let segments = job ? job.segments : [];')
     .replace(/\b(?:const )?(?:ArtworkCache\*|ArtworkJobKind|PlayerStateSnapshot|String|uint32_t|bool) (\w+)/g, 'let $1')
     .replace(/->/g, '.').replace(/nullptr/g, 'null').replace(/\.length\(\)/g, '.length')
@@ -40,7 +40,7 @@ function harness() {
   let serial=0, disposed=0, provider=()=>false;
   const generation={value:0,load(){return this.value;},fetch_add(n){this.value=(this.value+n)>>>0;}};
   const c=vm.createContext({
-    now:10000,config:{displayArtworkMode:'album'},state:null,requestedAlbumKey:'',activeAlbumArtworkKey:'',
+    now:10000,settingsYields:0,config:{displayArtworkMode:'album'},state:null,requestedAlbumKey:'',activeAlbumArtworkKey:'',
     audioConnectionReady:true,audioConnectionReadyMs:1,
     albumSearchGeneration:generation,lastAlbumLookupKey:'',lastAlbumLookupMs:0,lastAlbumStartFailed:false,
     previousAlbumArtworkPath:'',ALBUM_ART_CACHE_PREFIX:'album:v5:',ALBUM_ART_START_RETRY_MS:3000,ALBUM_ART_MISSING_RETRY_MS:120000,
@@ -52,7 +52,8 @@ function harness() {
     findExistingCachePath:k=>cache.get(k)||'',removeCachedArtworkFamily:p=>{removed.push(p);for(const [k,v] of cache)if(v===p)cache.delete(k);},
     startAlbumArtworkTask:(artist,title,k)=>{jobs.push({id:++serial,kind:'AlbumSearch',key:k,artist,title,
       albumSearchGeneration:generation.load(),url:'',segments:[],cache:backend});return true;},
-    player:{snapshot:()=>({...c.state}),setAlbumArtworkPath:p=>c.state.albumArtworkPath=p}
+    player:{snapshot:()=>({...c.state}),setAlbumArtworkPath:p=>c.state.albumArtworkPath=p},
+    ArtworkHttp:{settingsYieldCount:()=>c.settingsYields}
   });
   vm.runInContext(`function schedule() { ${schedule} }
     function run(job) ${worker}
@@ -117,6 +118,20 @@ test('a completed genuine miss retains its two-minute backoff',()=>{
   const out=h.complete();assert.equal(out.cancelled,false);assert.equal(h.c.lastAlbumLookupKey,key('B'));
   h.c.now+=119999;h.tick();assert.equal(h.jobs.length,1);
   h.c.now+=1;h.tick();assert.equal(h.jobs.length,2);
+});
+test('a lookup exhausted while yielding to settings retries the same unchanged track instead of negative-caching it',()=>{
+  const h=harness();h.select('B');h.tick();
+  h.provider(()=>{++h.c.settingsYields;return false;});
+  assert.equal(h.complete().cancelled,true);assert.equal(h.c.lastAlbumLookupKey,'');
+  h.tick();assert.equal(h.jobs.length,2);
+  h.provider(()=>false);assert.equal(h.complete().cancelled,false);
+  h.c.now+=119999;h.tick();assert.equal(h.jobs.length,2);
+});
+test('a successful lookup during settings activity remains cached and is not restarted',()=>{
+  const h=harness();h.select('B');h.tick();
+  h.provider(({setPath})=>{++h.c.settingsYields;setPath(image('B'));return true;});
+  assert.equal(h.complete().success,true);h.tick();assert.equal(h.jobs.length,1);
+  assert.equal(h.c.state.albumArtworkPath,image('B'));
 });
 
 test('a completed cover for the same song remains reusable after a fast round trip',()=>{

@@ -24,7 +24,7 @@ function body(source, name) {
 const plain = code => code.replace(/#if SIMPLE_RADIO_RUNTIME_DIAGNOSTICS[^]*?#endif/g,'')
   .replace(/SR_ACTIVITY\([^;]+;/g,'').replace(/SR_PERF_(?:SPAN|WAIT)\([^;]+;/g, '').replace(/->/g, '.').replace(/nullptr/g, 'null')
   .replace(/port(?:ENTER|EXIT)_CRITICAL\(&stationSaveMux\);/g, '')
-  .replace(/\.c_str\(\)/g, '').replace(/\b(?:const uint32_t|const size_t|const String|const auto) /g, 'const ')
+  .replace(/\.c_str\(\)/g, '').replace(/\b(?:const uint32_t|const size_t|const String|const auto|const bool|const BaseType_t) /g, 'const ')
   .replace(/static_cast<unsigned long>\(([^)]+)\)/g, '$1')
   .replace(/\b(?:uint32_t|size_t|bool) /g, 'let ');
 
@@ -104,12 +104,16 @@ function workerHarness() {
   const request = { pause: () => weak, get(){return this;}, onDisconnect(fn){this.disconnectCallback=fn;}, beginResponse:(status,type,value)=>({status,type,value}), send: (status, type, value) => replies.push({ status, type, value }) };
   const weak = { expired: () => !connected, lock: () => connected ? request : null };
   const c = vm.createContext({ pendingStationSave: null, stationSaveImageHolds:0, dispatchStationImages(){}, now: 100, pdPASS: 1, taskOk: true, ioOk: true,
+    httpHolds:0, txOutstanding:0, transportQuiet:true, dmaFree:40000, dmaLargest:20000, STATION_SAVE_TASK_STACK:6144,
+    MALLOC_CAP_INTERNAL:1,MALLOC_CAP_8BIT:2,MALLOC_CAP_DMA:4,
+    heap_caps_get_free_size:()=>c.dmaFree,heap_caps_get_largest_free_block:()=>c.dmaLargest,
+    AsyncWebServerRequest:{holdResponseTx:()=>++c.httpHolds,releaseResponseTx:()=>--c.httpHolds,responseTxOutstanding:()=>c.txOutstanding,responseTxQuiescent:()=>c.transportQuiet},
     millis: () => c.now++, Serial: { printf() {} }, vTaskDelete() {},
     ArtworkMemory: { gate: () => gate },
     sendDeferredReply:(r,response)=>r.send(response.status,response.type,response.value),
-    createTask: job => { starts.push(job); return c.taskOk ? 1 : 0; },
-    dispose: job => { disposed.push(job); if (job.memoryClaimed) gate.endStationSave(); },
-    StationManager: { instance: () => ({ saveStation: (id, name, url, logo, job) => {
+    submitStationSave: job => { starts.push(job); return c.taskOk ? 1 : 0; },
+    dispose: job => { disposed.push(job); if (job.imagesHeld) { job.imagesHeld=false; --c.stationSaveImageHolds; } if (job.memoryClaimed) gate.endStationSave(); if(job.httpTxHeld)--c.httpHolds; },
+    StationManager: { instance: () => ({ matchesStation: () => !!c.unchanged, saveStation: (id, name, url, logo, job) => {
       saves.push({ id, name, url, logo }); job.outId = id < 0 ? 7 : id; return c.ioOk;
     } }) },
     storeStationLogo: job => { job.logo = '/logos/station-7-radio.png'; return c.ioOk; },
@@ -120,12 +124,12 @@ function workerHarness() {
   let worker = plain(body(web, 'stationSaveTask'))
     .replace('auto* job = static_cast<StationSaveJob*>(parameter);', 'const job = parameter;')
     .replace('job.outId);', 'job);').replace('(*job)', '(job)').replace(/::/g, '.');
-  const start = plain(body(web, 'startStationSaveJob')).replace(/delete job;/g, 'dispose(job);').replace(/\[\]\(\)/g,'()=>');
+  const start = plain(body(web, 'startStationSaveJob')).replace(/delete job;/g, 'dispose(job);').replace(/\[\]\(\)/g,'()=>').replace(/::/g,'.');
   const dispatch = plain(body(web, 'dispatchPendingStationSave'))
     .replace('StationSaveJob* job = null;', 'let job = null;')
-    .replace(/xTaskCreatePinnedToCore\([^]*?tskNO_AFFINITY\)/, 'createTask(job)')
     .replace(/now - job\.(allocationWaitStartedMs|allocationAttemptMs)/g, '((now - job.$1) >>> 0)')
-    .replace(/(3000|50)U/g, '$1').replace(/::/g, '.');
+    .replace(/(\d+)U/g, '$1').replace(/::/g, '.');
+  const release=plain(body(web,'releaseStationTxHold')).replace(/::/g,'.');
   let complete = plain(body(web, 'completeStationSave'))
     .replace('StationSaveJob* completed = null;', 'let completed = null;')
     .replace('std::unique_ptr<StationSaveJob> job(completed);', 'const job = completed;')
@@ -137,11 +141,12 @@ function workerHarness() {
     .replace('serializeJson(doc, out);', 'out = JSON.stringify(doc);').replace(/::/g, '.');
   complete = complete.slice(0, -1) + 'dispose(job); }'; // C++ unique_ptr releases the job and its memory claim.
   vm.runInContext(`function run(parameter) ${worker}\nfunction enqueue(request, job) ${start}
+    function releaseStationTxHold(job) ${release}
     function dispatch() ${dispatch}
     function start(request, job) { enqueue(request, job); dispatch(); }
     function complete() ${complete}`, c);
   const job = (extra = {}) => ({ request: weak, id: -1, outId: -1, name: 'Radio', url: 'https://stream', logo: 'https://logo',
-    prepareLogo: true, saved: false, done: false, started: false, memoryClaimed: false,
+    prepareLogo: true, saved: false, done: false, started: false, memoryClaimed: false,httpTxHeld:false,imagesHeld:false,
     allocationDeferred: false, allocationWaitStartedMs: 0, allocationAttemptMs: 0,
     errorStatus: 500, error: '', ...extra });
   return { c, job, request, saves, prewarm, reload, replies, disposed, starts, gate, disconnect: () => { connected = false; request.disconnectCallback?.(); } };
@@ -156,12 +161,43 @@ test('flash save runs in the worker and success is acknowledged only after compl
   assert.equal(h.replies[0].status, 200); assert.deepEqual(JSON.parse(h.replies[0].value), { id: 7 });
 });
 
+test('an unchanged durable station needs no stack or flash write, but still prepares its logo', () => {
+  const h = workerHarness(), job = h.job({id: 7}); h.c.unchanged = true; h.c.dmaFree = 7000;
+  h.c.start(h.request, job); h.c.complete();
+  assert.equal(h.starts.length, 0); assert.equal(h.saves.length, 0); assert.equal(h.c.httpHolds, 0);
+  assert.equal(h.replies[0].status, 200); assert.deepEqual(JSON.parse(h.replies[0].value), {id: 7});
+  assert.deepEqual(h.prewarm, ['https://logo']);
+});
+
+test('station save reserves real DMA headroom; already-budgeted TCP bytes may finish concurrently',()=>{
+ const h=workerHarness(),job=h.job();h.c.dmaFree=7000;h.c.start(h.request,job);
+ assert.equal(h.c.httpHolds,0);assert.equal(h.starts.length,0);assert.equal(job.memoryClaimed,false);
+ h.c.dmaFree=30000;h.c.txOutstanding=1436;h.c.dmaLargest=1000;h.c.now+=51;h.c.dispatch();assert.equal(h.starts.length,0);
+ h.c.dmaLargest=10000;h.c.now+=51;h.c.dispatch();assert.equal(h.starts.length,1);
+ assert.equal(h.c.httpHolds,0); // The worker may still be writing; HTTP must already be unpaused.
+ h.c.run(job);h.c.complete();assert.equal(h.c.httpHolds,0);assert.equal(h.replies[0].status,200);
+});
+
+test('a save yields the network when image memory is occupied and waits for an in-progress TCP writer',()=>{
+ const h=workerHarness(),job=h.job();h.gate.beginAlbumPrepare();h.c.start(h.request,job);
+ assert.equal(h.c.httpHolds,0);assert.equal(h.starts.length,0);h.gate.endAlbumPrepare();
+ h.c.transportQuiet=false;h.c.dispatch();assert.equal(h.c.httpHolds,1);assert.equal(h.starts.length,0);
+ h.c.transportQuiet=true;h.c.now+=51;h.c.dispatch();assert.equal(h.starts.length,1);
+ h.c.run(job);h.c.complete();assert.equal(h.c.httpHolds,0);
+});
+
+test('unavailable DMA headroom releases the transmission hold on bounded failure',()=>{
+ const h=workerHarness(),job=h.job();h.c.dmaFree=7000;h.c.start(h.request,job);
+ h.c.now+=3001;h.c.dispatch();h.c.complete();
+ assert.equal(h.starts.length,0);assert.equal(h.c.httpHolds,0);assert.equal(h.replies[0].status,503);
+});
+
 test('browser normalization suppresses only the initial remote logo job', () => {
   const h = workerHarness(), job = h.job({ prepareLogo: false }); h.c.start(h.request, job); h.c.run(job); h.c.complete();
   assert.equal(h.replies[0].status, 200); assert.deepEqual(h.prewarm, []);
 });
 
-test('only one station or PNG save job is admitted; persistent stack failure releases the slot after a bounded wait', () => {
+test('only one station or PNG save job is admitted; unavailable resident queue releases the slot after a bounded wait', () => {
   const h = workerHarness(), first = h.job(), second = h.job();
   h.c.start(h.request, first); h.c.start(h.request, second);
   assert.equal(h.c.pendingStationSave, first); assert.deepEqual(h.disposed, [second]); assert.equal(h.starts.length, 1);
@@ -175,7 +211,7 @@ test('only one station or PNG save job is admitted; persistent stack failure rel
   assert.equal(failed.saves.length, 0); assert.equal(failed.replies[0].status, 503);
 });
 
-test('transient stack pressure retries without blocking or holding album memory and commits once', () => {
+test('transient queue pressure retries without blocking or holding album memory and commits once', () => {
   const h = workerHarness(), job = h.job(); h.c.taskOk = false; h.c.start(h.request, job);
   const attempted = job.allocationAttemptMs;
   assert.equal(h.starts.length, 1); assert.equal(h.replies.length, 0);
@@ -189,7 +225,7 @@ test('transient stack pressure retries without blocking or holding album memory 
   assert.equal(h.replies[0].status, 200); assert.equal(h.c.pendingStationSave, null);
 });
 
-test('disconnect while waiting for a stack cancels the job without flash work', () => {
+test('disconnect while waiting for the queue cancels the job without flash work', () => {
   const h = workerHarness(), job = h.job(); h.c.taskOk = false; h.c.start(h.request, job);
   h.disconnect(); h.c.now += 60; h.c.dispatch(); h.c.complete();
   assert.equal(h.starts.length, 1); assert.equal(h.saves.length, 0); assert.equal(h.replies.length, 0);
@@ -204,7 +240,7 @@ test('a thumbnail holding the shared gate may finish before one final stack atte
   assert.equal(h.replies[0].status, 200); assert.equal(h.saves.length, 1);
 });
 
-test('stack retry spacing and deadline remain bounded across millis wraparound', () => {
+test('queue retry spacing and deadline remain bounded across millis wraparound', () => {
   const h = workerHarness(), job = h.job(); h.c.taskOk = false; h.c.now = 0xfffffff0;
   h.c.start(h.request, job); h.c.now = 10; h.c.dispatch(); assert.equal(h.starts.length, 1);
   h.c.now = 70; h.c.dispatch(); assert.equal(h.starts.length, 2);
@@ -259,7 +295,8 @@ test('file operations are absent from network save/upload callbacks and the prew
   assert.match(receive, /MALLOC_CAP_SPIRAM \| MALLOC_CAP_8BIT/); assert.match(receive, /120 \* 1024/);
   assert.match(queue, /request->_tempObject = nullptr/);
   assert.match(web, /~StationSaveJob\(\) \{\s*free\(upload\);/);
-  assert.match(body(web, 'dispatchPendingStationSave'), /job, 0, nullptr, tskNO_AFFINITY/);
+  assert.match(body(web, 'startStationSaveWorker'), /nullptr, 0, stationSaveStack, &stationSaveControl, tskNO_AFFINITY/);
+  assert.doesNotMatch(body(web, 'dispatchPendingStationSave'), /xTaskCreate|malloc/);
 });
 
 test('queued station saves allocate no task stack while album preparation owns memory', () => {
@@ -430,4 +467,20 @@ test('busy writers, allocation failure and invalid station data cause no persist
     assert.equal(h.c.save(-1, reason === 'empty' ? '' : 'New', 'url', 'logo'), false);
     assert.equal(h.writes.length, 0); assert.equal(h.c._revision, 4); assert.equal(h.c._doc.stations.length, 1);
   }
+});
+
+
+test('image admission resumes when the save job is collected, without waiting for a response disconnect',()=>{
+ const h=workerHarness(),job=h.job();h.c.start(h.request,job);assert.equal(h.c.stationSaveImageHolds,1);
+ h.c.run(job);assert.equal(h.c.stationSaveImageHolds,1);h.c.complete();
+ assert.equal(h.c.stationSaveImageHolds,0);assert.equal(h.replies[0].status,200);
+ assert.equal(h.disposed.length,1);h.disconnect();assert.equal(h.c.stationSaveImageHolds,0);
+ for(const mode of ['cancel','allocation','write']){
+  const x=workerHarness(),j=x.job();if(mode==='allocation')x.c.dmaFree=7000;
+  x.c.start(x.request,j);
+  if(mode==='cancel'){x.disconnect();x.c.run(j);}
+  else if(mode==='allocation'){x.c.now+=3001;x.c.dispatch();}
+  else{x.c.ioOk=false;x.c.run(j);}
+  x.c.complete();assert.equal(x.c.stationSaveImageHolds,0,mode);
+ }
 });

@@ -55,15 +55,29 @@ test('failed PSRAM allocation stops initialization without trying the fragmented
   assert.ok(begin.indexOf('SpectrumOutput::begin') < begin.indexOf('xTaskCreatePinnedToCore'));
 });
 
-test('only task-owned tables move: fast FFT work and the cache-safe DMA observer remain internal', () => {
+test('task-owned FFT work stays aligned in PSRAM; the cache-safe DMA observer remains internal', () => {
   assert.match(header, /float\* coefficients_ = nullptr/);
   assert.doesNotMatch(header, /std::array[^;]+coefficients_/);
-  assert.match(header, /alignas\(16\) std::array<float, SpectrumMath::POINT_COUNT \* 2> work_/);
+  assert.match(header, /float\* work_ = nullptr/);
   const transform = body(source, 'int AudioSpectrum::transform(');
-  assert.match(transform, /dsps_fft2r_fc32_aes3_\(work_\.data\(\), SpectrumMath::POINT_COUNT, coefficients_\)/);
-  assert.match(transform, /dsps_fft2r_fc32_ansi_\(work_\.data\(\), SpectrumMath::POINT_COUNT, coefficients_\)/);
+  assert.match(transform, /dsps_fft2r_fc32_aes3_\(work_, SpectrumMath::POINT_COUNT, coefficients_\)/);
+  assert.match(transform, /dsps_fft2r_fc32_ansi_\(work_, SpectrumMath::POINT_COUNT, coefficients_\)/);
   const output = fs.readFileSync(path.join(root, 'src/audio/audio_output.cpp'), 'utf8');
   assert.match(output, /DRAM_ATTR int32_t pcm/);
   const isr = body(output, 'bool IRAM_ATTR onSent(').replace(/\/\/[^\n]*/g, '');
   assert.doesNotMatch(isr, /coefficients_|window_|PSRAM|heap_caps|transform\(/);
+});
+
+test('the 8 KiB FFT work buffer reuses aligned external storage and fails without an internal fallback',()=>{
+ const run=new Function('work_','heap_caps_aligned_alloc','SpectrumLog','SpectrumMath','MALLOC_CAP_SPIRAM','MALLOC_CAP_8BIT',
+  'const floatCast=value=>value; if(!work_) '+body(source,'if (!work_)')
+   .replace(/static_cast<float\*>/g,'floatCast').replace(/sizeof\(float\)/g,'4')
+   .replace(/SpectrumMath::/g,'SpectrumMath.').replace(/SpectrumLog::/g,'SpectrumLog.')+';return work_;');
+ const calls=[],logs=[],buffer={};
+ const allocate=()=>run(null,(...args)=>{calls.push(args);return buffer;},{printf:m=>logs.push(m)},{POINT_COUNT:1024},1,2);
+ assert.equal(allocate(),buffer);assert.deepEqual(calls,[[16,8192,3]]);
+ assert.equal(run(buffer,()=>assert.fail('initialization retry reallocated work'),{}, {},1,2),buffer);
+ assert.equal(run(null,()=>null,{printf:m=>logs.push(m)},{POINT_COUNT:1024},1,2),false);
+ assert.equal(logs.length,1);assert.match(logs[0],/PSRAM FFT work buffer unavailable/);
+ assert.ok(body(source,'bool AudioSpectrum::begin(').indexOf('if (!work_)')<body(source,'bool AudioSpectrum::begin(').indexOf('if (!fftSelfTest())'));
 });

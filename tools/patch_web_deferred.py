@@ -48,7 +48,7 @@ void AsyncWebServerRequest::send(AsyncWebServerResponse *response) {'''),
      '''  AsyncWebServerRequest::beginResponse(FS &fs, const String &path, const char *contentType, bool download, AwsTemplateProcessor callback) {
   SR_READ_IO_SCOPE();'''),
 ]
-FILE_HEADER_HASH = '3f26605ca979cc79676a165e4a8e07aebca9bb7639e90796e9bd87efce929d2d'
+FILE_HEADER_HASH = 'f7eaba9cbecdb200501955870133b7557259ad9b070f60c8300ecbb79df2c5e6'
 FILE_SOURCE_HASH = '77aae7f78eb75b6d08f886b96b55da054360691d9b466fb9d490fcac95e0c7ea'
 STATIC_SOURCE_HASH = 'dab7318168f55cac874f9fefdee825966f8427201a8375605175d149f09d0be1'
 FILE_HEADER_EDITS = [
@@ -85,7 +85,9 @@ PATCH_FILES = [('ESPAsyncWebServer.h', DEFERRED_HEADER_HASH, DEFERRED_HEADER_EDI
 
 
 def clean_source(source, expected_hash, edits):
-    original = source.replace('\r\n', '\n')
+    import web_flow_patch as flow
+    original = flow.strip_request(source.replace('\r\n', '\n'))
+    original = flow.strip(original) if flow.MARKER in original else original
     applied = [i for i, (_, new) in enumerate(edits) if new in original]
     if applied:
         # Accept the complete previous three-edit response handoff as a known
@@ -103,12 +105,15 @@ def clean_source(source, expected_hash, edits):
 
 
 def deferred_patch(source, expected_hash, edits):
+    import web_flow_patch as flow
+    with_flow = flow.MARKER in source
     original = clean_source(source, expected_hash, edits)
     for old, new in edits:
         if original.count(old) != 1:
             raise RuntimeError('Deferred HTTP: ambiguous patch anchor')
         original = original.replace(old, new)
-    return original
+    if expected_hash in (DEFERRED_HEADER_HASH,DEFERRED_SOURCE_HASH): original=flow.apply_request(original)
+    return flow.apply(original) if with_flow else original
 
 
 def apply_deferred_to_dependency(env):
@@ -116,6 +121,9 @@ def apply_deferred_to_dependency(env):
     helper = Path(env.subst('$PROJECT_DIR')) / 'src/storage/read_io_priority.h'
     target = folder / 'SimpleRadioReadIoPriority.h'
     if not target.exists() or target.read_bytes() != helper.read_bytes(): target.write_bytes(helper.read_bytes())
+    budget = Path(env.subst('$PROJECT_DIR')) / 'src/web/tx_budget.h'
+    budget_target = folder / 'SimpleRadioTxBudget.h'
+    if not budget_target.exists() or budget_target.read_bytes()!=budget.read_bytes(): budget_target.write_bytes(budget.read_bytes())
     for name, digest, edits in PATCH_FILES:
         file = folder / name
         source = file.read_text(encoding='utf-8')
@@ -125,7 +133,7 @@ def apply_deferred_to_dependency(env):
             raise RuntimeError(str(file) + ': ' + str(error)) from error
         if source != result:
             file.write_text(result, encoding='utf-8', newline='\n')
-    print('SimpleRadio web: network-owned replies; static file I/O below audio; pinned source verified')
+    print('SimpleRadio web: network-owned replies; scoped static file I/O; pinned source verified')
 
 
 if 'Import' in globals():

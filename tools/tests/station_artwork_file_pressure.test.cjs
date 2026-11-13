@@ -51,7 +51,7 @@ function image(side = 2) {
   for (let i=8; i<data.length; i++) data[i] = i % 251;
   return data;
 }
-function harness({bytes=image(), capacity=8, readLimit=Infinity, interrupt=false, failStat=false}={}) {
+function harness({bytes=image(), capacity=8, readLimit=Infinity, interrupt=false, failStat=false,oom=false}={}) {
   let serial=0, opens=0, closes=0, peak=0, interrupted=false;
   const handles=new Map(), files=new Map([['/littlefs/cache/logo.sr565',bytes]]);
   const io={ errno:0,
@@ -81,16 +81,22 @@ function harness({bytes=image(), capacity=8, readLimit=Infinity, interrupt=false
   const ctor=translate(body(response,'StationArtworkResponse(const char*'))
     .replace('uint8_t sr[8]{};', 'const sr=new Uint8Array(8);')
     .replace('!file_ ||','!file_.valid() ||');
-  const member=code=>code.replace(/\b(file_|bmp_|offset_|valid_|_code|_contentType|_contentLength|_sendContentLength)\b/g,'this.$1')
+  const allocations=new Set();let allocationCalls=0;
+  const member=code=>code.replace(/auto\* prepared = static_cast<uint8_t\*>\(heap_caps_malloc\(_contentLength, MALLOC_CAP_SPIRAM \| MALLOC_CAP_8BIT\)\);/g,'const prepared=allocate(_contentLength);')
+    .replace(/prepared \+ offset_/g,'prepared.subarray(offset_)').replace(/data_ \+ offset_/g,'data_.subarray(offset_)')
+    .replace(/nullptr/g,'null').replace(/(?<![.\w])_fillBuffer\(/g,'this._fillBuffer(').replace(/\b(data_)\b/g,'this.$1').replace(/\b(file_|bmp_|offset_|valid_|_code|_contentType|_contentLength|_sendContentLength)\b/g,'this.$1')
     .replace(/bmp_\.size\(\)/g,'bmp_.length');
-  const Response=new Function('File','LcdBmp',`return class {
-    bmp_=new Uint8Array(66);offset_=0;valid_=false;
+  const Response=new Function('File','LcdBmp','allocate','heap_caps_free','memcpy',`return class {
+    bmp_=new Uint8Array(66);offset_=0;valid_=false;data_=null;
     constructor(mount,path){this.file_=new File(mount,path);${member(ctor)}}
     _sourceValid() ${member(body(response,'bool _sourceValid('))}
     _fillBuffer(buffer,maxLen) ${member(translate(body(response,'size_t _fillBuffer(')))}
-    dispose(){this.file_.close();}
-  }`)(File,LcdBmp);
-  return {io,File,Response,probe,files,handles,
+    prepare() ${member(translate(body(response,'bool prepare(')))}
+    notModified() ${member(translate(body(response,'void notModified(')))}
+    dispose(){heap_caps_free(this.data_);this.data_=null;this.file_.close();}
+  }`)(File,LcdBmp,n=>{allocationCalls++;if(oom)return null;const p=Buffer.alloc(n);allocations.add(p);return p;},p=>allocations.delete(p),
+   (out,input,n)=>out.set(input.subarray(0,n)));
+  return {io,File,Response,probe,files,handles,allocations,allocationCalls:()=>allocationCalls,
     counts:()=>({opens,closes,peak}),create:()=>new Response('/littlefs','/cache/logo.sr565')};
 }
 
@@ -102,9 +108,9 @@ test('the logged thumbnail lookup cannot reach Arduino fopen/exists on any local
     assert.doesNotMatch(body(cache,marker),/LittleFS\.(?:exists|open)\(/,marker);
   }
   const route=body(web,'static void sendStationImage(');
-  assert.doesNotMatch(route,/make_shared|LittleFS\.open|beginResponse/);
+  assert.doesNotMatch(route,/make_shared|LittleFS\.open/);
   assert.match(route,/new \(std::nothrow\) StationArtworkResponse/);
-  assert.match(route,/if \(!response\).*send\(503\)/);
+  assert.match(route,/if \(!response\).*beginResponse\(503\)/);
 });
 
 test('metadata probes need no descriptor, and exhaustion/missing files fail without FILE allocation',()=>{
@@ -156,4 +162,22 @@ test('bad signatures, geometry, lengths and stat errors are rejected and closed'
   const invalid=[Buffer.alloc(0),Buffer.alloc(7),Buffer.alloc(16),image(3),image(514),Buffer.concat([image(),Buffer.from([0])])];
   for(const bytes of invalid){const h=harness({bytes}),r=h.create();assert.equal(r._sourceValid(),false);r.dispose();assert.equal(h.handles.size,0);}
   const h=harness({failStat:true});assert.equal(h.create()._sourceValid(),false);assert.equal(h.handles.size,0);
+});
+
+
+test('prepared BMP bytes remain exact after closing flash and cannot read a replaced source from TCP',()=>{
+ const bytes=image(176),expected=Buffer.concat([Buffer.from(LcdBmp.header(176,176)),Buffer.from(bytes.subarray(8)).swap16()]);
+ for(const chunk of [1,3,67,511,1460,5840]){
+  const h=harness({bytes,readLimit:113}),r=h.create();assert.equal(r.prepare(),true);assert.equal(h.handles.size,0);
+  h.io.read=()=>{throw Error('network must never touch flash');};bytes.fill(99);
+  const parts=[];let done=0;while(done<expected.length){const out=Buffer.alloc(chunk),n=r._fillBuffer(out,chunk);assert.ok(n>0);parts.push(out.subarray(0,n));done+=n;}
+  assert.deepEqual(Buffer.concat(parts),expected);assert.equal(r._sourceValid(),true);r.dispose();assert.equal(h.allocations.size,0);
+  image(176).copy(bytes);
+ }
+});
+
+test('BMP 304 bypasses the snapshot; no RAM or short copy publishes a successful truncated body',()=>{
+ const h=harness(),r=h.create();r.notModified();assert.equal(r.prepare(),true);assert.equal(h.allocationCalls(),0);assert.equal(h.handles.size,0);r.dispose();
+ const oom=harness({oom:true}),a=oom.create();assert.equal(a.prepare(),false);assert.equal(a._sourceValid(),false);assert.equal(oom.handles.size,0);a.dispose();
+ const short=harness(),b=short.create();short.io.read=()=>0;assert.equal(b.prepare(),false);assert.equal(b._sourceValid(),false);assert.equal(short.handles.size,0);assert.equal(short.allocations.size,0);b.dispose();
 });

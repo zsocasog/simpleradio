@@ -32,6 +32,21 @@ class FixtureHandler(BaseHTTPRequestHandler):
     def log_message(self, *_): pass
     def do_GET(self):
         try:
+            if self.path.startswith('/logo-preempt.png?'):
+                from urllib.parse import parse_qs,urlsplit
+                mode=parse_qs(urlsplit(self.path).query).get('mode',['headers'])[0]
+                with self.server.preemption_lock:
+                    row=self.server.preemption.setdefault(self.path,{'hits':0,'started':threading.Event()})
+                    row['hits']+=1;first=row['hits']==1;row['started'].set()
+                data=png()
+                if first and mode=='headers':self.server.stopping.wait(5)
+                self.send_response(200);self.send_header('Content-Type','image/png')
+                self.send_header('Content-Length',str(len(data)));self.end_headers()
+                if first and mode=='body':
+                    self.wfile.write(data[:256]);self.wfile.flush();self.server.stopping.wait(5)
+                    self.wfile.write(data[256:])
+                else:self.wfile.write(data)
+                return
             reference=getattr(self.server,'reference_file',None)
             if reference and self.path.split('?',1)[0]=='/reference'+reference.suffix.lower():
                 self.send_response(200)
@@ -79,6 +94,7 @@ class FixtureServer(ThreadingHTTPServer):
         if self.reference_file and (not self.reference_file.is_file() or self.reference_file.suffix.lower() not in ('.flac','.mp3','.wav','.ogg')):
             raise ValueError('Reference must be an existing FLAC, Ogg, MP3 or WAV file')
         self.stopping = threading.Event()
+        self.preemption_lock=threading.Lock();self.preemption={}
         super().__init__(('0.0.0.0', port), FixtureHandler)
     def close(self):
         self.stopping.set(); self.shutdown(); self.server_close()

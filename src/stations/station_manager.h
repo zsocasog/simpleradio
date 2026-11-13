@@ -16,6 +16,7 @@ public:
 
   bool begin();
   bool getStation(int id, Station& out) const;
+  bool matchesStation(int id, const String& name, const String& url, const String& logo) const;
   void toJson(JsonArray arr) const;
   bool saveStation(int id, const String& name, const String& url, const String& logo, int& outId);
   bool deleteStation(int id);

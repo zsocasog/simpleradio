@@ -5,6 +5,8 @@ stdio buffer instead of the core's 4096-byte default, before any file reads.
 The pinned response writer also retains EOF until buffered bytes are queued,
 counts partial writes, and spends retry credit only on bytes actually queued.
 This prevents truncation/deadlock on temporary TCP allocation pressure.
+The reviewed flow overlay then replaces callback credits with a two-segment
+ACK-byte window, reducing internal TCP/Wi-Fi buffer overlap between clients.
 """
 import hashlib
 import sys
@@ -16,7 +18,7 @@ HEADER_HASH = 'b90de8322a97af18e8cd6817b7a5c27999c6a5e0097f23ecd77a4e167d9ced75'
 SOURCE_HASH = '12055aa687cd0f6f719b65057c7a1d203baf6f0ef88e96b3fb4909ac68d0e6f8'
 HANDLER_HASH = '43c01d2fb1208552bc940b44678086d0fae62a8756fa2db6ff68df0506ef9755'
 HEADER_EDITS = [
-    ('#include <memory>', '#include <memory>\n#if defined(ESP32)\n#include <esp_heap_caps.h> // SimpleRadio HTTP payload buffers\n#endif'),
+    ('#include <memory>', '#include <memory>\n#if defined(ESP32)\n#include <esp_heap_caps.h> // SimpleRadio HTTP payload buffers\n#include "SimpleRadioResponseText.h"\n#endif'),
     ('  std::unique_ptr<std::array<uint8_t, ASYNC_RESPONCE_BUFF_SIZE> > _send_buffer;',
      '''#if defined(ESP32)
   using SendBuffer = std::array<uint8_t, ASYNC_RESPONCE_BUFF_SIZE>;
@@ -32,6 +34,12 @@ HEADER_EDITS = [
     ('  // Data is inserted into cache at begin().',
      '''  bool _source_eof{false}; // SimpleRadio: source EOF is not TCP completion
   // Data is inserted into cache at begin().'''),
+]
+HEADER_EDITS += [
+    ('  String _content;\n  // buffer to accumulate all response headers',
+     '#if defined(ESP32)\n  SimpleRadioResponseText _content;\n#else\n  String _content;\n#endif\n  // buffer to accumulate all response headers'),
+    ('    return write_send_buffs(request, len, time);\n  };\n  bool _sourceValid() const final {\n    return true;\n  }',
+     '    return write_send_buffs(request, len, time);\n  };\n  bool _sourceValid() const final {\n#if defined(ESP32)\n    return _content.valid();\n#else\n    return true;\n#endif\n  }'),
 ]
 SOURCE_EDITS = [
     ('        auto p = new (std::nothrow) std::array<uint8_t, ASYNC_RESPONCE_BUFF_SIZE>;',
@@ -131,7 +139,8 @@ def patch_header(source):
 
 
 def patch_source(source):
-    return preserve_static_priority(source, 'WebResponses.cpp', SOURCE_HASH, SOURCE_EDITS)
+    import web_flow_patch as flow
+    return flow.apply(preserve_static_priority(flow.strip(source), 'WebResponses.cpp', SOURCE_HASH, SOURCE_EDITS))
 
 
 def patch_handler(source):
@@ -140,6 +149,10 @@ def patch_handler(source):
 
 def apply_to_dependency(env):
     folder = Path(env.subst('$PROJECT_LIBDEPS_DIR')) / env.subst('$PIOENV') / 'ESPAsyncWebServer/src'
+    helper = Path(env.subst('$PROJECT_DIR')) / 'src/web/response_text.h'
+    target = folder / 'SimpleRadioResponseText.h'
+    if not target.exists() or target.read_bytes() != helper.read_bytes():
+        target.write_bytes(helper.read_bytes())
     for name, transform in [('WebResponseImpl.h', patch_header), ('WebResponses.cpp', patch_source),
                             ('WebHandlers.cpp', patch_handler)]:
         file = folder / name

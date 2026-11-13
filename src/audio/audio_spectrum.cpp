@@ -36,6 +36,14 @@ bool AudioSpectrum::begin() {
   lastInitAttemptMs_ = now;
   SpectrumLog::begin(); // Diagnostics may fail independently; audio/FFT continue.
 
+  if (!work_) {
+    work_ = static_cast<float*>(heap_caps_aligned_alloc(16,
+        SpectrumMath::POINT_COUNT * 2 * sizeof(float), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    if (!work_) {
+      SpectrumLog::printf("[spectrum] PSRAM FFT work buffer unavailable; analyzer not started\n");
+      return false;
+    }
+  }
   // The audio driver initializes ESP-DSP in setPinout(). Its internal FFT is
   // only 256 points. Use a PRIVATE 1024-point coefficient table: do not resize
   // or deinitialize the driver's shared tables while audio is playing.
@@ -129,7 +137,7 @@ bool AudioSpectrum::begin() {
 #if SIMPLE_RADIO_SPECTRUM_DIAGNOSTICS
   char memoryLine[192];
   snprintf(memoryLine, sizeof(memoryLine),
-      "[spectrum] memory v1: FFT tables=PSRAM work=internal; internal=%u largest=%u\n",
+      "[spectrum] memory v2: FFT tables/work=PSRAM; internal=%u largest=%u\n",
       static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)),
       static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)));
   SpectrumLog::postEvent(memoryLine);
@@ -140,11 +148,11 @@ bool AudioSpectrum::begin() {
 int AudioSpectrum::transform() {
   esp_err_t result;
 #if CONFIG_DSP_OPTIMIZED && dsps_fft2r_fc32_aes3_enabled
-  if (optimizedFft_) result = dsps_fft2r_fc32_aes3_(work_.data(), SpectrumMath::POINT_COUNT, coefficients_);
+  if (optimizedFft_) result = dsps_fft2r_fc32_aes3_(work_, SpectrumMath::POINT_COUNT, coefficients_);
   else
 #endif
-    result = dsps_fft2r_fc32_ansi_(work_.data(), SpectrumMath::POINT_COUNT, coefficients_);
-  return result == ESP_OK ? dsps_bit_rev_fc32_ansi(work_.data(), SpectrumMath::POINT_COUNT) : result;
+    result = dsps_fft2r_fc32_ansi_(work_, SpectrumMath::POINT_COUNT, coefficients_);
+  return result == ESP_OK ? dsps_bit_rev_fc32_ansi(work_, SpectrumMath::POINT_COUNT) : result;
 }
 
 bool AudioSpectrum::fftSelfTest() {
@@ -158,11 +166,11 @@ bool AudioSpectrum::fftSelfTest() {
     frames_[0].samples[i * 2] = static_cast<int32_t>(268435456.0f + 1073741824.0f * cosf(phase * rmsLeftBin));
     frames_[0].samples[i * 2 + 1] = static_cast<int32_t>(-134217728.0f + 536870912.0f * cosf(phase * rmsRightBin));
   }
-  SpectrumMath::prepareFrame(frames_[0].samples, window_, work_.data(), 2147483648.0f);
+  SpectrumMath::prepareFrame(frames_[0].samples, window_, work_, 2147483648.0f);
   if (transform() != ESP_OK) return false;
-  const auto powers = SpectrumMath::bandPowers(work_.data(), sampleRate, windowEnergy_);
+  const auto powers = SpectrumMath::bandPowers(work_, sampleRate, windowEnergy_);
   bandPlan_->configure(sampleRate);
-  const auto cached = SpectrumMath::cachedBandPowers(work_.data(), *bandPlan_, windowEnergy_);
+  const auto cached = SpectrumMath::cachedBandPowers(work_, *bandPlan_, windowEnergy_);
   const int leftBand = SpectrumMath::bandForBin(rmsLeftBin, sampleRate);
   const int rightBand = SpectrumMath::bandForBin(rmsRightBin, sampleRate);
   constexpr float rmsLeft = 0.0625f, rmsRight = 0.015625f; // A^2/2, stereo mean.
@@ -181,15 +189,15 @@ bool AudioSpectrum::fftSelfTest() {
         fabsf(cached[band] - powers[band]) > 1.0e-6f) return false;
   }
   for (size_t i = 0; i < SpectrumMath::POINT_COUNT * 2; ++i) frames_[0].samples[i] = static_cast<int32_t>(frames_[0].samples[i] * 0.01f);
-  SpectrumMath::prepareFrame(frames_[0].samples, window_, work_.data(), 2147483648.0f);
+  SpectrumMath::prepareFrame(frames_[0].samples, window_, work_, 2147483648.0f);
   if (transform() != ESP_OK) return false;
-  const auto quiet = SpectrumMath::bandPowers(work_.data(), sampleRate, windowEnergy_);
+  const auto quiet = SpectrumMath::bandPowers(work_, sampleRate, windowEnergy_);
   if (fabsf(powerDb(quiet[leftBand], -40) - powerDb(powers[leftBand])) > 0.1f ||
       fabsf(powerDb(quiet[rightBand], -40) - powerDb(powers[rightBand])) > 0.1f) return false;
   std::fill_n(frames_[0].samples, SpectrumMath::POINT_COUNT * 2, 12000 << 16); // DC, not organ pipes.
-  SpectrumMath::prepareFrame(frames_[0].samples, window_, work_.data(), 2147483648.0f);
+  SpectrumMath::prepareFrame(frames_[0].samples, window_, work_, 2147483648.0f);
   if (transform() != ESP_OK) return false;
-  const auto silence = SpectrumMath::bandPowers(work_.data(), sampleRate, windowEnergy_);
+  const auto silence = SpectrumMath::bandPowers(work_, sampleRate, windowEnergy_);
   for (float power : silence) if (!isfinite(power) || power > 1.0e-12f) return false;
   return powerDb(0, -60) == SpectrumMath::SILENCE_DB;
 }
@@ -372,7 +380,7 @@ void AudioSpectrum::processFrame(uint8_t index) {
   portEXIT_CRITICAL(&mux_);
   if (queueMs > SpectrumMath::MAX_QUEUE_AGE_MS) return;
   const uint32_t startedUs = micros();
-  const float inputPower = SpectrumMath::prepareFrame(frame.samples, window_, work_.data(), 2147483648.0f);
+  const float inputPower = SpectrumMath::prepareFrame(frame.samples, window_, work_, 2147483648.0f);
   uint32_t nearClipSamples = 0;
   for (size_t i = 0; i < SpectrumMath::POINT_COUNT * 2; ++i) {
     const int32_t sample = frame.samples[i];
@@ -392,7 +400,7 @@ void AudioSpectrum::processFrame(uint8_t index) {
   }
 
   bandPlan_->configure(frame.sampleRate);
-  const auto powers = SpectrumMath::cachedBandPowers(work_.data(), *bandPlan_, windowEnergy_);
+  const auto powers = SpectrumMath::cachedBandPowers(work_, *bandPlan_, windowEnergy_);
   AudioSpectrumSnapshot result;
   float maxDb = SpectrumMath::SILENCE_DB;
   for (size_t band = 0; band < SpectrumMath::BAND_COUNT; ++band) {

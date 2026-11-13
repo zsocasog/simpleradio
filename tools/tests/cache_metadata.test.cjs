@@ -48,3 +48,18 @@ test('the system cache counter cannot recreate FILE mutexes for every cached thu
  assert.match(cleanup,/ReadOnlyStorage::visitFiles/);assert.doesNotMatch(cleanup,/openNextFile|LittleFS.open/);
  assert.doesNotMatch(body,/fopen|new |malloc|File /);
 });
+
+test('cache reservations reuse fixed capacity but still read live usage before every write',()=>{
+ const cache=read('src/artwork/artwork_cache.cpp'),start=cache.indexOf('void ArtworkCache::enforceCacheBudget(');
+ const prefix=cache.slice(cache.indexOf('{',start)+1,cache.indexOf('std::vector<CacheEntry> entries;',start));
+ const code=prefix.replace(/const size_t /g,'const ').replace(/size_t /g,'let ')
+  .replace(/ReadOnlyStorage::/g,'ReadOnlyStorage.');
+ let stored=0,used=100,totalCalls=0,usedCalls=0;
+ const reserve=new Function('incomingBytes','filesystemTotalSnapshot','LittleFS','ReadOnlyStorage','MAX_CACHE_BYTES','MIN_FS_FREE_BYTES',code+'return "eviction";');
+ const run=()=>reserve(1024,{load:()=>stored,store:n=>stored=n},
+  {mountpoint:()=>'/littlefs',totalBytes:()=>{totalCalls++;return 8*1024*1024;},usedBytes:()=>{usedCalls++;return used;}},
+  {directoryExists:()=>true},4*1024*1024,64*1024);
+ assert.equal(run(),undefined);assert.equal(run(),undefined);assert.equal(totalCalls,1);assert.equal(usedCalls,2);
+ used=8*1024*1024-1024;assert.equal(run(),'eviction');assert.equal(totalCalls,1);assert.equal(usedCalls,3);
+ stored=0;assert.equal(run(),'eviction');assert.equal(totalCalls,2);assert.equal(usedCalls,4);
+});

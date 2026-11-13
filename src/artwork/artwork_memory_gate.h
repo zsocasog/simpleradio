@@ -3,7 +3,7 @@
 #include <stdint.h>
 
 namespace ArtworkMemory {
-// One allocation-free word coordinates the temporary station-save stack and
+// One allocation-free word coordinates station-file I/O scratch and
 // album decoding. A waiting album goes before the next station/PNG save.
 class Gate {
 public:

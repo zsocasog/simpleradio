@@ -35,6 +35,6 @@ test('normal firmware omits the diagnostic response; logo listing uses metadata 
  assert.match(web,/#if SIMPLE_RADIO_RUNTIME_DIAGNOSTICS\s+#include "diagnostic_json_response.h"\s+#endif/);
  const route=body(web,'server.on("/api/diagnostics"');assert.match(route,/DiagnosticJsonResponse\(doc\)/);
  assert.doesNotMatch(route,/String out|serializeJson\(doc, out\)/);
- const list=body(web,'server.on("/api/logos"');assert.match(list,/ReadOnlyStorage::visitFiles/);
+ const list=body(web,'static AsyncWebServerResponse* prepareLogoListResponse(');assert.match(list,/ReadOnlyStorage::visitFiles/);
  assert.doesNotMatch(list,/LittleFS.open|getNextFileName|drawPng|fopen/);
 });

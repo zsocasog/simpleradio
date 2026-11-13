@@ -3,9 +3,9 @@
 #include <stdint.h>
 
 // Retain bounded compressed originals, including the full 120 KiB browser
-// upload range. Streaming still reads a fixed header/tail and bounded chunks;
-// increasing this disk-file limit allocates no full image buffer or internal RAM.
-// It also lets playback keep LCD pixels in its existing bounded PSRAM pool.
+// upload range. Validate with a fixed header/tail; HTTP can then snapshot these
+// bytes into PSRAM after checking conditional requests. LCD pixels retain
+// their separate bounded pool. No browser image conversion runs on the ESP.
 namespace WebArtwork {
 constexpr size_t MaxBytes = 128 * 1024;
 enum class Format { None, Png, Jpeg };

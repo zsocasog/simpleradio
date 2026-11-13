@@ -31,9 +31,10 @@ struct Options {
 bool get(const String& url, size_t limit, Response& response, const Options& options = {});
 void reserveAudioConnection();
 bool backgroundNetworkActive();
+uint32_t settingsYieldCount();
 void releaseAudioConnection();
-// Reserve the gap between background requests, without interrupting audio or
-// aborting an active TLS object. The main loop releases it after settings save.
+// Ask the owning worker to close/retry its request cooperatively. The main
+// loop never touches its TLS object and releases the reservation after save.
 void reserveSettingsSave();
 void releaseSettingsSave();
 String publicImageUrl(const String& url);

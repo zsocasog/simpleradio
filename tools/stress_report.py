@@ -129,7 +129,7 @@ def feed_balances(samples):
 
 def unexpected_sent_silence(old,sample):
     a,b=old.get('audio'),sample.get('audio');phase=sample.get('phase','')
-    local=('upload-','cold-logo-','switch-','soak-local-','soak-return-','isolation-','save-benchmark-')
+    local=('upload-','cold-logo-','switch-','soak-local-','soak-return-','isolation-','save-benchmark-','save-preemption-')
     if (a and b and old.get('stable') and sample.get('stable') and a['epoch']==b['epoch']
         and sample.get('stationId')==old.get('stationId')
         and phase.startswith(local) and old.get('phase','').startswith(local)

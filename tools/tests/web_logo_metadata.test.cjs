@@ -1,7 +1,7 @@
 const fs=require('node:fs'),path=require('node:path'),vm=require('node:vm'),assert=require('node:assert/strict'),test=require('node:test');
 const root=path.resolve(__dirname,'../..'),web=fs.readFileSync(path.join(root,'src/web/web_server.cpp'),'utf8');
-const start=web.indexOf('server.on("/api/logos"'),end=web.indexOf('server.on("/api/station/save"',start);
-const route=web.slice(web.indexOf('{',start),web.lastIndexOf('});',end)+1);
+const start=web.indexOf('static AsyncWebServerResponse* prepareLogoListResponse('),end=web.indexOf('struct StoredFileReadJob',start);
+const route=web.slice(web.indexOf('{',start),web.lastIndexOf('}',end)+1);
 const code=route.replace('ArtworkJson::Allocator jsonAllocator;','')
  .replace('ReadOnlyStorage::visitFiles(LittleFS.mountpoint(), "/logos", [&](const char* filename, size_t bytes, time_t)', 'visitFiles(LittleFS.mountpoint(), "/logos", (filename, bytes)=>')
  .replace('JsonDocument doc(&jsonAllocator);','const doc={logos:[],overflowed:()=>overflow};')
@@ -30,7 +30,7 @@ function run({entries=[{name:'radio.png',size:31100},{name:'other.JPG',size:9468
    info.st_mode=e.directory?'dir':'file';info.st_size=e.size;return 0;},
   S_ISDIR:mode=>mode==='dir',S_ISREG:mode=>mode==='file',
   logoBasename:p=>p.split(/[\\/]/).at(-1),supportedLogoExtension:n=>/\.(png|jpe?g|bmp|gif|webp|ico)$/i.test(n),
-  request:{send:(status,type,text)=>replies.push({status,type,text})} });
+  request:{beginResponse:(status,type,text)=>{const reply={status,type,text};replies.push(reply);return reply;}} });
  vm.runInContext('function route() '+code,c);for(let i=0;i<rounds;i++)c.route();
  return {opened,closed,replies,logos:replies[0]?.status===200?JSON.parse(replies[0].text).logos:[]};
 }
@@ -55,7 +55,7 @@ test('repeated enumeration closes its single directory handle on every response'
 });
 test('frequent outgoing state/status/station/logo JSON pools stay out of internal RAM',()=>{
  for(const marker of ['static String systemStatusJson()','static String hardwareCapabilitiesJson()',
-  'server.on("/api/stations"','server.on("/api/logos"']){
+  'server.on("/api/stations"','static AsyncWebServerResponse* prepareLogoListResponse(']){
   const part=web.slice(web.indexOf(marker),web.indexOf(marker)+250);
   assert.match(part,/ArtworkJson::Allocator jsonAllocator;\s*JsonDocument doc\(&jsonAllocator\)/);
  }

@@ -72,7 +72,7 @@ test('slow connect cannot immediately retry or publish a connection for a cancel
   }
   assert.equal(run(() => ({ playing: true, streamUrl: 'a' }), 'a', { isConnected: () => true }), true);
   assert.match(body(http, 'bool service()'), /networkGate.audioReserved\(\)/);
-  const get = body(http, 'bool get(const String&');
+  const get = body(http, 'static bool getAttempt(');
   assert.ok(get.indexOf('BackgroundNetworkScope network(options);') < get.indexOf('request(client,'));
 });
 

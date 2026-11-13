@@ -10,6 +10,7 @@
 #include "../config/app_config.h"
 #include "../config/logging.h"
 #include "../config/pins.h"
+#include "../web/tx_budget.h"
 
 #include <freertos/FreeRTOS.h>
 #include <freertos/queue.h>
@@ -466,6 +467,14 @@ bool AudioPlayer::connectToStream(const String& url) {
     PlayerState::instance().setStreamConnectionState(StreamConnectionState::WaitingForNetwork, connectFailureCount);
     return false;
   }
+
+  // Stop admitting new web payloads before audio setup borrows internal RAM.
+  // ACKs still drain; never wait indefinitely for a slow browser. The window
+  // expires by itself, so a dead station leaves controls available.
+  responseAudioWindow().begin(millis());
+  const uint32_t drainStarted = millis();
+  while ((!responseSharedGate().quiet() || responseSharedBytes().used()) &&
+         millis() - drainStarted < 250U) vTaskDelay(1);
 
   ArtworkCache::instance().notifyAudioConnectStarting();
   PlayerState::instance().setStreamConnectionState(StreamConnectionState::Connecting, connectFailureCount);

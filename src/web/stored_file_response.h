@@ -28,6 +28,7 @@ public:
     return response;
   }
   ~StoredFileResponse() { free(bytes_); }
+  void setType(const char* type) { _contentType = type; }
   bool _sourceValid() const override { return true; }
   String entityTag() const { return tag_; }
   void notModified() {

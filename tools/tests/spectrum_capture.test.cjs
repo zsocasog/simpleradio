@@ -237,7 +237,7 @@ test('FFT windows and results stay in PSRAM and LCD consumption contains no proc
   const header=fs.readFileSync(path.join(root,'src/audio/audio_spectrum.h'),'utf8');
   assert.match(header,/float\* window_ = nullptr/);
   assert.match(source,/heap_caps_aligned_alloc\(16,\s*SpectrumMath::POINT_COUNT \* sizeof\(float\), MALLOC_CAP_SPIRAM \| MALLOC_CAP_8BIT\)/);
-  assert.match(header,/alignas\(16\) std::array<float, SpectrumMath::POINT_COUNT \* 2> work_/);
+  assert.match(header,/float\* work_ = nullptr/);
   assert.match(source,/frames_\.size\(\) \* sizeof\(AudioSpectrumSnapshot\), MALLOC_CAP_SPIRAM \| MALLOC_CAP_8BIT/);
   const process=body(source,'void AudioSpectrum::processFrame(');
   assert.match(process,/resultStorage_\[index\] = result/);

@@ -67,7 +67,8 @@ test("artwork keeps idle priority and yields between the same bounded write chun
   assert.match(cpp, /ARTWORK_TASK_PRIORITY = 0;/);
   const write = section("bool ArtworkCache::writeBufferYielding(", "void ArtworkCache::requestEmbeddedImage(");
   assert.match(write, /CHUNK_BYTES = 4096;/);
-  assert.match(write, /vTaskDelay\(1\);/);
+  assert.match(write, /audioReady\(\) \? 20U : 1U/);
+  assert.match(write, /vTaskDelay\(max\(static_cast<TickType_t>\(1\), pdMS_TO_TICKS\(pauseMs\)\)\)/);
   assert.doesNotMatch(write, /ArtworkPhaseTrace|albumArtTrace/);
   assert.match(read("src/audio/audio_player.cpp"), /AUDIO_PUMP_TASK_PRIORITY = 2;/);
 });

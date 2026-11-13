@@ -148,6 +148,12 @@ bool StationManager::saveFile() {
   return true;
 }
 
+bool StationManager::matchesStation(int id, const String& name, const String& url, const String& logo) const {
+  Station station;
+  return id >= 0 && getStation(id, station) && station.name == name &&
+         station.url == url && station.logo == cleanLogoValue(logo);
+}
+
 bool StationManager::saveStation(int id, const String& name, const String& url, const String& logo, int& outId) {
   StationWriteLock writeLock;
   if (!writeLock.ok()) return false;

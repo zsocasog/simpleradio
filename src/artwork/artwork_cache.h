@@ -135,6 +135,7 @@ private:
   bool startWorker();
   bool queueDownloadJob(ArtworkDownloadJob* job);
   void refreshCacheStats();
+  void processCacheStats(const PlayerStateSnapshot& state);
   void markDownloadFinished();
   bool idlePrewarmCancellationRequested();
   bool writeBufferYielding(File& file, const uint8_t* data, size_t length);
@@ -155,6 +156,7 @@ private:
   std::atomic<size_t> filesystemTotalSnapshot{0};
   std::atomic<size_t> filesystemUsedSnapshot{0};
   std::atomic<uint32_t> cacheStatsAtMs{0};
+  std::atomic<bool> cacheStatsPending{false};
   std::atomic<uint32_t> lcdDiskWrites{0};
   unsigned long lastAttemptMs = 0;
   bool downloadInProgress = false;

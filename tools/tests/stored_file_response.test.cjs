@@ -22,9 +22,79 @@ test('byte streaming survives arbitrary network fragments and performs no filesy
 test('the reader/OTA handshake publishes before checking and waits before unmount, with a bounded failure path',()=>{
  const process=body(web,'static void processStoredFileRead()'),ota=body(web,'static bool beginOtaUpload(');
  assert.ok(process.indexOf('storedReadInProgress.store(true)')<process.indexOf('(otaUploadActive || rebootPending)'));
- assert.ok(process.indexOf('StoredFileResponse::create')<process.indexOf('storedReadInProgress.store(false)'));
+ assert.ok(process.indexOf('StoredFileResponse::create')<process.indexOf('storedReadInProgress.store(false)',process.indexOf('StoredFileResponse::create')));
  assert.ok(ota.indexOf('otaUploadActive = true')<ota.indexOf('while (storedReadInProgress.load())'));
  assert.ok(ota.indexOf('while (storedReadInProgress.load())')<ota.indexOf('LittleFS.end()'));
  assert.match(ota,/storedReadWaitStarted >= 1000U/);
  assert.match(web,/std::atomic<bool> otaUploadActive\{false\}/);
+});
+
+
+test('all shipped STA web assets are queued before the static fallback; recovery and dynamic JSON retain their own routes',()=>{
+ const routes=body(web,'void webServerBegin()');
+ for(const path of ['/index.html','/wifi.html','/app.js','/ui.js','/wifi.js','/ir-profiles.js','/ir-editor.js',
+ '/i18n-catalog.js','/i18n.js','/style.css','/ui.css','/wifi.css','/icons.svg','/favicon.svg','/build-info.json']){
+  assert.ok(routes.includes('{"'+path+'",'),path);
+ }
+ const preload=routes.slice(routes.indexOf('static constexpr AssetRoute assets[]'),routes.indexOf('server.serveStatic('));
+ assert.match(preload,/queueStoredFileRead\(request, route->path, route->type, true\)/);
+ assert.doesNotMatch(preload,/LittleFS|open\(|read\(|StoredFileResponse::create|request->send\(/);
+ assert.match(routes,/if \(WebUiCompatibility::info\(\).compatible\)/);
+ assert.match(routes,/sendRecoveryPage/);
+ const prepare=body(web,'static void processStoredFileRead()');
+ assert.ok(prepare.indexOf('storedReadInProgress.store(true)')<prepare.indexOf('compressedPath'));
+ assert.ok(prepare.indexOf('compressedPath')<prepare.indexOf('storedReadInProgress.store(false)',prepare.indexOf('compressedPath')));
+ assert.match(prepare,/status == 404 && job->asset && !otaUploadActive && !rebootPending/);
+ assert.match(prepare,/if \(gzip\) response->addHeader\("Content-Encoding", "gzip"\)/);
+ assert.match(prepare,/job->asset \? "no-store, max-age=0" : "no-cache"/);
+ assert.match(prepare,/response->setType\(job->type\)/);
+});
+
+
+function queuedRead(files,{ota=false,asset=true,condition='',logoList=false}={}){
+ const reads=[],replies=[],barrier=[];
+ const job={path:logoList?null:'/ui.css',type:'text/css',asset,request:{lock:()=>request}};
+ const request={get(){return this;},beginResponse:status=>({status}),header:()=>condition};
+ const response={headers:{},setType(t){this.type=t;},addHeader(k,v){this.headers[k]=v;},entityTag:()=> '"bytes"',notModified(){this.status=304;}};
+ let code=body(web,'static void processStoredFileRead()')
+  .replace('StoredFileReadJob* pending = nullptr;','let pending=null;')
+  .replace(/port(?:ENTER|EXIT)_CRITICAL\(&storedReadMux\);/g,'')
+  .replace('std::unique_ptr<StoredFileReadJob> job(pending);','const job=pending;')
+  .replace('if (auto request = job->request.lock()) {','const request=job.request.lock();if(request){')
+  .replace('int status = 503;','status=503;').replace(/auto\* (response|reply) =/g,'let $1 =')
+  .replace('bool gzip =','let gzip =').replace(/const String /g,'const ')
+  .replace(/->/g,'.').replace(/::/g,'.').replace(/nullptr/g,'null')
+  .replace(/(compressedPath|condition|tag)\.c_str\(\)/g,'$1').replace(/(condition|tag)\.length\(\)/g,'$1.length')
+  .replace('{condition, condition.length}, {tag, tag.length}','condition, tag');
+ const c=require('node:vm').createContext({storedReadCount:1,storedReadHead:0,storedFileReads:[job],otaUploadActive:ota,rebootPending:false,
+  LittleFS:{mountpoint:()=>'/littlefs'},storedReadInProgress:{store:v=>barrier.push(v)},
+  StoredFileResponse:{create:(_mount,path)=>{assert.equal(barrier.at(-1),true);reads.push(path);const error=files[path];c.status=error??404;return error===200?response:null;}},
+  prepareLogoListResponse:()=>{reads.push('directory');return response;},
+  ArtworkEtag:{matches:(a,b)=>a===b},sendDeferredReply:(_request,reply)=>{assert.equal(barrier.at(-1),false);replies.push(reply);}});
+ require('node:vm').runInContext('function process()'+code+';process();',c);
+ return {reads,replies,barrier,response};
+}
+
+test('real queue processor preserves plain/gzip choice, MIME and cache policy without any network file read',()=>{
+ let h=queuedRead({'/ui.css':200,'/ui.css.gz':200});assert.deepEqual(h.reads,['/ui.css']);assert.equal(h.replies[0].type,'text/css');
+ assert.equal(h.response.headers['Content-Encoding'],undefined);assert.equal(h.response.headers['Cache-Control'],'no-store, max-age=0');
+ h=queuedRead({'/ui.css.gz':200});assert.deepEqual(h.reads,['/ui.css','/ui.css.gz']);assert.equal(h.response.headers['Content-Encoding'],'gzip');
+ h=queuedRead({'/ui.css':200},{asset:false});assert.equal(h.response.headers['Cache-Control'],'no-cache');
+ h=queuedRead({'/ui.css':200},{condition:'"bytes"'});assert.equal(h.response.status,304);
+});
+
+test('OTA, missing files and snapshot failure are bounded errors, never a fallback to live settings or truncated assets',()=>{
+ let h=queuedRead({'/ui.css':200},{ota:true});assert.deepEqual(h.reads,[]);assert.equal(h.replies[0].status,503);assert.deepEqual(h.barrier,[true,false]);
+ h=queuedRead({});assert.equal(h.replies[0].status,404);assert.deepEqual(h.reads,['/ui.css','/ui.css.gz']);
+ h=queuedRead({'/ui.css':503,'/ui.css.gz':200});assert.equal(h.replies[0].status,503);assert.deepEqual(h.reads,['/ui.css']);
+ h=queuedRead({'/ui.css.gz':200},{asset:false});assert.equal(h.replies[0].status,404);assert.deepEqual(h.reads,['/ui.css']);
+});
+
+
+test('uploaded-logo directory reads use the same bounded Main/OTA handoff, never a network callback',()=>{
+ let h=queuedRead({},{logoList:true});assert.deepEqual(h.reads,['directory']);assert.equal(h.replies[0],h.response);assert.deepEqual(h.barrier,[true,false]);
+ h=queuedRead({},{logoList:true,ota:true});assert.deepEqual(h.reads,[]);assert.equal(h.replies[0].status,503);
+ const marker=web.indexOf('server.on("/api/logos"'),route=body(web.slice(marker),'HTTP_GET');
+ assert.match(route,/queueStoredFileRead\(request, nullptr\)/);assert.doesNotMatch(route,/visitFiles|LittleFS|prepareLogoListResponse/);
+ assert.match(body(web,'static AsyncWebServerResponse* prepareLogoListResponse('),/ReadOnlyStorage::visitFiles/);
 });

@@ -1,5 +1,14 @@
 const fs=require('node:fs'),path=require('node:path'),test=require('node:test'),assert=require('node:assert/strict');
 const source=fs.readFileSync(path.resolve(__dirname,'../../src/diagnostics/runtime_probe.cpp'),'utf8');
+test('retained panic record has no startup initializer and the panic hook avoids heap or filesystem work',()=>{
+ const header=fs.readFileSync(path.resolve(__dirname,'../../src/diagnostics/runtime_probe.h'),'utf8');
+ const record=header.split('struct AbortTrace {')[1].split('};')[0].replace(/\/\/[^\n]*/g,'');
+ assert.doesNotMatch(record,/[={]/);
+ const hook=body('void retainPanic(');
+ assert.doesNotMatch(hook,/malloc|heap_caps_|Serial|printf|LittleFS|portENTER|vTaskDelay|new /);
+ assert.match(hook,/i < 32 && i < info->backtrace_len/);
+ assert.match(source,/set_arduino_panic_handler\(retainPanic, nullptr\)/);
+});
 function body(name){const i=source.indexOf('{',source.indexOf(name));let depth=0;for(let j=i;j<source.length;j++){if(source[j]==='{')depth++;if(source[j]==='}'&&!--depth)return source.slice(i,j+1);}throw Error(name);}
 function translate(s){return s.replace(/port(?:ENTER|EXIT)_CRITICAL(?:_ISR)?\(&probeMux\);/g,'')
  .replace(/recordZeroEvent\(now\);/g,'void 0;')

@@ -86,11 +86,11 @@ private:
   int32_t* sampleStorage_ = nullptr;
   AudioSpectrumSnapshot* resultStorage_ = nullptr;
   SpectrumMath::BandPlan* bandPlan_ = nullptr;
-  // Task-only tables live in PSRAM. Keep the 8 KiB FFT work array internal,
-  // but leave contiguous internal heap for playback and the artwork task.
+  // Task-only tables and the aligned FFT work buffer live in PSRAM. The
+  // separate DMA observer/hand-off remains internal and never touches these.
   float* window_ = nullptr;
   float* coefficients_ = nullptr;
-  alignas(16) std::array<float, SpectrumMath::POINT_COUNT * 2> work_{};
+  float* work_ = nullptr;
   float windowEnergy_ = 0;
   AudioSpectrumSnapshot published_;
   TaskHandle_t task_ = nullptr;

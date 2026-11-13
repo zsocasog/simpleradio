@@ -86,7 +86,7 @@ test("FFT is below audio priority but not idle, and self-tests the linked backen
   const analyzer = fs.readFileSync(path.join(root, "src/audio/audio_spectrum.cpp"), "utf8");
   assert.match(analyzer, /SPECTRUM_TASK_PRIORITY = 1/);
   assert.match(analyzer, /if \(!fftSelfTest\(\)\)/);
-  assert.match(analyzer, /SpectrumMath::cachedBandPowers\(work_.data\(\), \*bandPlan_, windowEnergy_\)/);
+  assert.match(analyzer, /SpectrumMath::cachedBandPowers\(work_, \*bandPlan_, windowEnergy_\)/);
   assert.doesNotMatch(analyzer, /meanBandPower|weights\[band\]/);
   assert.match(analyzer, /void AudioSpectrum::reportDiagnostics\(\)/);
 });

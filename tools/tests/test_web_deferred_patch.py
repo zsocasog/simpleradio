@@ -21,6 +21,8 @@ class DeferredPatchTests(unittest.TestCase):
             changed=patch.deferred_patch(source,digest,edits)
             self.assertEqual(patch.deferred_patch(changed,digest,edits),changed)
             self.assertEqual(patch.deferred_patch(source.replace('\n','\r\n'),digest,edits),changed)
+            import web_flow_patch as flow
+            changed=flow.strip_request(changed)
             for old,new in reversed(edits):changed=changed.replace(new,old)
             self.assertEqual(changed,source)
 
@@ -49,5 +51,19 @@ class DeferredPatchTests(unittest.TestCase):
         self.assertEqual(text.count('SR_READ_IO_SCOPE();'),8)
         self.assertNotIn('CONFIG_ASYNC_TCP_PRIORITY',text)
         self.assertNotIn('vTaskPrioritySet',text)  # existing scoped helper owns restoration
+
+    def test_request_metadata_uses_external_ram_and_the_last_shared_owner_runs_its_destructor(self):
+        import web_flow_patch as flow
+        changed=next(new for old,new in flow.REQUEST_HEADER_EDITS
+                     if 'AsyncWebServerRequest *req = new' in old)
+        self.assertIn('MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT',changed)
+        self.assertIn('memory ? new (memory) AsyncWebServerRequest(server, client) : nullptr',changed)
+        self.assertIn('std::shared_ptr<AsyncWebServerRequest>(req, []',changed)
+        self.assertLess(changed.index('request->~AsyncWebServerRequest();'),
+                        changed.index('heap_caps_free(request);'))
+        self.assertIn('return req->_this;',changed)
+        self.assertNotIn('MALLOC_CAP_DMA',changed)
+        self.assertNotIn('MALLOC_CAP_INTERNAL',changed)
+        self.assertNotIn('xTaskCreate',changed)
 
 if __name__=='__main__':unittest.main()

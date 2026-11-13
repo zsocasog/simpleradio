@@ -85,6 +85,16 @@ class GuardTests(unittest.TestCase):
             self.assertEqual(transform(first),first)
             self.assertEqual(priority.deferred_patch(transform(first),digest,edits),first)
 
+    def test_flow_overlay_migrates_from_legacy_and_partial_or_unknown_edits_fail_closed(self):
+        import web_flow_patch as flow
+        source=(ROOT/'.pio/libdeps/esp32-s3-devkitc1-n16r8/ESPAsyncWebServer/src/WebResponses.cpp').read_text(encoding='utf-8')
+        complete=patcher.patch_source(source)
+        legacy=flow.strip(complete)
+        self.assertEqual(patcher.patch_source(legacy),complete)
+        old,new=flow.EDITS[-1]
+        with self.assertRaises(RuntimeError):patcher.patch_source(complete.replace(new,old))
+        with self.assertRaises(RuntimeError):patcher.patch_source(complete+'// unfamiliar edit\n')
+
 
 if __name__ == '__main__':
     unittest.main()

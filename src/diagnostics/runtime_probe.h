@@ -12,6 +12,15 @@
 
 namespace RuntimeProbe {
 #if SIMPLE_RADIO_RUNTIME_DIAGNOSTICS
+struct AbortTrace {
+  // POD is essential: a default member initializer would clear RTC_NOINIT
+  // during C++ startup, destroying the trace before begin() could recover it.
+  uint32_t uptimeMs, pc;
+  char task[16];
+  char reason[96];
+  uint32_t callers[32];
+};
+AbortTrace previousAbort();
 struct AllocationFailure {
   uint32_t count, bytes, caps, uptimeMs;
   char task[24], function[32];
@@ -42,7 +51,7 @@ void setPumpStage(uint32_t stage);
 struct UploadTrace {
   uint32_t number = 0, bytes = 0, firstUs = 0, lastUs = 0, chunks = 0, maxRxGapUs = 0;
   uint32_t queuedUs = 0, workerUs = 0, finishedUs = 0, replyUs = 0;
-  uint32_t writeUs = 0, flushUs = 0, commitUs = 0, cleanupUs = 0;
+  uint32_t writeUs = 0, writeChunkMaxUs = 0, flushUs = 0, commitUs = 0, cleanupUs = 0;
   bool saved = false, clientGone = false;
 };
 struct UploadTraces { UploadTrace rows[4]{}; };
