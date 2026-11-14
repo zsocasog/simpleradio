@@ -1,0 +1,54 @@
+{
+  "source": "Apple iTunes search and album lookup, 2026-11-14",
+  "query": "G-Eazy & Kehlani Good Life (Fast & Furious 8)",
+  "wantedArtist": "G-Eazy & Kehlani",
+  "wantedTitle": "Good Life (Fast & Furious 8)",
+  "search": [
+    {
+      "wrapperType": "track",
+      "trackId": 1210538351,
+      "artistName": "G-Eazy & Kehlani",
+      "trackName": "Good Life",
+      "collectionId": 1210537086,
+      "collectionName": "The Fate of the Furious: The Album",
+      "collectionArtistName": "Various Artists",
+      "primaryGenreName": "Hip-Hop/Rap",
+      "releaseDate": "2017-03-17T07:00:00Z",
+      "artworkUrl100": "https://is1-ssl.mzstatic.com/image/thumb/Music125/v4/ba/77/22/ba772286-cdd8-8925-aa93-784db1836d7b/075679900111.jpg/100x100bb.jpg"
+    },
+    {
+      "wrapperType": "track",
+      "trackId": 1210532123,
+      "artistName": "G-Eazy & Kehlani",
+      "trackName": "Good Life",
+      "collectionId": 1210530922,
+      "collectionName": "The Fate of the Furious: The Album",
+      "collectionArtistName": "Various Artists",
+      "primaryGenreName": "Hip-Hop/Rap",
+      "releaseDate": "2017-03-17T12:00:00Z",
+      "artworkUrl100": "https://is1-ssl.mzstatic.com/image/thumb/Music124/v4/b8/9e/4a/b89e4acc-395b-df3a-bf1a-deded2485bf3/075679900098.jpg/100x100bb.jpg"
+    }
+  ],
+  "albums": [
+    {
+      "wrapperType": "collection",
+      "collectionId": 1210537086,
+      "collectionName": "The Fate of the Furious: The Album",
+      "artistName": "Various Artists",
+      "primaryGenreName": "Soundtrack",
+      "trackCount": 14,
+      "releaseDate": "2017-04-14T07:00:00Z",
+      "copyright": "℗ 2017 This compilation 2017 Artist Partner Group, Inc. for the United States and WEA International Inc. for the world outside of the United States"
+    },
+    {
+      "wrapperType": "collection",
+      "collectionId": 1210530922,
+      "collectionName": "The Fate of the Furious: The Album",
+      "artistName": "Various Artists",
+      "primaryGenreName": "Soundtrack",
+      "trackCount": 14,
+      "releaseDate": "2017-04-14T07:00:00Z",
+      "copyright": "℗ 2017 This compilation 2017 Artist Partner Group, Inc. for the United States and WEA International Inc. for the world outside of the United States"
+    }
+  ]
+}

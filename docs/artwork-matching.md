@@ -1,5 +1,97 @@
 # Album artwork matching
 
+## Filmzenei megjegyzés és több szolgáltatóval megerősített vendégkredit (2026-11-14)
+
+- Az iTunes-ban a `Good Life (Fast & Furious 8)` rádiós címhez már felhasználható
+  a `G-Eazy & Kehlani – Good Life` felvétel filmzenei albuma. Ez külön,
+  konzervatív tartalék út, csak az összes hagyományos iTunes-egyezés
+  sikertelensége után. A dal főcíme és a teljes kért előadói kredit pontosan
+  egyezzen; ehhez nem adódik hozzá címelírás-, rövidnév- vagy vendégtolerancia.
+- Egyetlen, lezárt zárójeles megjegyzés választható le. A filmre utaló
+  megjegyzés és az album neve legalább egy hatbetűs közös szót vagy két közös
+  szót, valamint mindkét cím érdemi szavainak legalább felét ossza meg.
+  Az általános „album”, „soundtrack”, „the” stb. szavak nem bizonyítékok.
+  Ez például a regionális Fast/Fate eltérést kezeli, nem egy tetszőleges
+  filmcím-fordító vagy külön Fast & Furious-kivétel.
+- A már használt, legfeljebb egy kötegelt albumlekérdezés UGYANAZT a
+  collectionId-t, az albumcímmel fennálló kapcsolatot és a hivatalos
+  Soundtrack-műfajt vagy explicit soundtrack/OST albumjelölést is ellenőrzi.
+  Egy Various Artists kiadvány csak ezen az új, teljesen ellenőrzött úton
+  kerülhet közvetlen filmzenei találatként a képletöltéshez. Sikertelen,
+  hiányzó vagy eltérő azonosítójú albumválasz nem ad képet ezen az úton.
+- A számok általános védelme megmarad. A filmcím egy különálló, utolsó
+  száma kontextus lehet; két explicit filmcím-szám eltérése kizáró ok.
+  A főcím számai, remix/live/akusztikus/Part stb. jelölések, több vagy
+  hibásan zárt csoportok továbbra sem dobhatók el. Az eltérően lefordított,
+  közös szó nélküli filmcím és a bizonytalan metaadat továbbra is kimaradhat.
+- A `MOBY feat. Jennifer Price – In this world` esetben a Last.fm pontosan
+  felismerte a teljes kreditet, de albumot nem adott. Ezt a megerősítést a
+  keresés saját, egyetlen logikai jelzője őrzi. Csak explicit, egyértelmű
+  feat./ft./featuring kredit és pontos előadó-/cím-/verzió-egyezés állíthatja be.
+  A következő szolgáltatók ekkor a főelőadóval is kereshetnek, és pontos
+  cím mellett elfogadhatják a főelőadóra rövidített szolgáltatói kreditet.
+- A vendéget itt egy korábbi, ugyanahhoz a kereséshez tartozó szolgáltatói
+  találat igazolja; nem egyszerűen elhagyjuk. Hiányzó megerősítés, másik
+  explicit vendég, plusz főelőadó, más verzió vagy elírt cím nem fogadható el.
+  Ehhez az egyezéshez továbbra is ellenőrzött saját album vagy kislemez kell;
+  válogatás, gyűjtemény és ismeretlen tulajdonos nem. A jelző nem globális
+  névátírás, és az új dal keresése alaphelyzetből indul. A szolgáltatói
+  kreditadatok helyességét ez sem képes az adatbázisoktól függetlenül garantálni.
+- Nincs új szolgáltató, háttérfeladat, tartós képpuffer vagy nagyobb időkeret.
+  A korábbi sikeres egyezés marad az első út. A filmzenei ellenőrzés a
+  meglévő iTunes-albumlépést használja; a megerősített vendég nem indít új
+  személyazonossági kérést. A webcsomag, logók, hang, spektrum és az 1.3.0-s
+  LovyanGFX változatlan; az új szabályokhoz firmware-frissítés szükséges.
+- Az LP / Lost On You példában az `eredeti neve: Laura Pergolizzi` életrajzi
+  megjegyzés a szolgáltatói keresésbe került, ezért a keresők sem hozták a
+  dalt. A különálló év után most csak egy végső, lezárt, kifejezetten
+  névként címkézett csoport (`eredeti neve:`, `polgári neve:`, `születési
+  neve:`, `real name:`, `birth name:`, `born as:`) távolítható el.
+  A név 5–96 karakteres, 2–8 névelemből álló szöveg lehet; szám, URL,
+  belső csoport vagy védett verziószó esetén a megjegyzés megmarad.
+  A korábbi remix/live csoport érintetlen, a főelőadó továbbra is LP-vel
+  egyezzen. A megjegyzésből nem tanulunk előadói álnevet; az eredeti kijelzés,
+  gyorsítótárkulcs és megszakítási ellenőrzés változatlan.
+
+Valódi Apple-válaszok rövid mintái: `artwork-soundtrack-example.json` és
+`artwork-confirmed-guest-example.json` a `tools/tests/fixtures` könyvtárban.
+A Moby-minta Last.fm-bizonyítéka a felhasználó eszköznaplója, az Apple-adatok
+külön nyilvános lekérdezésből származnak. A Jennifer Price-énekeskredit az
+[Apple Music adatlapján](https://music.apple.com/us/song/1556829494) is szerepel;
+ezt a firmware nem kapja meg a dal keresési sorában.
+
+Ellenőrzés: 704 Node- és 66 + 15 Python-próba sikeres, beleértve az új
+filmzenei szabályok tényleges ESP32 C++ fordításidejű ellenőrzését, a
+gyártási függvénytörzsekkel futtatott találat- és albumazonosító-próbákat,
+valamint a korábbi vendég-, remix-, évszám-, hang- és webes regressziókat.
+
+### Rádiós ellenőrzés
+
+- Normál firmware: 1.3.14, `efc977274`; feltöltve a készülékre. Statikus
+  belső RAM: 103188 bájt, változatlan; programméret 3021335 bájt. A data
+  nem lett feltöltve, a webcsomag és az összes 397 LovyanGFX-forrásfájl
+  lenyomata változatlan az előző ellenőrzött csomaghoz képest.
+- Némított, helyi ICY-hangforrás a valódi internetes borítókeresőkkel:
+  Good Life / MP3: 2,390 s (ismételt, már gyorsítótáras eset), Moby / MP3:
+  9,187 s, LP / FLAC: 9,000 s, Geszti / MP3: 5,688 s, Henri PFR / FLAC:
+  7,703 s. Az idő a metaadat átadását és a referenciaellenőrzést is
+  tartalmazza; nem önálló hálózati vagy audióteljesítmény-mérés.
+- Mind az öt esetben teljes, érvényes albumborító érkezett. A négy
+  előre rögzített Apple/Deezer-referenciával rendelkező eset JPEG-je
+  egyezik, az Apple kérésenként változó EXIF UserComment adatát kivéve.
+  Az összehasonlítás minden más metaadatot, táblát és képadatot megtart.
+  Az LP-kép külön érvényességi és vizuális ellenőrzést kapott: Lost On You.
+- Az első segédpróba a Good Life helyes képe után a teljes fájlhash
+  feltételezésén állt meg. A 26626 bájtos fájlokból csak az EXIF-megjegyzés
+  26 bájtja tért el; a firmware nem változott emiatt. A javított ellenőrzés
+  teljes ötesetes futása sikeres; a korábbi nyers eredmény is megmaradt.
+- A teszt idején nem történt váratlan újraindulás. A 7 eredeti állomás,
+  3 feltöltött logó, minden beállítás és a frissen mentett lejátszóállapot
+  visszaellenőrzött: Forrás rádió, lejátszás, 50%, EQ +1/0/-1, balance 10.
+  A tesztállomás törölve, a helyi kiszolgáló leállítva. USB-naplót a foglalt
+  soros kapcsolat miatt nem lehetett rögzíteni; állapotok és HTTP-képek
+  alapján történt a mérés. Ez nem hallásos vagy hosszú terheléses hangpróba.
+
 ## Közös előadói adatok és hiányos Deezer-találatok (2026-11-14)
 
 - A meglévő pontos egyezés marad az első, változatlan gyors út. Csak utána

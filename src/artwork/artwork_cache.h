@@ -79,6 +79,9 @@ private:
     std::vector<String> artistAliases;
     bool artistIdentityAmbiguous = false;
     bool artistAliasLookupAttempted = false;
+    // Exact track.getInfo credit, scoped to THIS search/track, never a global
+    // artist alias or permission to ignore an unconfirmed guest.
+    bool lastFmConfirmedRecordingCredits = false;
     struct DeferredAlbum {
       String mbid;
       String artist;

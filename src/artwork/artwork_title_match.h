@@ -121,6 +121,47 @@ constexpr bool protectedSubtitle(std::string_view normalized) {
   return false;
 }
 
+// Explicit broadcaster biography is not a recording subtitle. Remove ONLY a
+// final, balanced name-labelled group, retaining any earlier remix/live group.
+// No artist identity is inferred from the name; the original artist must match.
+constexpr std::string_view withoutBiographicalNote(std::string_view text) {
+  text = trim(text);
+  if (text.size() > 384 || text.empty() || (text.back() != ')' && text.back() != ']') ||
+      !splitSubtitle(text).valid) return text;
+  const char open = text.back() == ')' ? '(' : '[';
+  const size_t at = text.find_last_of(open);
+  if (at == std::string_view::npos || !at || text[at - 1] != ' ') return text;
+  const auto note = trim(text.substr(at + 1, text.size() - at - 2));
+  std::string_view name;
+  for (const char* label : {"eredeti neve:", "polgári neve:", "polgari neve:", "születési neve:",
+                            "szuletesi neve:", "real name:", "birth name:", "born as:"}) {
+    const std::string_view prefix(label);
+    if (note.size() <= prefix.size()) continue;
+    bool same = true;
+    for (size_t i = 0; i < prefix.size(); ++i) {
+      const char lower = note[i] >= 'A' && note[i] <= 'Z' ? note[i] + ('a' - 'A') : note[i];
+      if (lower != prefix[i]) { same = false; break; }
+    }
+    if (same) { name = trim(note.substr(prefix.size())); break; }
+  }
+  if (name.size() < 5 || name.size() > 96) return text;
+  char lowerName[96] = {};
+  for (size_t i = 0; i < name.size(); ++i)
+    lowerName[i] = name[i] >= 'A' && name[i] <= 'Z' ? name[i] + ('a' - 'A') : name[i];
+  if (protectedSubtitle(std::string_view(lowerName, name.size()))) return text;
+  size_t words = 0;
+  bool inWord = false;
+  for (char c : name) {
+    const bool letter = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || static_cast<unsigned char>(c) >= 128;
+    if (letter) { if (!inWord) ++words; inWord = true; }
+    else if (c == ' ' || c == '\t' || c == '-' || c == '\'' || c == '.') inWord = false;
+    else return text;
+  }
+  if (words < 2 || words > 8) return text;
+  const auto main = trim(text.substr(0, at));
+  return main.empty() ? text : main;
+}
+
 // These inputs are normalized text. Preserve version markers after a featured
 // credit: "feat guest remix" must never become a plain studio title.
 constexpr std::string_view featureCredit(std::string_view text) {

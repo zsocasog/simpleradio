@@ -9,6 +9,7 @@
 #include "station_logo_policy.h"
 #include "lcd_image_policy.h"
 #include "artwork_title_match.h"
+#include "artwork_soundtrack_match.h"
 #include "artwork_track_parts.h"
 #include "artwork_credit_policy.h"
 #include "artwork_http_policy.h"
@@ -1936,12 +1937,34 @@ static bool contextualCreditTrackMatch(const String& foundArtist, const String& 
   return verdict.matched();
 }
 
+static String confirmedPrimaryArtist(const String& artist, bool confirmed) {
+  if (!confirmed || artist.length() > 384) return artist;
+  const auto parts = ArtworkTrackParts::parse(artist.c_str());
+  if (!parts.valid || !parts.feature || !parts.explicitCredit ||
+      !parts.version.empty() || !parts.tail.empty() || ArtworkTrackParts::versionText(parts.guest)) return artist;
+  return String(parts.main.data(), parts.main.size());
+}
+
+// Last.fm may confirm the requested full feature credit without an album image,
+// while a store credits the SAME original recording only to its main artist.
+// The caller must have that exact, per-search proof. Never use a fuzzy title,
+// inferred alias, conflicting explicit guest, or additional primary artist.
+static bool confirmedGuestTrackMatch(const String& foundArtist, const String& foundTitle,
+                                     const String& wantedArtist, const String& wantedTitle) {
+  if (foundArtist.length() > 384 || foundTitle.length() > 384 || wantedTitle.length() > 384) return false;
+  const String primary = confirmedPrimaryArtist(wantedArtist, true);
+  if (primary == wantedArtist || ArtworkTrackParts::parse(foundArtist.c_str()).feature ||
+      ArtworkTrackParts::parse(foundTitle.c_str()).feature || ArtworkTrackParts::parse(wantedTitle.c_str()).feature) return false;
+  return artworkArtistsMatch(foundArtist, primary) && artworkArtistsMatch(primary, foundArtist) &&
+         exactTrackMatch(foundArtist, foundTitle, primary, wantedTitle);
+}
+
 static bool artworkMatchNeedsVerifiedAlbum(int quality) {
   return quality <= 2; // Studio-mix and optional-subtitle matches require ownership proof.
 }
 
 static const char* artworkMatchLabel(int quality) {
-  return quality == -1 ? "contextual-credit" : quality == 4 ? "exact" : quality == 3 ? "minor-title-typo" :
+  return quality == -2 ? "soundtrack-context" : quality == -1 ? "contextual-credit" : quality == 4 ? "exact" : quality == 3 ? "minor-title-typo" :
          quality == 2 ? "studio-title" : "subtitle";
 }
 
@@ -1974,9 +1997,12 @@ static bool isCompilationArtist(String artist) {
          artist == "[various artists]";
 }
 
-enum class AlbumArtworkKind { Album, Single, ArtistCollection, Unverified, Compilation };
+enum class AlbumArtworkKind { Album, Single, ArtistCollection, Unverified, Compilation, Soundtrack };
 
 static bool artworkMatchAllowsRelease(int quality, AlbumArtworkKind kind) {
+  // Movie context is admitted only after the SAME collection ID confirms both
+  // its soundtrack type and the title relationship. No generic VA fallback.
+  if (quality == -2) return kind == AlbumArtworkKind::Soundtrack;
   // A recording-context match can use a verified own Single/EP too, but never
   // gains an unverified, compilation or live/collection fallback.
   if (quality == -1) return kind == AlbumArtworkKind::Album || kind == AlbumArtworkKind::Single;
@@ -2062,6 +2088,46 @@ static String albumTitleForSearch(String title) {
   return title;
 }
 
+static String soundtrackAnnotation(const String& title) {
+  const auto parts = ArtworkTitleMatch::splitSubtitle(title.c_str());
+  if (!parts.valid || parts.main.empty() || parts.subtitle.size() < 3) return "";
+  const auto note = parts.subtitle;
+  // One complete trailing group only; another version/feature group must not
+  // disappear behind the movie name, even if it is separately well balanced.
+  if (!((note.front() == '(' && note.back() == ')') || (note.front() == '[' && note.back() == ']'))) return "";
+  const auto inner = note.substr(1, note.size() - 2);
+  if (inner.find_first_of("()[]") != std::string_view::npos) return "";
+  return normalizeArtworkText(String(inner.data(), inner.size()));
+}
+
+static bool soundtrackReleaseMatches(const String& wantedTitle, const String& albumTitle,
+                                     const String& genre = "", bool requireType = false) {
+  if (wantedTitle.length() > 384 || albumTitle.length() > ArtworkSoundtrackMatch::MAX_TEXT) return false;
+  const String note = soundtrackAnnotation(albumTitleForSearch(wantedTitle));
+  if (!note.length()) return false;
+  const String release = normalizeArtworkText(albumTitle);
+  if (!ArtworkSoundtrackMatch::relatedRelease(note.c_str(), release.c_str())) return false;
+  const String normalizedGenre = normalizeArtworkText(genre);
+  return !requireType || ArtworkSoundtrackMatch::soundtrackMetadata(normalizedGenre.c_str(), release.c_str());
+}
+
+static bool soundtrackTrackMatch(const String& foundArtist, String foundTitle,
+                                 const String& wantedArtist, String wantedTitle, const String& albumTitle,
+                                 const std::vector<String>* verifiedAliases = nullptr) {
+  if (foundTitle.length() > 384 || wantedTitle.length() > 384 ||
+      foundArtist.length() > 384 || wantedArtist.length() > 384) return false;
+  if (!artworkArtistsMatch(foundArtist, wantedArtist, verifiedAliases) ||
+      !prepareArtworkTitles(foundArtist, wantedArtist, foundTitle, wantedTitle, verifiedAliases)) return false;
+  const auto found = ArtworkTitleMatch::splitSubtitle(foundTitle.c_str());
+  const auto wanted = ArtworkTitleMatch::splitSubtitle(wantedTitle.c_str());
+  if (!found.valid || !wanted.valid || !found.subtitle.empty() || wanted.subtitle.empty()) return false;
+  const String foundMain = normalizeArtworkText(String(found.main.data(), found.main.size()));
+  const String wantedMain = normalizeArtworkText(String(wanted.main.data(), wanted.main.size()));
+  // Never combine soundtrack tolerance with a misspelled title, missing guest,
+  // shortened artist or a different recording version.
+  return foundMain.length() && foundMain == wantedMain && soundtrackReleaseMatches(wantedTitle, albumTitle);
+}
+
 struct StoreArtworkAlbum {
   String id;
   String title;
@@ -2137,8 +2203,9 @@ std::vector<String> ArtworkCache::resolveAlbumArtworkUrls(const String& artist, 
   const uint32_t requestDeadlineMs = deadlineRemaining(deadlineMs) > AlbumSearchPolicy::PROVIDER_BUDGET_MS
       ? requestStartedMs + AlbumSearchPolicy::PROVIDER_BUDGET_MS : deadlineMs;
   const auto titleView = ArtworkTitleMatch::withoutBroadcastYear(std::string_view(title.c_str(), title.length()));
-  const String lookupTitle(titleView.data(), titleView.size());
-  const String artistQuery = encodeArtworkQuery(artist);
+  const auto lookupView = ArtworkTitleMatch::withoutBiographicalNote(titleView);
+  const String lookupTitle(lookupView.data(), lookupView.size());
+  const String artistQuery = encodeArtworkQuery(confirmedPrimaryArtist(artist, search.lastFmConfirmedRecordingCredits));
   const String titleQuery = encodeArtworkQuery(albumTitleForSearch(lookupTitle));
   ArtworkJson::Allocator jsonAllocator;
   JsonDocument doc(&jsonAllocator);
@@ -2163,6 +2230,7 @@ std::vector<String> ArtworkCache::resolveAlbumArtworkUrls(const String& artist, 
         target = &fallbacks.artistCollections; label = "artist collection fallback"; break;
       case AlbumArtworkKind::Unverified: target = &fallbacks.unverified; label = "unverified album fallback"; break;
       case AlbumArtworkKind::Compilation: target = &fallbacks.compilations; label = "compilation fallback"; break;
+      case AlbumArtworkKind::Soundtrack: label = "verified soundtrack"; break;
       case AlbumArtworkKind::Album: break;
     }
     if (!url.length()) return;
@@ -2274,6 +2342,8 @@ std::vector<String> ArtworkCache::resolveAlbumArtworkUrls(const String& artist, 
   auto matchQuality = [&](const String& foundArtist, const String& foundTitle) {
     const int strictQuality = titleQuality(foundArtist, foundTitle);
     if (strictQuality) return strictQuality;
+    if (search.lastFmConfirmedRecordingCredits && confirmedGuestTrackMatch(foundArtist, foundTitle, artist, lookupTitle))
+      return -1; // Verified own Album/Single only; no extra artist-alias request.
     // Test the title independently before any identity request. Never accept
     // the acronym of an arbitrary artist name, a search rank or a title alone.
     int aliasQuality = titleQuality(artist, foundTitle);
@@ -2503,6 +2573,11 @@ std::vector<String> ArtworkCache::resolveAlbumArtworkUrls(const String& artist, 
       if (quality) {
         albumArtTrace("Last.fm %s match: %s - %s", artworkMatchLabel(quality),
                       foundArtist.c_str(), foundTitle.c_str());
+        if (quality == 4 && confirmedPrimaryArtist(artist, true) != artist &&
+            exactTrackMatch(foundArtist, foundTitle, artist, lookupTitle)) {
+          search.lastFmConfirmedRecordingCredits = true;
+          albumArtTrace("Last.fm recording feature credits confirmed for remaining providers");
+        }
         const String albumArtist = doc["track"]["album"]["artist"] | "";
         const String albumTitle = doc["track"]["album"]["title"] | "";
         const String albumMbid = doc["track"]["album"]["mbid"] | "";
@@ -2703,6 +2778,28 @@ std::vector<String> ArtworkCache::resolveAlbumArtworkUrls(const String& artist, 
           }
         } else albumArtTrace("iTunes reject: %s - %s (%s)", foundArtist.c_str(), foundTitle.c_str(), rejectionReason);
       }
+      // Keep established successful searches entirely on their original path.
+      // Only after ALL ordinary rows failed, consider a movie annotation using
+      // metadata already returned by this search, then the existing batch lookup.
+      if (albums.empty() && urls.empty()) {
+        for (JsonObject result : results) {
+          if (cancelled() || deadlineReached(deadlineMs) || albums.size() >= 2) break;
+          const String foundArtist = result["artistName"] | "";
+          const String foundTitle = result["trackName"] | "";
+          const String albumTitle = result["collectionName"] | "";
+          if (!soundtrackTrackMatch(foundArtist, foundTitle, artist, lookupTitle, albumTitle, &search.artistAliases)) continue;
+          const String id = result["collectionId"].as<String>();
+          String cover = result["artworkUrl100"] | "";
+          if (!isStoreAlbumId(id) || !cover.length()) continue;
+          bool duplicate = false;
+          for (const StoreArtworkAlbum& existing : albums) if (existing.id == id) duplicate = true;
+          if (duplicate) continue;
+          cover.replace("100x100bb", "250x250bb");
+          albums.push_back({id, albumTitle, cover, foundArtist, -2, result["releaseDate"] | ""});
+          albumArtTrace("iTunes soundtrack-context candidate: %s - %s; verifying %s", foundArtist.c_str(),
+                        foundTitle.c_str(), albumTitle.c_str());
+        }
+      }
       doc.clear();
       rankStoreArtworkAlbums(albums);
       // A single batched lookup provides the real album artists. A missing
@@ -2733,6 +2830,8 @@ std::vector<String> ArtworkCache::resolveAlbumArtworkUrls(const String& artist, 
             album.kind = albumArtworkKind(albumArtist, album.trackArtist, albumTitle,
                                            tracks > 0 && tracks <= 4 ? "Single" : "Album", collection,
                                            &search.artistAliases);
+            if (album.quality == -2 && soundtrackReleaseMatches(lookupTitle, albumTitle, genre, true))
+              album.kind = AlbumArtworkKind::Soundtrack;
             album.title = albumTitle;
             const String releaseDate = result["releaseDate"] | "";
             if (releaseDate.length()) album.releaseDate = releaseDate;

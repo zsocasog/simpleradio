@@ -24,4 +24,4 @@ const featureCredit = new Function('trim', 'protectedSubtitle', 'text', code(bod
   .bind(null, s => s.trim(), protectedSubtitle);
 const withoutFeatureCredit = new Function('trim', 'featureCredit', 'text', code(body('std::string_view withoutFeatureCredit(')))
   .bind(null, s => s.trim(), featureCredit);
-module.exports = { featureCredit, withoutFeatureCredit, protectedSubtitle };
+module.exports = { featureCredit, withoutFeatureCredit, protectedSubtitle, hasWord, wordChar };

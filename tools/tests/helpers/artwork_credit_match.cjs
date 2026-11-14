@@ -106,4 +106,32 @@ let contextCode=body('static bool contextualCreditTrackMatch(')
 contextCode=strings(contextCode).replace(/\[&\]\(([^)]*)\)/g,'($1) =>');
 const contextual=new Function('parse','versionText','artworkArtistsMatch','normalizeArtworkText','exactTrackMatch','creditPolicy','foundArtist','foundTitle','wantedArtist','wantedTitle','verifiedAliases=null','reason=null',contextCode)
  .bind(null,parts.parse,parts.versionText,artistsMatch,normalizeArtworkText,build('static bool exactTrackMatch('),creditPolicy);
-module.exports={query,normalizeArtworkText,artistsMatch,prepare,contextual,exactWithTypos:typo=>build('static bool exactTrackMatch(',artistsMatch,typo),exactWithArtists:matcher=>build('static bool exactTrackMatch(',matcher),exact:build('static bool exactTrackMatch('),subtitle:build('static bool subtitleTrackMatch('),creditTitle:build('static bool artistCreditTitleMatch(')};
+const soundtrackPolicy=require('./artwork_soundtrack_policy.cjs');
+const noteCode=trackCode('static String soundtrackAnnotation(')
+ .replace('String(inner.data(), inner.length)','inner')
+ .replace(/(\w+)\.front\(\)/g,'$1[0]').replace(/(\w+)\.back\(\)/g,'$1.at(-1)')
+ .replace('inner.find_first_of("()[]") != std::string_view::npos','/[()\\[\\]]/.test(inner)');
+const soundtrackAnnotation=new Function('policy','normalizeArtworkText','title',noteCode).bind(null,{...policy,splitSubtitle},normalizeArtworkText);
+const releaseCode=trackCode('static bool soundtrackReleaseMatches(').replace(/ArtworkSoundtrackMatch::/g,'soundtrackPolicy.');
+const soundtrackRelease=new Function('soundtrackPolicy','soundtrackAnnotation','albumTitleForSearch','normalizeArtworkText','wantedTitle','albumTitle','genre=""','requireType=false',releaseCode)
+ .bind(null,{...soundtrackPolicy,MAX_TEXT:192},soundtrackAnnotation,query,normalizeArtworkText);
+const soundtrack=new Function('artworkArtistsMatch','prepareArtworkTitles','policy','normalizeArtworkText','soundtrackReleaseMatches','foundArtist','foundTitle','wantedArtist','wantedTitle','albumTitle','verifiedAliases=null',trackCode('static bool soundtrackTrackMatch('))
+ .bind(null,artistsMatch,prepare,{...policy,splitSubtitle},normalizeArtworkText,soundtrackRelease);
+const primaryCode=trackCode('static String confirmedPrimaryArtist(').replace(/ArtworkTrackParts::parse/g,'parse')
+ .replace('String(parts.main.data(), parts.main.length)','parts.main');
+const confirmedPrimary=new Function('parse','versionText','artist','confirmed',primaryCode).bind(null,parts.parse,parts.versionText);
+const confirmedGuest=new Function('confirmedPrimaryArtist','parse','artworkArtistsMatch','exactTrackMatch','foundArtist','foundTitle','wantedArtist','wantedTitle',trackCode('static bool confirmedGuestTrackMatch(').replace(/ArtworkTrackParts::parse/g,'parse'))
+ .bind(null,confirmedPrimary,parts.parse,artistsMatch,build('static bool exactTrackMatch('));
+const bioCode=titleBody('std::string_view withoutBiographicalNote(')
+ .replace(/for \(const char\* (\w+) : \{([^}]+)\}\)/g,'for (const $1 of [$2])')
+ .replace('const std::string_view prefix(label);','const prefix=label;').replace('std::string_view name;','let name="";')
+ .replace('char lowerName[96] = {};','const lowerName=Array(96).fill(" ");')
+ .replace(/std::string_view\(lowerName, name.size\(\)\)/g,'lowerName.slice(0,name.length).join("")')
+ .replace(/static_cast<unsigned char>\(c\)/g,'c.charCodeAt(0)')
+ .replace(/const (?:auto|char|size_t|bool) /g,'const ').replace(/\b(?:size_t|bool) /g,'let ')
+ .replace(/for \(char c : name\)/g,'for (const c of name)')
+ .replace(/\.size\(\)/g,'.length').replace(/\.back\(\)/g,'.at(-1)').replace(/([\w.]+)\.empty\(\)/g,'($1.length === 0)')
+ .replace(/text.find_last_of\(open\)/g,'text.lastIndexOf(open)').replace(/std::string_view::npos/g,'-1')
+ .replace(/\('a' - 'A'\)/g,'32').replace(/note\[i\] \+ 32/g,'note[i].toLowerCase()').replace(/name\[i\] \+ 32/g,'name[i].toLowerCase()');
+const withoutBiographicalNote=new Function('trim','splitSubtitle','protectedSubtitle','text',bioCode).bind(null,s=>s.trim(),splitSubtitle,policy.protectedSubtitle);
+module.exports={query,normalizeArtworkText,artistsMatch,prepare,contextual,soundtrack,soundtrackRelease,confirmedPrimary,confirmedGuest,withoutBiographicalNote,exactWithTypos:typo=>build('static bool exactTrackMatch(',artistsMatch,typo),exactWithArtists:matcher=>build('static bool exactTrackMatch(',matcher),exact:build('static bool exactTrackMatch('),subtitle:build('static bool subtitleTrackMatch('),creditTitle:build('static bool artistCreditTitleMatch(')};

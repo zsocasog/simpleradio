@@ -1,0 +1,39 @@
+{
+  "source": "Apple iTunes search and album lookup, 2026-11-14",
+  "lastFmEvidenceSource": "User-provided device log: exact Moby feat. Jennifer Price / In This World match, no album data",
+  "wantedArtist": "MOBY feat. Jennifer Price",
+  "wantedTitle": "In this world",
+  "track": {
+    "wrapperType": "track",
+    "trackId": 1556829494,
+    "artistName": "Moby",
+    "trackName": "In This World",
+    "collectionId": 1556829293,
+    "collectionName": "18 & 18 B-Sides",
+    "primaryGenreName": "Electronic",
+    "releaseDate": "2002-01-01T08:00:00Z",
+    "artworkUrl100": "https://is1-ssl.mzstatic.com/image/thumb/Music211/v4/58/4d/1b/584d1b79-c60a-82a7-b07e-53502c4e137f/5060236631145.jpg/100x100bb.jpg"
+  },
+  "album": {
+    "wrapperType": "collection",
+    "collectionType": "Album",
+    "artistId": 789023,
+    "collectionId": 1556829293,
+    "amgArtistId": 13697,
+    "artistName": "Moby",
+    "collectionName": "18 & 18 B-Sides",
+    "collectionCensoredName": "18 & 18 B-Sides",
+    "artistViewUrl": "https://music.apple.com/us/artist/moby/789023?uo=4",
+    "collectionViewUrl": "https://music.apple.com/us/album/18-18-b-sides/1556829293?uo=4",
+    "artworkUrl60": "https://is1-ssl.mzstatic.com/image/thumb/Music211/v4/58/4d/1b/584d1b79-c60a-82a7-b07e-53502c4e137f/5060236631145.jpg/60x60bb.jpg",
+    "artworkUrl100": "https://is1-ssl.mzstatic.com/image/thumb/Music211/v4/58/4d/1b/584d1b79-c60a-82a7-b07e-53502c4e137f/5060236631145.jpg/100x100bb.jpg",
+    "collectionPrice": 9.99,
+    "collectionExplicitness": "notExplicit",
+    "trackCount": 31,
+    "copyright": "℗ 2002 Little Idiot",
+    "country": "USA",
+    "currency": "USD",
+    "releaseDate": "2002-01-01T00:00:00Z",
+    "primaryGenreName": "Electronic"
+  }
+}
