@@ -121,7 +121,6 @@ void loop() {
     ArtworkCache::instance().loop();
     MqttController::instance().loop();
     InputController::instance().loop();
-    StatusLed::instance().loop();
     if (playerStateDirty) {
       playerStateDirty = false;
       broadcastState();
@@ -131,5 +130,6 @@ void loop() {
     }
   }
   Display::instance().tick();
+  StatusLed::instance().loop();
   vTaskDelay(1);
 }

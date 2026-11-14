@@ -659,7 +659,7 @@
     visible(id("encoderAutoPlayMs").closest("label"), id("encoderAutoPlayStation").checked);
     visible(id("streamRetryMs").closest("label"), id("streamRetryEnabled").checked);
     visible(id("secondEncoderEnabled").closest("label"), !!hardwareCapabilities.encoder2?.available);
-    visible(id("frontLedPanel").querySelector(".settings-fields"), !!hardwareCapabilities.frontRgbLed?.available);
+    visible(id("frontLedPanel").querySelector(".settings-fields"), !!(hardwareCapabilities.frontRgbLed?.runtimeConfig || hardwareCapabilities.frontRgbLed?.available));
     if (U.connectionKind === "mqtt") U.mqttFields.slice(1).forEach(name => visible(id(name).closest("label"), id("mqttEnabled").checked));
   };
   U.configuration = config => {

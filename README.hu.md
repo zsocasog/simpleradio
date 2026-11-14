@@ -19,6 +19,7 @@
 - yoRadio-kompatibilis CSV import/export: teljes listacsere vagy hozzáadás, azonos URL-ek kihagyásával; az állomások továbbra is JSON-ban tárolódnak.
 - Közös LCD/webes témák; élő csúszka-előnézet, mentés az állítás végén.
 - Egy vagy két enkóder, opcionális IR-távirányító és RGB LED.
+- [Weben állítható RGB LED](docs/front-led.hu.md): hagyományos RGB vagy 1–64 WS2812 RGB pixel, külön készenléti fényerővel.
 - Távirányító-sablonok és saját elrendezésszerkesztő, típusonként mentett betanított kódokkal.
 - MQTT discovery és [Home Assistant-kártya](home-assistant/README.md).
 

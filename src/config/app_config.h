@@ -4,6 +4,7 @@
 #include <ArduinoJson.h>
 #include "hardware_config.h"
 #include "ir_remote_policy.h"
+#include "../led/front_led_policy.h"
 
 enum class DisplayClockStyle : uint8_t {
   Digital = 0,
@@ -125,9 +126,17 @@ public:
   uint8_t frontLedBrightness = 128;
   uint8_t frontLedStandbyBrightness = 13;
   String frontLedColor = "#a9f7bf";
+  String frontLedType = FrontLedPolicy::name(FrontLedPolicy::defaultHardware().type);
+  uint8_t frontLedCount = 1;
+  int frontLedDataPin = FrontLedPolicy::defaultHardware().dataPin;
+  int frontLedRedPin = FRONT_RGB_R_PIN, frontLedGreenPin = FRONT_RGB_G_PIN, frontLedBluePin = FRONT_RGB_B_PIN;
+  bool frontLedInverted = FRONT_RGB_INVERTED;
+  String frontLedOrder = "GRB";
+  FrontLedPolicy::Hardware frontLedHardware() const;
 
 private:
   AppConfig() = default;
+  bool readFrontLedHardware(const JsonDocument& doc, FrontLedPolicy::Hardware& hardware) const;
   IrRemotePolicy::Banks irRemoteCodes{};
   void captureIrRemoteCodes(size_t profile);
   void restoreIrRemoteCodes(size_t profile);

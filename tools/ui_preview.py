@@ -35,6 +35,8 @@ CONFIG = dict(displayInvert=False, brightness=230, displayIdleEnabled=True,
     mqttRootTopic='simpleradio', streamRetryEnabled=True, streamRetryMs=5000,
     autoStart=False, volumeCurve='soft', frontLedEnabled=False, frontLedUseTheme=True,
     frontLedBrightness=128, frontLedStandbyBrightness=13, frontLedColor='#a9f7bf',
+    frontLedType='none', frontLedCount=1, frontLedDataPin=48, frontLedRedPin=40,
+    frontLedGreenPin=39, frontLedBluePin=38, frontLedInverted=False, frontLedOrder='GRB',
     hasLastFmApiKey=True, hasSavedLastFmApiKey=False)
 IR_ACTIONS = ['prev','next','toggle','volUp','volDown','mute','power','up','down','left','right','ok','list','back'] + ['digit'+str(i) for i in range(10)] + ['star','hash'] + ['station'+str(i) for i in range(1,6)]
 def ir_key(action): return 'ir'+action[0].upper()+action[1:]
@@ -43,7 +45,7 @@ CONFIG.update({ir_key(action):'0' for action in IR_ACTIONS})
 IR_BANKS = {profile:{ir_key(action):'0' for action in IR_ACTIONS} for profile in ('rcnec21','car21','nav17','custom')}
 HARDWARE = dict(schemaVersion=1, transientPlayerControls=True, encoderCount=1,
     encoder1=dict(available=True, hasButton=True), encoder2=dict(available=False, hasButton=False),
-    frontRgbLed=dict(available=False, type='none'), ir=dict(available=True))
+    frontRgbLed=dict(available=False, runtimeConfig=True, type='none', count=1, dataPin=48, redPin=40, greenPin=39, bluePin=38, inverted=False, order='GRB', maxCount=64, pins=[1,2,4,13,21,38,39,40,41,42,47,48], ready=True, error=''), ir=dict(available=True))
 STATIONS = [dict(id=i+1, name=name, url='https://stream.example/'+str(i), logo=logo) for i,(name,logo) in enumerate([
     ('Danubius','https://danubiusradio.hu/assets/img/front/danubius_radio_album_cover_v2.png'),
     ('BDPST ROCK Rádió (Hi-Fi / Lossless / FLAC)','https://www.bdpstrock.hu/assets/img/front/favicon.ico'),

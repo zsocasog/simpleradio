@@ -83,8 +83,8 @@
 #define RGB_LED_PWM       1
 #define RGB_LED_NEOPIXEL  2
 
-// Set to RGB_LED_PWM for a discrete common-cathode/common-anode RGB LED, or
-// RGB_LED_NEOPIXEL for a single WS2812-style LED.
+// Defaults for older config.json files. The WebUI can now choose the type,
+// approved GPIO pins, pixel count and color order; hardware changes need reboot.
 #define FRONT_RGB_LED_TYPE 0
 
 // PWM RGB LED pins. Only used with RGB_LED_PWM.

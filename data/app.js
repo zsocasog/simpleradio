@@ -2023,7 +2023,8 @@ function syncFrontLedColorText() {
 }
 
 function syncFrontLedControls() {
-  const available = !!hardwareCapabilities.frontRgbLed?.available;
+  const hardware = hardwareCapabilities.frontRgbLed;
+  const available = hardware?.runtimeConfig ? ["pwm", "neopixel"].includes(currentConfig.frontLedType) : !!hardware?.available;
   const enabledToggle = $("frontLedEnabled");
   if (enabledToggle) {
     enabledToggle.disabled = !available;
@@ -2420,6 +2421,7 @@ function applyConfigToUI(config) {
   setConfigValue("frontLedColor", ledColor);
   setConfigValue("frontLedColorText", ledColor);
   syncFrontLedControls();
+  window.SRLedSettings?.configuration(config);
   window.SRUI?.configuration(config);
 }
 
@@ -2437,6 +2439,7 @@ async function loadHardwareCapabilities() {
     console.warn("Hardware capabilities failed", err);
   }
   applyHardwareCapabilitiesToUI();
+  window.SRLedSettings?.hardware(hardwareCapabilities.frontRgbLed);
 }
 
 async function loadDeviceConfig() {

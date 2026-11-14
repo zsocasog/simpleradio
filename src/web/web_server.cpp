@@ -644,9 +644,20 @@ static String hardwareCapabilitiesJson() {
   encoder2["hasButton"] = HardwareCapabilities::encoder2Available && ENC2_SW_PIN >= 0;
 
   JsonObject frontLed = doc["frontRgbLed"].to<JsonObject>();
-  frontLed["available"] = HardwareCapabilities::frontRgbLedAvailable;
-  frontLed["type"] = HardwareCapabilities::frontRgbLedTypeName();
-  frontLed["inverted"] = HardwareCapabilities::frontRgbLedAvailable && FRONT_RGB_INVERTED;
+  const auto& ledHardware = StatusLed::instance().hardware();
+  frontLed["available"] = ledHardware.type != FrontLedPolicy::Type::None && StatusLed::instance().ready();
+  frontLed["runtimeConfig"] = true;
+  frontLed["type"] = FrontLedPolicy::name(ledHardware.type);
+  frontLed["count"] = ledHardware.count;
+  frontLed["dataPin"] = ledHardware.dataPin;
+  frontLed["redPin"] = ledHardware.redPin; frontLed["greenPin"] = ledHardware.greenPin; frontLed["bluePin"] = ledHardware.bluePin;
+  frontLed["inverted"] = ledHardware.inverted;
+  frontLed["order"] = FrontLedPolicy::name(ledHardware.order);
+  frontLed["maxCount"] = FrontLedPolicy::MAX_PIXELS;
+  frontLed["ready"] = StatusLed::instance().ready();
+  frontLed["error"] = StatusLed::instance().error();
+  JsonArray ledPins = frontLed["pins"].to<JsonArray>();
+  for (int pin : FrontLedPolicy::CANDIDATE_PINS) if (FrontLedPolicy::allowedPin(pin)) ledPins.add(pin);
 
   JsonObject ir = doc["ir"].to<JsonObject>();
   ir["available"] = HardwareCapabilities::irAvailable;
@@ -1969,7 +1980,7 @@ static void processSettingsSave() {
       response = "Settings save temporarily unavailable";
     } else if (!AppConfig::instance().applyJson(job->doc)) {
       status = 400;
-      response = "Invalid remote layout or IR profile";
+      response = "Invalid settings, remote layout or LED hardware";
     } else if (!AppConfig::instance().save()) {
       status = 500;
       response = "Failed to save config";
@@ -2855,6 +2866,22 @@ void webServerBegin() {
     setInt("frontLedBrightness");
     setInt("frontLedStandbyBrightness");
     setString("frontLedColor");
+    setString("frontLedType");
+    // Do not turn malformed hardware values such as "2.5" into a valid GPIO.
+    // Leave them as strings so applyJson rejects the whole settings transaction.
+    auto setLedInteger = [&](const char* name) {
+      if (!request->hasParam(name, true)) return;
+      String value = request->getParam(name, true)->value(); value.trim();
+      if (value != String(value.toInt())) doc[name] = value;
+      else doc[name] = value.toInt();
+    };
+    for (const char* name : {"frontLedCount", "frontLedDataPin", "frontLedRedPin", "frontLedGreenPin", "frontLedBluePin"}) setLedInteger(name);
+    if (request->hasParam("frontLedInverted", true)) {
+      const String value = request->getParam("frontLedInverted", true)->value();
+      if (value == "0" || value == "1") doc["frontLedInverted"] = value == "1";
+      else doc["frontLedInverted"] = value;
+    }
+    setString("frontLedOrder");
 
     if (!queueSettingsSave(request, job.get())) {
       request->send(503, "text/plain", "Failed to save config");
@@ -2877,6 +2904,7 @@ void webServerBegin() {
       {"/index.html", "text/html"}, {"/wifi.html", "text/html"},
       {"/app.js", "application/javascript"}, {"/ui.js", "application/javascript"},
       {"/station-playlist.js", "application/javascript"},
+      {"/led-settings.js", "application/javascript"},
       {"/wifi.js", "application/javascript"}, {"/ir-profiles.js", "application/javascript"},
       {"/ir-editor.js", "application/javascript"}, {"/i18n-catalog.js", "application/javascript"},
       {"/i18n.js", "application/javascript"}, {"/style.css", "text/css"},

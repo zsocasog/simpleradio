@@ -184,6 +184,15 @@ void AppConfig::load() {
   }
   // applyJson also enforces the compiled hardware profile. Run it for an empty
   // document too, so first boot cannot expose impossible default states.
+  FrontLedPolicy::Hardware savedLed;
+  if (!readFrontLedHardware(doc, savedLed)) {
+    // A changed hardware profile must not discard otherwise valid settings.
+    for (const char* key : {"frontLedType", "frontLedCount", "frontLedDataPin", "frontLedRedPin",
+                           "frontLedGreenPin", "frontLedBluePin", "frontLedInverted", "frontLedOrder"}) doc.remove(key);
+    frontLedType = "none"; frontLedDataPin = frontLedRedPin = frontLedGreenPin = frontLedBluePin = -1;
+    doc["frontLedEnabled"] = false;
+    Serial.println("[led] saved hardware invalid; LED disabled, other settings preserved");
+  }
   if (!applyJson(doc)) {
     // A damaged optional layout must not discard WiFi-independent settings or
     // the previously taught legacy IR codes.
@@ -284,6 +293,14 @@ bool AppConfig::save() {
   doc["frontLedBrightness"] = frontLedBrightness;
   doc["frontLedStandbyBrightness"] = frontLedStandbyBrightness;
   doc["frontLedColor"] = frontLedColor;
+  doc["frontLedType"] = frontLedType;
+  doc["frontLedCount"] = frontLedCount;
+  doc["frontLedDataPin"] = frontLedDataPin;
+  doc["frontLedRedPin"] = frontLedRedPin;
+  doc["frontLedGreenPin"] = frontLedGreenPin;
+  doc["frontLedBluePin"] = frontLedBluePin;
+  doc["frontLedInverted"] = frontLedInverted;
+  doc["frontLedOrder"] = frontLedOrder;
 
   if (doc.overflowed()) return false; // Never replace settings with a partial document.
   return writeJsonAtomic(CONFIG_FILE, doc, true);
@@ -374,13 +391,56 @@ String AppConfig::toJson() const {
   doc["frontLedBrightness"] = frontLedBrightness;
   doc["frontLedStandbyBrightness"] = frontLedStandbyBrightness;
   doc["frontLedColor"] = frontLedColor;
+  doc["frontLedType"] = frontLedType;
+  doc["frontLedCount"] = frontLedCount;
+  doc["frontLedDataPin"] = frontLedDataPin;
+  doc["frontLedRedPin"] = frontLedRedPin;
+  doc["frontLedGreenPin"] = frontLedGreenPin;
+  doc["frontLedBluePin"] = frontLedBluePin;
+  doc["frontLedInverted"] = frontLedInverted;
+  doc["frontLedOrder"] = frontLedOrder;
 
   String out;
   serializeJson(doc, out);
   return out;
 }
 
+FrontLedPolicy::Hardware AppConfig::frontLedHardware() const {
+  FrontLedPolicy::Hardware hw;
+  hw.type = FrontLedPolicy::parseType(frontLedType.c_str()); hw.count = frontLedCount;
+  hw.dataPin = frontLedDataPin; hw.redPin = frontLedRedPin; hw.greenPin = frontLedGreenPin; hw.bluePin = frontLedBluePin;
+  hw.inverted = frontLedInverted; hw.order = FrontLedPolicy::parseOrder(frontLedOrder.c_str());
+  return hw;
+}
+
+bool AppConfig::readFrontLedHardware(const JsonDocument& doc, FrontLedPolicy::Hardware& hw) const {
+  hw = frontLedHardware();
+  if (!doc["frontLedType"].isUnbound()) {
+    if (!doc["frontLedType"].is<const char*>()) return false;
+    hw.type = FrontLedPolicy::parseType(doc["frontLedType"].as<const char*>());
+  }
+  if (!doc["frontLedOrder"].isUnbound()) {
+    if (!doc["frontLedOrder"].is<const char*>()) return false;
+    hw.order = FrontLedPolicy::parseOrder(doc["frontLedOrder"].as<const char*>());
+  }
+  auto integer = [&](const char* key, int& field) {
+    if (doc[key].isUnbound()) return true;
+    if (!doc[key].is<int>()) return false;
+    field = doc[key].as<int>(); return true;
+  };
+  if (!integer("frontLedCount", hw.count) || !integer("frontLedDataPin", hw.dataPin) ||
+      !integer("frontLedRedPin", hw.redPin) || !integer("frontLedGreenPin", hw.greenPin) ||
+      !integer("frontLedBluePin", hw.bluePin)) return false;
+  if (!doc["frontLedInverted"].isUnbound()) {
+    if (!doc["frontLedInverted"].is<bool>()) return false;
+    hw.inverted = doc["frontLedInverted"].as<bool>();
+  }
+  return FrontLedPolicy::valid(hw);
+}
+
 bool AppConfig::applyJson(const JsonDocument& doc) {
+  FrontLedPolicy::Hardware ledHardware;
+  if (!readFrontLedHardware(doc, ledHardware)) return false;
   IrLayoutAllocator codeAllocator;
   JsonDocument incomingCodes(&codeAllocator);
   String custom;
@@ -548,7 +608,10 @@ bool AppConfig::applyJson(const JsonDocument& doc) {
   if (!HardwareCapabilities::encoder2Available) secondEncoderEnabled = false;
   if (!encoderEnabled) secondEncoderEnabled = false;
   encoderMode = secondEncoderEnabled ? "dual_volume_station" : "single_volume_picker";
-  if (!HardwareCapabilities::frontRgbLedAvailable) frontLedEnabled = false;
+  frontLedType = FrontLedPolicy::name(ledHardware.type); frontLedCount = ledHardware.count;
+  frontLedDataPin = ledHardware.dataPin; frontLedRedPin = ledHardware.redPin;
+  frontLedGreenPin = ledHardware.greenPin; frontLedBluePin = ledHardware.bluePin;
+  frontLedInverted = ledHardware.inverted; frontLedOrder = FrontLedPolicy::name(ledHardware.order);
 
   return true;
 }

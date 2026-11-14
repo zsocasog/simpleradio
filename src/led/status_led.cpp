@@ -1,6 +1,7 @@
 #include "status_led.h"
 
 #include <Arduino.h>
+#include <esp_heap_caps.h>
 #include "../config/app_config.h"
 #include "../config/hardware_config.h"
 
@@ -53,6 +54,7 @@ StatusLed& StatusLed::instance() {
 }
 
 void StatusLed::begin() {
+  activeHardware = AppConfig::instance().frontLedHardware();
   disableBoardLed();
   configureFrontLed();
   applyConfig();
@@ -60,49 +62,100 @@ void StatusLed::begin() {
 
 void StatusLed::disableBoardLed() {
 #if DISABLE_BOARD_RGB_LED && BOARD_RGB_LED_PIN >= 0
+  if (FrontLedPolicy::primaryPin(BOARD_RGB_LED_PIN)) return;
   rgbLedWrite(BOARD_RGB_LED_PIN, 0, 0, 0);
   pinMode(BOARD_RGB_LED_PIN, OUTPUT);
   digitalWrite(BOARD_RGB_LED_PIN, LOW);
 #endif
 }
 
+void StatusLed::fail(const char* reason) {
+  configured = false; errorCode = reason;
+  Serial.printf("[led] disabled: %s; radio continues without LED output\n", reason);
+}
+
+void StatusLed::parkPwmPins() {
+  // Reset leaves some pins as inputs/JTAG. A connected RGB LED must not
+  // depend on their floating level, including when its saved type is "none".
+  for (int pin : {activeHardware.redPin, activeHardware.greenPin, activeHardware.bluePin}) {
+    if (!FrontLedPolicy::allowedPin(pin)) continue;
+    pinMode(pin, OUTPUT);
+    digitalWrite(pin, activeHardware.inverted ? HIGH : LOW);
+  }
+}
+
 void StatusLed::configureFrontLed() {
-#if FRONT_RGB_LED_TYPE == RGB_LED_PWM
-  if (FRONT_RGB_R_PIN >= 0) ledcAttach(FRONT_RGB_R_PIN, 5000, 8);
-  if (FRONT_RGB_G_PIN >= 0) ledcAttach(FRONT_RGB_G_PIN, 5000, 8);
-  if (FRONT_RGB_B_PIN >= 0) ledcAttach(FRONT_RGB_B_PIN, 5000, 8);
-  configured = FRONT_RGB_R_PIN >= 0 ||
-               FRONT_RGB_G_PIN >= 0 ||
-               FRONT_RGB_B_PIN >= 0;
-#elif FRONT_RGB_LED_TYPE == RGB_LED_NEOPIXEL
-  configured = FRONT_RGB_DATA_PIN >= 0;
-#else
-  configured = false;
-#endif
+  using namespace FrontLedPolicy;
+  if (!valid(activeHardware)) { fail("invalid-hardware"); return; }
+  if (activeHardware.type == Type::None) { parkPwmPins(); return; }
+  if (activeHardware.type == Type::Pwm) {
+    const int pins[] = {activeHardware.redPin, activeHardware.greenPin, activeHardware.bluePin};
+    int attached = 0;
+    for (int pin : pins) {
+      // Set the inactive level before attaching PWM, including common-anode LEDs.
+      pinMode(pin, OUTPUT); digitalWrite(pin, activeHardware.inverted ? HIGH : LOW);
+      if (!ledcAttach(pin, 5000, 8)) {
+        for (int i = 0; i < attached; ++i) { ledcDetach(pins[i]); pinMode(pins[i], OUTPUT); digitalWrite(pins[i], activeHardware.inverted ? HIGH : LOW); }
+        fail("pwm-unavailable"); return;
+      }
+      ledcWrite(pin, pwm(0, activeHardware.inverted)); ++attached;
+    }
+    configured = true; return;
+  }
+  const size_t bytes = symbols(activeHardware.count) * sizeof(rmt_data_t);
+  // RMT's interrupt encoder must never read PSRAM while the flash cache is off.
+  // Allocate once at boot, before audio starts; no LED task or per-frame heap.
+  pixelSymbols = static_cast<rmt_data_t*>(heap_caps_calloc(1, bytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+  if (!pixelSymbols) { fail("memory"); return; }
+  pinMode(activeHardware.dataPin, OUTPUT); digitalWrite(activeHardware.dataPin, LOW);
+  if (!rmtInit(activeHardware.dataPin, RMT_TX_MODE, RMT_MEM_NUM_BLOCKS_1, 10000000)) {
+    free(pixelSymbols); pixelSymbols = nullptr; fail("rmt-unavailable"); return;
+  }
+  rmtSetEOT(activeHardware.dataPin, LOW);
+  configured = true;
 }
 
 void StatusLed::writePwmPin(int pin, uint8_t value) {
-  if (pin < 0) return;
-#if FRONT_RGB_INVERTED
-  value = 255 - value;
-#endif
-  ledcWrite(pin, value);
+  ledcWrite(pin, FrontLedPolicy::pwm(value, activeHardware.inverted));
 }
 
 void StatusLed::writeFrontLed(uint8_t r, uint8_t g, uint8_t b) {
   if (!configured) return;
+  red = r; green = g; blue = b;
+  dirty = !sentOnce || red != sentRed || green != sentGreen || blue != sentBlue;
+}
 
-#if FRONT_RGB_LED_TYPE == RGB_LED_PWM
-  writePwmPin(FRONT_RGB_R_PIN, r);
-  writePwmPin(FRONT_RGB_G_PIN, g);
-  writePwmPin(FRONT_RGB_B_PIN, b);
-#elif FRONT_RGB_LED_TYPE == RGB_LED_NEOPIXEL
-  rgbLedWrite(FRONT_RGB_DATA_PIN, r, g, b);
-#else
-  (void)r;
-  (void)g;
-  (void)b;
-#endif
+void StatusLed::flush() {
+  using namespace FrontLedPolicy;
+  if (!configured) return;
+  if (activeHardware.type == Type::NeoPixel && transfer.inFlight) {
+    const bool completed = rmtTransmitCompleted(activeHardware.dataPin);
+    if (transfer.stalled(completed, micros())) { fail("rmt-timeout"); return; }
+    if (!transfer.ready(completed)) return; // The encoder still owns pixelSymbols.
+    transfer.inFlight = false;
+  }
+  if (!dirty) return;
+  if (activeHardware.type == Type::Pwm) {
+    writePwmPin(activeHardware.redPin, red); writePwmPin(activeHardware.greenPin, green); writePwmPin(activeHardware.bluePin, blue);
+  } else {
+    const auto colors = ordered(activeHardware.order, red, green, blue);
+    unsigned index = 0;
+    for (int pixel = 0; pixel < activeHardware.count; ++pixel) for (uint8_t color : colors) for (int bit = 7; bit >= 0; --bit) {
+      const bool one = color & (1U << bit);
+      auto& symbol = pixelSymbols[index++];
+      symbol.level0 = 1; symbol.duration0 = highTicks(one);
+      symbol.level1 = 0; symbol.duration1 = lowTicks(one);
+    }
+    auto& latch = pixelSymbols[index++];
+    latch.level0 = 0; latch.duration0 = 3000; latch.level1 = 0; latch.duration1 = 1;
+    if (!rmtWriteAsync(activeHardware.dataPin, pixelSymbols, index)) {
+      if (++failures >= 3) fail("rmt-write");
+      return;
+    }
+    transfer.started(micros());
+  }
+  failures = 0; sentOnce = true; dirty = false;
+  sentRed = red; sentGreen = green; sentBlue = blue;
 }
 
 void StatusLed::applyConfig() {
@@ -144,6 +197,7 @@ void StatusLed::setDisplayBacklight(uint8_t brightness, bool standby, bool scree
 }
 
 void StatusLed::loop() {
+  flush();
   if (!configured || millis() - lastCheckMs < 250) return;
   lastCheckMs = millis();
 

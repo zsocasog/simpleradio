@@ -4,9 +4,9 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>SimpleRadio</title>
-  <link rel="icon" type="image/svg+xml" sizes="any" href="favicon.svg?v=1.3.14&amp;ui=1759479bfb23">
-  <link rel="stylesheet" href="style.css?v=1.3.14&amp;ui=1759479bfb23">
-  <link rel="stylesheet" href="ui.css?v=1.3.14&amp;ui=1759479bfb23">
+  <link rel="icon" type="image/svg+xml" sizes="any" href="favicon.svg?v=1.3.14&amp;ui=6da5c4de7a8a">
+  <link rel="stylesheet" href="style.css?v=1.3.14&amp;ui=6da5c4de7a8a">
+  <link rel="stylesheet" href="ui.css?v=1.3.14&amp;ui=6da5c4de7a8a">
 </head>
 <body>
   <div class="app-shell">
@@ -631,6 +631,23 @@
                   <span id="frontLedHardwareBadge" class="hardware-badge">Betöltés...</span>
                 </header>
                 <div id="frontLedHardwareNotice" class="hardware-notice hidden"></div>
+                <div id="frontLedSetup" class="led-hardware-setup hidden">
+                  <p class="form-note" data-i18n="led.setupHelp">A bekötést és a LED típusát itt állíthatod be. A hardverváltozások újraindítás után lépnek életbe.</p>
+                  <div class="settings-fields">
+                    <label class="setting-row"><span data-i18n="led.type">LED típusa</span><select id="frontLedType"><option value="none" data-i18n="led.none">Nincs LED</option><option value="pwm" data-i18n="led.pwm">Hagyományos RGB</option><option value="neopixel" data-i18n="led.neopixel">WS2812 / WS2812B RGB</option></select></label>
+                    <label class="setting-row" data-led-type="neopixel"><span data-i18n="led.count">LED-ek száma</span><input id="frontLedCount" type="number" min="1" max="64" step="1" value="1"></label>
+                    <label class="setting-row" data-led-type="neopixel"><span data-i18n="led.dataPin">Adat GPIO</span><select id="frontLedDataPin"></select></label>
+                    <label class="setting-row" data-led-type="neopixel"><span data-i18n="led.order">Színsorrend</span><select id="frontLedOrder"><option>GRB</option><option>RGB</option><option>RBG</option><option>GBR</option><option>BRG</option><option>BGR</option></select></label>
+                    <label class="setting-row" data-led-type="pwm"><span data-i18n="led.redPin">Piros GPIO</span><select id="frontLedRedPin"></select></label>
+                    <label class="setting-row" data-led-type="pwm"><span data-i18n="led.greenPin">Zöld GPIO</span><select id="frontLedGreenPin"></select></label>
+                    <label class="setting-row" data-led-type="pwm"><span data-i18n="led.bluePin">Kék GPIO</span><select id="frontLedBluePin"></select></label>
+                    <label class="setting-row" data-led-type="pwm"><span data-i18n="led.polarity">RGB bekötés</span><select id="frontLedInverted"><option value="0" data-i18n="led.cathode">Közös katód</option><option value="1" data-i18n="led.anode">Közös anód</option></select></label>
+                  </div>
+                  <div class="led-setup-actions"><button id="saveLedHardware" type="button" data-i18n="led.save">LED hardver mentése</button><button id="cancelLedHardware" type="button" class="quiet-button" data-i18n="led.cancel">Mégse</button></div>
+                  <p id="frontLedSetupStatus" class="form-note" role="status" aria-live="polite"></p>
+                  <button id="rebootLedHardware" type="button" class="quiet-button hidden" data-i18n="led.restart">Újraindítás az alkalmazáshoz</button>
+                  <p class="form-note" data-i18n="led.powerHelp">A GPIO vezérlőjel. A LED-eknek megfelelő tápellátás és közös föld szükséges; a WS2812 szalag nem RGBW.</p>
+                </div>
                 <div class="settings-fields">
                   <label class="setting-row setting-toggle"><span class="setting-copy"><strong>LED használata</strong></span><span class="toggle-switch"><input id="frontLedEnabled" type="checkbox" onchange="syncFrontLedControls(); saveConfigNow()"><span></span></span></label>
                   <label class="setting-row setting-toggle"><span class="setting-copy"><strong>Téma színének követése</strong></span><span class="toggle-switch"><input id="frontLedUseTheme" type="checkbox" onchange="syncFrontLedControls(); saveConfigNow()"><span></span></span></label>
@@ -672,12 +689,13 @@
       <span id="footerVersion">v-</span>
     </footer>
   </div>
-  <script src="i18n-catalog.js?v=1.3.14&amp;ui=1759479bfb23"></script>
-  <script src="i18n.js?v=1.3.14&amp;ui=1759479bfb23"></script>
-  <script src="ir-profiles.js?v=1.3.14&amp;ui=1759479bfb23"></script>
-  <script src="ir-editor.js?v=1.3.14&amp;ui=1759479bfb23"></script>
-  <script src="station-playlist.js?v=1.3.14&amp;ui=1759479bfb23"></script>
-  <script src="ui.js?v=1.3.14&amp;ui=1759479bfb23"></script>
-  <script src="app.js?v=1.3.14&amp;ui=1759479bfb23"></script>
+  <script src="i18n-catalog.js?v=1.3.14&amp;ui=6da5c4de7a8a"></script>
+  <script src="i18n.js?v=1.3.14&amp;ui=6da5c4de7a8a"></script>
+  <script src="ir-profiles.js?v=1.3.14&amp;ui=6da5c4de7a8a"></script>
+  <script src="ir-editor.js?v=1.3.14&amp;ui=6da5c4de7a8a"></script>
+  <script src="station-playlist.js?v=1.3.14&amp;ui=6da5c4de7a8a"></script>
+  <script src="led-settings.js?v=1.3.14&amp;ui=6da5c4de7a8a"></script>
+  <script src="ui.js?v=1.3.14&amp;ui=6da5c4de7a8a"></script>
+  <script src="app.js?v=1.3.14&amp;ui=6da5c4de7a8a"></script>
 </body>
 </html>

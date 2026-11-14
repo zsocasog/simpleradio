@@ -19,6 +19,7 @@
 - yoRadio-compatible CSV import/export: replace the list or append while skipping duplicate URLs; stations remain stored as JSON.
 - Shared LCD/web themes; live slider previews, saved when adjustment ends.
 - One or two rotary encoders, optional IR remote and RGB LED.
+- Web-configurable RGB lighting: standard RGB LED or 1–64 WS2812 RGB pixels, with separate standby brightness.
 - IR remote templates and a custom layout editor, with separately saved learned codes.
 - MQTT discovery and a [Home Assistant card](home-assistant/README.md).
 
