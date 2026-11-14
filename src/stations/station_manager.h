@@ -10,6 +10,14 @@ struct Station {
   String logo;
 };
 
+enum class StationImportStatus { Ok, Invalid, Conflict, Limit, Busy, Memory, WriteFailed };
+struct StationImportResult {
+  size_t added = 0;
+  size_t skipped = 0;
+  size_t total = 0;
+  uint32_t revision = 0;
+};
+
 class StationManager {
 public:
   static StationManager& instance();
@@ -17,7 +25,9 @@ public:
   bool begin();
   bool getStation(int id, Station& out) const;
   bool matchesStation(int id, const String& name, const String& url, const String& logo) const;
-  void toJson(JsonArray arr) const;
+  void toJson(JsonArray arr, uint32_t* revision = nullptr) const;
+  StationImportStatus importStations(JsonArrayConst incoming, bool replace, uint32_t expectedRevision,
+                                    StationImportResult& result);
   bool saveStation(int id, const String& name, const String& url, const String& logo, int& outId);
   bool deleteStation(int id);
   bool moveStation(int id, int direction);

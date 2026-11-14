@@ -1,5 +1,30 @@
 /* Unified layout. Colors remain firmware-backed theme variables set by app.js. */
 [hidden], .hidden { display: none !important; }
+.playlist-tools { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+.playlist-tools h3, .playlist-tools p { margin: 0; }
+.playlist-export { padding-bottom: 22px; border-bottom: 1px solid var(--line); display: grid; gap: 12px; }
+.playlist-export button { justify-self: start; }
+.playlist-modes { border: 0; padding: 0; margin: 0; display: grid; gap: 10px; min-width: 0; }
+.playlist-modes legend { margin-bottom: 10px; }
+.playlist-mode { display: flex; align-items: flex-start; gap: 12px; border: 1px solid var(--line); border-radius: 8px; padding: 12px; cursor: pointer; }
+.playlist-mode input { flex: 0 0 18px; width: 18px; min-height: 20px; margin-top: 2px; accent-color: var(--accent); }
+.playlist-mode span { display: grid; gap: 4px; min-width: 0; }
+.playlist-mode strong { font-size: 15px; color: var(--text); }
+.playlist-mode small { font-size: 13px; line-height: 1.5; }
+.playlist-mode:has(input:checked) { border-color: var(--accent); background: rgba(var(--accent-rgb), .05); }
+.playlist-warning, .playlist-errors, .playlist-status.is-error { color: #f2ad82; }
+.playlist-errors { margin: 0; padding-left: 22px; }
+.playlist-preview { max-height: 300px; overflow: auto; min-width: 0; flex-shrink: 0; border-block: 1px solid var(--line); }
+.playlist-preview:empty, .playlist-errors:empty { display: none; }
+.playlist-preview table { width: 100%; border-collapse: collapse; table-layout: fixed; font-size: 14px; }
+.playlist-preview th, .playlist-preview td { text-align: left; padding: 10px 6px; border-bottom: 1px solid var(--line); overflow-wrap: anywhere; }
+.playlist-preview th:first-child { width: 30px; }
+.playlist-preview th:nth-child(2) { width: 37%; }
+.playlist-url { color: var(--muted); }
+.playlist-tools input[type=file] { width: 100%; max-width: 100%; min-width: 0; }
+.playlist-status { min-height: 1.6em; color: var(--accent); }
+.playlist-actions { position: sticky; bottom: 0; z-index: 1; background: var(--chrome); padding-block: 10px; }
+.playlist-tools input[type=file]::file-selector-button { border: 1px solid var(--line); border-radius: 6px; background: transparent; color: var(--text); min-height: 32px; margin-right: 10px; cursor: pointer; }
 html { scrollbar-gutter: stable; }
 body { background: var(--bg); font-size: 17px; }
 .app-shell { min-height: 100vh; display: flex; flex-direction: column; }

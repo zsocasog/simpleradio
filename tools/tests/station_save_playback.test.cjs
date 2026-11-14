@@ -123,7 +123,7 @@ function workerHarness() {
   });
   let worker = plain(body(web, 'stationSaveTask'))
     .replace('auto* job = static_cast<StationSaveJob*>(parameter);', 'const job = parameter;')
-    .replace('job.outId);', 'job);').replace('(*job)', '(job)').replace(/::/g, '.');
+    .replace('job.outId);', 'job);').replaceAll('(*job)', '(job)').replace(/::/g, '.');
   const start = plain(body(web, 'startStationSaveJob')).replace(/delete job;/g, 'dispose(job);').replace(/\[\]\(\)/g,'()=>').replace(/::/g,'.');
   const dispatch = plain(body(web, 'dispatchPendingStationSave'))
     .replace('StationSaveJob* job = null;', 'let job = null;')

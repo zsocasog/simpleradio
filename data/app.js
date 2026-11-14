@@ -3,6 +3,7 @@ let wsReconnectTimer;
 let wsHeartbeatTimer;
 let lastWsMessageAt = 0;
 let stations = [];
+let stationListRevision = 0;
 let currentStationId = -1;
 let playing = false;
 let renderedStationId = null;
@@ -423,6 +424,8 @@ function connectWS() {
       const payload = JSON.parse(event.data);
       if (payload && payload.pong) return;
       if (payload && payload.stationArtworkReady) refreshMissingStationArtwork();
+      if (payload && payload.stationsChanged && Number(payload.stationsRevision) !== stationListRevision)
+        loadStations().catch(error => console.warn("Station list refresh failed", error));
       updateUI(payload);
     } catch (err) {
       console.warn("Bad websocket payload", err);
@@ -2442,9 +2445,11 @@ async function loadDeviceConfig() {
 }
 
 async function loadStations() {
-  const response = await fetch("/api/stations");
+  const response = await fetch("/api/stations", { cache: "no-store" });
+  if (!response.ok) throw Error("Station list unavailable");
   const data = await response.json();
   stations = data.stations || [];
+  stationListRevision = Number(data.revision) || 0;
   renderStations(true);
   setTimeout(repairMissingStationLogos, 1500);
 }

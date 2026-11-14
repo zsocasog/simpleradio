@@ -16,6 +16,7 @@
 - LCD-lejátszó állomáslogóval vagy albumborítóval, előadóval és számcímmel.
 - Gyors, kis logós állomásválasztó; VU, 24 sávos FFT-spektrum és készenléti órák.
 - Mobilon is használható webfelület: lejátszás, állomáskeresés, EQ, balansz és kijelzőbeállítások.
+- yoRadio-kompatibilis CSV import/export: teljes listacsere vagy hozzáadás, azonos URL-ek kihagyásával; az állomások továbbra is JSON-ban tárolódnak.
 - Közös LCD/webes témák; élő csúszka-előnézet, mentés az állítás végén.
 - Egy vagy két enkóder, opcionális IR-távirányító és RGB LED.
 - Távirányító-sablonok és saját elrendezésszerkesztő, típusonként mentett betanított kódokkal.

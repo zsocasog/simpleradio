@@ -16,6 +16,7 @@
 - LCD player with station logos or album covers, artist and track title.
 - Fast station picker with small logos; VU meters, 24-band FFT spectrum and idle clocks.
 - Mobile-friendly web UI: playback, station search, EQ, balance and display settings.
+- yoRadio-compatible CSV import/export: replace the list or append while skipping duplicate URLs; stations remain stored as JSON.
 - Shared LCD/web themes; live slider previews, saved when adjustment ends.
 - One or two rotary encoders, optional IR remote and RGB LED.
 - IR remote templates and a custom layout editor, with separately saved learned codes.

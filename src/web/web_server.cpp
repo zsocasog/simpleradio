@@ -21,6 +21,7 @@
 #include "../config/app_config.h"
 #include "../config/hardware_capabilities.h"
 #include "../stations/station_manager.h"
+#include "../stations/station_import_policy.h"
 #include "../artwork/artwork_cache.h"
 #include "../artwork/album_art_store.h"
 #include "../artwork/artwork_memory_gate.h"
@@ -1214,6 +1215,8 @@ struct StationSaveJob {
   int errorStatus = 500;
   bool prepareLogo = true;
   StationLogoUploadBuffer* upload = nullptr;
+  StationLogoUploadBuffer* importData = nullptr;
+  StationImportResult importResult;
   String error;
   uint32_t elapsedMs = 0;
 #if SIMPLE_RADIO_RUNTIME_DIAGNOSTICS
@@ -1221,6 +1224,7 @@ struct StationSaveJob {
 #endif
   ~StationSaveJob() {
     free(upload);
+    free(importData);
     if (memoryClaimed) ArtworkMemory::gate().endStationSave();
     if (httpTxHeld) AsyncWebServerRequest::releaseResponseTx();
     if (imagesHeld) --stationSaveImageHolds;
@@ -1315,6 +1319,30 @@ static bool storeStationLogo(StationSaveJob& job) {
   return true;
 }
 
+static bool storeStationImport(StationSaveJob& job) {
+  ArtworkJson::Allocator allocator;
+  JsonDocument input(&allocator);
+  const auto error = deserializeJson(input, static_cast<const uint8_t*>(job.importData->bytes), job.importData->size);
+  if (error || input.overflowed() || !input["mode"].is<const char*>() ||
+      !input["revision"].is<uint32_t>() || !input["stations"].is<JsonArray>()) {
+    job.errorStatus = 400; job.error = "invalid"; return false;
+  }
+  const String mode = input["mode"] | "";
+  if (mode != "append" && mode != "replace") { job.errorStatus = 400; job.error = "invalid"; return false; }
+  const auto result = StationManager::instance().importStations(input["stations"].as<JsonArrayConst>(), mode == "replace",
+                                                              input["revision"].as<uint32_t>(), job.importResult);
+  switch (result) {
+    case StationImportStatus::Ok: return true;
+    case StationImportStatus::Invalid: job.errorStatus = 400; job.error = "invalid"; break;
+    case StationImportStatus::Conflict: job.errorStatus = 409; job.error = "conflict"; break;
+    case StationImportStatus::Limit: job.errorStatus = 413; job.error = "limit"; break;
+    case StationImportStatus::Busy: job.errorStatus = 503; job.error = "busy"; break;
+    case StationImportStatus::Memory: job.errorStatus = 503; job.error = "memory"; break;
+    case StationImportStatus::WriteFailed: job.errorStatus = 500; job.error = "write"; break;
+  }
+  return false;
+}
+
 static void stationSaveTask(void* parameter) {
   auto* job = static_cast<StationSaveJob*>(parameter);
   const uint32_t startedMs = millis();
@@ -1325,6 +1353,7 @@ static void stationSaveTask(void* parameter) {
   // writing has begun, finish the atomic commit even if the browser goes away.
   if (!job->request.expired()) {
     if (job->upload) job->saved = storeStationLogo(*job);
+    else if (job->importData) job->saved = storeStationImport(*job);
     else job->saved = StationManager::instance().saveStation(job->id, job->name, job->url, job->logo, job->outId);
   }
   job->elapsedMs = millis() - startedMs;
@@ -1382,8 +1411,9 @@ static void startStationSaveJob(AsyncWebServerRequest* request, StationSaveJob* 
   }
   portEXIT_CRITICAL(&stationSaveMux);
   if (!admitted) {
+    const bool importing = job->importData != nullptr;
     delete job;
-    request->send(503, "text/plain", "Another station save is in progress");
+    request->send(503, "text/plain", importing ? "busy" : "Another station save is in progress");
     return;
   }
   // Let already active images finish, but reserve the next free internal
@@ -1413,7 +1443,7 @@ static void dispatchPendingStationSave() {
   }
   // A published station is already durable. Rebinding an unchanged logo must
   // not borrow another internal task stack or rewrite the flash snapshot.
-  if (!job->upload && StationManager::instance().matchesStation(job->id, job->name, job->url, job->logo)) {
+  if (!job->upload && !job->importData && StationManager::instance().matchesStation(job->id, job->name, job->url, job->logo)) {
     job->outId = job->id;
     job->saved = true;
     job->done = true;
@@ -1601,6 +1631,30 @@ static void processStoredFileRead() {
   }
 }
 
+static void reconcileStationImport(const StationImportResult& result) {
+  const auto state = PlayerState::instance().snapshot();
+  Station current;
+  if (StationManager::instance().getStation(state.stationId, current)) {
+    queueLoadStation(current.id, current.url != state.streamUrl);
+  } else {
+    int first = -1;
+    if (StationManager::instance().stationIdAtIndex(0, first)) {
+      JsonDocument command;
+      command["station"] = first; command["play"] = false;
+      PlayerState::instance().applyCommand(command);
+    } else PlayerState::instance().clearStation();
+    scheduleStateSave();
+    broadcastState(true);
+  }
+  // Full ordinary state keeps older web clients compatible with this signal.
+  String message = PlayerState::instance().toJson();
+  if (message.endsWith("}")) {
+    message.remove(message.length() - 1);
+    message += ",\"stationsChanged\":true,\"stationsRevision\":" + String(result.revision) + "}";
+    ws.textAll(message);
+  }
+}
+
 static void completeStationSave() {
   StationSaveJob* completed = nullptr;
   portENTER_CRITICAL(&stationSaveMux);
@@ -1616,11 +1670,12 @@ static void completeStationSave() {
 #endif
   if (job->saved) {
     if (job->prepareLogo && job->logo.length()) ArtworkCache::instance().requestPrewarm(job->logo, true);
-    if (!job->upload) {
+    if (job->importData) reconcileStationImport(job->importResult);
+    else if (!job->upload) {
       const auto state = PlayerState::instance().snapshot();
       if (state.stationId == job->outId) queueLoadStation(job->outId, state.streamUrl != job->url);
     }
-    Serial.printf("[stations] %s saved #%d in %lums\n", job->upload ? "logo" : "station",
+    Serial.printf("[stations] %s saved #%d in %lums\n", job->importData ? "import" : job->upload ? "logo" : "station",
                   job->upload ? job->id : job->outId, static_cast<unsigned long>(job->elapsedMs));
   }
   auto request = job->request.lock();
@@ -1628,7 +1683,12 @@ static void completeStationSave() {
     if (job->saved) {
       ArtworkJson::Allocator jsonAllocator;
       JsonDocument doc(&jsonAllocator);
-      if (job->upload) doc["path"] = job->logo;
+      if (job->importData) {
+        doc["added"] = job->importResult.added;
+        doc["skipped"] = job->importResult.skipped;
+        doc["total"] = job->importResult.total;
+        doc["revision"] = job->importResult.revision;
+      } else if (job->upload) doc["path"] = job->logo;
       else doc["id"] = job->outId;
       String out;
       serializeJson(doc, out);
@@ -1652,6 +1712,58 @@ static void releaseStationLogoUpload(uint32_t token) {
   portENTER_CRITICAL(&stationSaveMux);
   if (activeStationLogoUpload == token) activeStationLogoUpload = 0;
   portEXIT_CRITICAL(&stationSaveMux);
+}
+
+static void receiveStationImport(AsyncWebServerRequest* request, uint8_t* data, size_t len,
+                                 size_t index, size_t total) {
+  if (request->hasAttribute("error")) return;
+  if (!index) {
+    if (total < 2 || !request->contentType().startsWith("application/json")) {
+      request->setAttribute("error", "invalid"); return;
+    }
+    if (total > StationImportPolicy::MAX_BYTES) {
+      request->setAttribute("error", "limit"); request->setAttribute("importStatus", "413"); return;
+    }
+    uint32_t token = 0;
+    portENTER_CRITICAL(&stationSaveMux);
+    if (!activeStationLogoUpload && !pendingStationSave && !otaUploadActive && !rebootPending) {
+      if (++stationLogoUploadSequence == 0) ++stationLogoUploadSequence;
+      activeStationLogoUpload = token = stationLogoUploadSequence;
+    }
+    portEXIT_CRITICAL(&stationSaveMux);
+    if (!token) { request->setAttribute("error", "busy"); request->setAttribute("importStatus", "503"); return; }
+    auto* upload = static_cast<StationLogoUploadBuffer*>(heap_caps_malloc(
+        offsetof(StationLogoUploadBuffer, bytes) + total, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    if (!upload) {
+      releaseStationLogoUpload(token);
+      request->setAttribute("error", "memory"); request->setAttribute("importStatus", "503"); return;
+    }
+    upload->size = total; upload->received = 0;
+    request->_tempObject = upload;
+    request->setAttribute("importToken", String(token).c_str());
+    request->onDisconnect([token]() { releaseStationLogoUpload(token); });
+  }
+  auto* upload = static_cast<StationLogoUploadBuffer*>(request->_tempObject);
+  if (!upload || total != upload->size || index != upload->received || index > total || len > total - index) {
+    request->setAttribute("error", "invalid"); return;
+  }
+  memcpy(upload->bytes + index, data, len); upload->received += len;
+}
+
+static void queueStationImport(AsyncWebServerRequest* request) {
+  releaseStationLogoUpload(strtoul(request->getAttribute("importToken").c_str(), nullptr, 10));
+  auto* upload = static_cast<StationLogoUploadBuffer*>(request->_tempObject);
+  const String error = request->getAttribute("error");
+  if (error.length() || !upload || upload->received != upload->size) {
+    free(upload); request->_tempObject = nullptr;
+    const int status = request->hasAttribute("importStatus") ? request->getAttribute("importStatus").toInt() : 400;
+    request->send(status, "text/plain", error.length() ? error : "invalid"); return;
+  }
+  auto* job = new (std::nothrow) StationSaveJob;
+  if (!job) { free(upload); request->_tempObject = nullptr; request->send(503, "text/plain", "memory"); return; }
+  job->importData = upload; job->prepareLogo = false;
+  request->_tempObject = nullptr;
+  startStationSaveJob(request, job);
 }
 
 static void receiveStationLogo(AsyncWebServerRequest* request, uint8_t* data, size_t len,
@@ -2041,12 +2153,21 @@ void webServerBegin() {
     ArtworkJson::Allocator jsonAllocator;
     JsonDocument doc(&jsonAllocator);
     JsonArray arr = doc["stations"].to<JsonArray>();
-    StationManager::instance().toJson(arr);
+    uint32_t revision = 0;
+    StationManager::instance().toJson(arr, &revision);
+    if (!revision || doc.overflowed()) { request->send(503); return; }
+    doc["revision"] = revision;
 
     String out;
     serializeJson(doc, out);
     request->send(200, "application/json", out);
   });
+
+  server.on("/api/stations/import", HTTP_POST,
+    [](AsyncWebServerRequest* request) { requestDisplayActivity(); queueStationImport(request); }, nullptr,
+    [](AsyncWebServerRequest* request, uint8_t* data, size_t len, size_t index, size_t total) {
+      receiveStationImport(request, data, len, index, total);
+    });
 
   server.on("/api/logos", HTTP_GET, [](AsyncWebServerRequest* request) {
     // A null file path requests the live uploaded-logo directory snapshot.
@@ -2755,6 +2876,7 @@ void webServerBegin() {
     static constexpr AssetRoute assets[] = {
       {"/index.html", "text/html"}, {"/wifi.html", "text/html"},
       {"/app.js", "application/javascript"}, {"/ui.js", "application/javascript"},
+      {"/station-playlist.js", "application/javascript"},
       {"/wifi.js", "application/javascript"}, {"/ir-profiles.js", "application/javascript"},
       {"/ir-editor.js", "application/javascript"}, {"/i18n-catalog.js", "application/javascript"},
       {"/i18n.js", "application/javascript"}, {"/style.css", "text/css"},

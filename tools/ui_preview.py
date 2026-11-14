@@ -48,6 +48,7 @@ STATIONS = [dict(id=i+1, name=name, url='https://stream.example/'+str(i), logo=l
     ('Danubius','https://danubiusradio.hu/assets/img/front/danubius_radio_album_cover_v2.png'),
     ('BDPST ROCK Rádió (Hi-Fi / Lossless / FLAC)','https://www.bdpstrock.hu/assets/img/front/favicon.ico'),
     ('Dance Wave!','https://dancewave.online/dw-logo.png'), ('Retro Rádió','')])]
+STATION_REVISION = 7
 STATE = dict(playing=True, stationId=2, station=STATIONS[1]['name'], volume=35,
     eqLow=0, eqMid=0, eqHigh=0, balance=0, artist='Falling In Reverse',
     title='Fashionably Late', streamConnectionState='playing',
@@ -75,7 +76,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         url=urlsplit(self.path);path=url.path
         if path=='/ws': return self.websocket()
-        routes={'/api/config':CONFIG,'/api/hardware':HARDWARE,'/api/stations':{'stations':STATIONS},
+        routes={'/api/config':CONFIG,'/api/hardware':HARDWARE,'/api/stations':{'stations':STATIONS,'revision':STATION_REVISION},
             '/api/logos':{'logos':[]},'/api/system/status':status(),'/api/state':STATE,'/__preview/requests':REQUESTS}
         if path in routes: return self.reply(routes[path])
         if path=='/favicon.ico': return self.reply(b'','image/x-icon')
@@ -88,8 +89,36 @@ class Handler(BaseHTTPRequestHandler):
             content=content.replace(b'src="i18n.js?',('src="i18n/'+language+'.js?').encode())
         self.reply(content,mimetypes.guess_type(file.name)[0] or 'application/octet-stream')
     def do_POST(self):
+        global STATION_REVISION
         path=urlsplit(self.path).path
         body=self.rfile.read(int(self.headers.get('Content-Length',0)))
+        if path=='/api/stations/import':
+            try: data=json.loads(body)
+            except (ValueError,UnicodeError): return self.reply(b'invalid','text/plain',400)
+            with LOCK:
+                REQUESTS.append({'path':path,'data':data})
+                if data.get('revision')!=STATION_REVISION: return self.reply(b'conflict','text/plain',409)
+                if data.get('mode') not in ('append','replace') or not isinstance(data.get('stations'),list) or not data['stations']:
+                    return self.reply(b'invalid','text/plain',400)
+                if len(body)>131072 or len(data['stations'])>500: return self.reply(b'limit','text/plain',413)
+                replacing=data['mode']=='replace';next_list=[] if replacing else list(STATIONS)
+                by_url={s['url']:s for s in STATIONS};seen={s['url'] for s in next_list}
+                next_id=max((s['id'] for s in STATIONS),default=-1)+1;added=skipped=0
+                for row in data['stations']:
+                    if not isinstance(row,dict) or not isinstance(row.get('name'),str) or not isinstance(row.get('url'),str):
+                        return self.reply(b'invalid','text/plain',400)
+                    name=row['name'].strip();url=row['url'].strip()
+                    if not name or not url.startswith(('http://','https://')): return self.reply(b'invalid','text/plain',400)
+                    if url in seen: skipped+=1;continue
+                    previous=by_url.get(url) if replacing else None
+                    next_list.append(dict(id=previous['id'] if previous else next_id,name=name,url=url,logo=previous.get('logo','') if previous else ''))
+                    if not previous:next_id+=1
+                    seen.add(url);added+=1
+                if len(next_list)>500:return self.reply(b'limit','text/plain',413)
+                if replacing or added:STATIONS[:]=next_list;STATION_REVISION+=1
+                if not any(s['id']==STATE['stationId'] for s in STATIONS):
+                    first=STATIONS[0];STATE.update(stationId=first['id'],station=first['name'],playing=False)
+                return self.reply(dict(added=added,skipped=skipped,total=len(STATIONS),revision=STATION_REVISION))
         data={k:v[-1] for k,v in parse_qs(body.decode(),keep_blank_values=True).items()} if not path.startswith('/api/ota/') else {}
         with LOCK:
             REQUESTS.append({'path':path,'data':data})

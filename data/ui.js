@@ -110,6 +110,116 @@
     const tools = document.querySelector(".station-tools");
     body.appendChild(tools); U.stationPanels = { search: id("stationSearchDrawer"), editor: id("stationEditorDrawer"), logos: tools.querySelector("article.panel") };
     U.stationDialog.addEventListener("close", () => { document.body.classList.remove("has-dialog"); });
+    buildPlaylist(actions);
+  }
+  function buildPlaylist(actions) {
+    const csv = window.SRPlaylist, msg = (key, vars) => tr("playlist." + key, key, vars);
+    const panel = dialog("stationPlaylistDialog", msg("title")); panel.dataset.dismissOnBackdrop = "false";
+    U.playlistDialog = panel;
+    const body = panel.querySelector(".dialog-body"); body.classList.add("playlist-tools");
+    let parsed = null, base = [], revision = 0, busy = false, fileSequence = 0;
+    const status = make("p", "playlist-status"); status.id = "playlistStatus"; status.setAttribute("role", "status"); status.setAttribute("aria-live", "polite");
+    const file = make("input"); file.type = "file"; file.accept = ".csv,.tsv,text/csv,text/tab-separated-values"; file.id = "playlistFile";
+    const fileLabel = make("label", "form-stack", msg("file")); fileLabel.htmlFor = file.id; fileLabel.append(file);
+    const modes = make("fieldset", "playlist-modes"); modes.append(make("legend", "", msg("mode")));
+    for (const [value, title, description] of [["append", "append", "appendHelp"], ["replace", "replace", "replaceHelp"]]) {
+      const label = make("label", "playlist-mode"), radio = make("input"); radio.type = "radio"; radio.name = "playlistMode"; radio.value = value; radio.checked = value === "append";
+      radio.id = "playlistMode-" + value; radio.onchange = render;
+      const copy = make("span"); copy.append(make("strong", "", msg(title)), make("small", "", msg(description))); label.append(radio, copy); modes.append(label);
+    }
+    const warning = make("p", "playlist-warning", msg("replaceWarning")); warning.id = "playlistReplaceWarning";
+    const summary = make("p", "playlist-summary"); summary.id = "playlistSummary"; summary.setAttribute("aria-live", "polite");
+    const errors = make("ul", "playlist-errors"); errors.id = "playlistErrors";
+    const preview = make("div", "playlist-preview"); preview.id = "playlistPreview"; preview.tabIndex = 0; preview.setAttribute("role", "region"); preview.setAttribute("aria-label", msg("preview"));
+    const submit = button(msg("import"), "", save, "primary"); submit.id = "playlistImport";
+    const cancel = button(tr("action.cancel", "Mégse"), "", () => panel.close(), "ghost-btn");
+    const controls = make("div", "button-row playlist-actions"); controls.append(submit, cancel);
+    const exportButton = button(msg("export"), "", download, "ghost-btn"); exportButton.id = "playlistExport";
+    const exportSection = make("section", "playlist-export"); exportSection.append(make("h3", "", msg("exportTitle")), make("p", "muted", msg("exportHelp")), exportButton);
+    body.append(exportSection, make("h3", "", msg("importTitle")), fileLabel, make("p", "muted", msg("formatHelp")), modes, warning, summary, errors, preview, controls, status);
+    const trigger = button(msg("tools"), "list", async () => {
+      openDialog(panel); setStatus(msg("loading"));
+      try { await refresh(); setStatus(revision ? "" : msg("firmware"), !revision); } catch (_) { setStatus(msg("loadError"), true); }
+      render();
+    }, "ghost-btn"); trigger.id = "stationPlaylistButton"; actions.append(trigger);
+    const mode = () => modes.querySelector("input:checked")?.value || "append";
+    function setStatus(value, error = false) { status.textContent = value; status.classList.toggle("is-error", error); }
+    function setBusy(value) {
+      busy = value; panel.setAttribute("aria-busy", String(value));
+      panel.querySelectorAll("button,input").forEach(node => { node.disabled = value; }); render();
+    }
+    async function refresh() { await loadStations(); base = stations.slice(); revision = stationListRevision; }
+    function render() {
+      const result = parsed ? csv.plan(base, parsed.entries, mode()) : null;
+      visible(warning, mode() === "replace"); errors.replaceChildren(); preview.replaceChildren();
+      summary.textContent = result ? msg("summary", result) : msg("chooseFile");
+      for (const error of parsed?.errors || []) errors.append(make("li", "", error.line ? msg("lineError", { line: error.line, error: msg(error.code) }) : msg(error.code)));
+      if (result?.limit) errors.append(make("li", "", msg("limit")));
+      if (parsed?.ignoredOvol) errors.append(make("li", "muted", msg("ovolIgnored")));
+      if (result && parsed.entries.length) {
+        const table = make("table"), head = make("thead"), header = make("tr");
+        for (const label of ["#", msg("name"), "URL"]) { const th = make("th", "", label); th.scope = "col"; header.append(th); }
+        head.append(header); table.append(head); const rows = make("tbody");
+        for (const [index, station] of result.rows.slice(0, 100).entries()) {
+          const row = make("tr"); row.append(make("td", "", String(index + 1)), make("td", "", station.name));
+          const url = make("td", "playlist-url", station.url); url.title = station.url; row.append(url); rows.append(row);
+        }
+        table.append(rows); preview.append(table);
+        if (result.rows.length > 100) preview.append(make("p", "muted", msg("firstRows")));
+      }
+      submit.textContent = busy ? msg("saving") : mode() === "replace" ? msg("replaceButton") : msg("import");
+      submit.disabled = busy || !parsed?.entries.length || !!parsed.errors.length || !!result?.limit || !revision;
+      exportButton.disabled = busy || !base.length;
+    }
+    file.onchange = async () => {
+      const selected = file.files?.[0], sequence = ++fileSequence; parsed = null; setStatus(""); render();
+      if (!selected) return;
+      if (selected.size > csv.MAX_BYTES) { setStatus(msg("limit"), true); return; }
+      try {
+        const raw = new Uint8Array(await selected.arrayBuffer()); let text;
+        if (raw[0] === 255 && raw[1] === 254) text = new TextDecoder("utf-16le", { fatal: true }).decode(raw);
+        else if (raw[0] === 254 && raw[1] === 255) text = new TextDecoder("utf-16be", { fatal: true }).decode(raw);
+        else {
+          try { text = new TextDecoder("utf-8", { fatal: true }).decode(raw); }
+          catch (_) { text = new TextDecoder("windows-1250", { fatal: true }).decode(raw); }
+        }
+        if (sequence !== fileSequence) return;
+        parsed = csv.parse(text); render();
+      } catch (_) { if (sequence === fileSequence) setStatus(msg("format"), true); }
+    };
+    async function save() {
+      if (submit.disabled) return;
+      const payload = JSON.stringify({ mode: mode(), revision, stations: parsed.entries.map(({ name, url }) => ({ name, url })) });
+      if (csv.bytes(payload) > csv.MAX_BYTES) { setStatus(msg("limit"), true); return; }
+      setBusy(true); setStatus(msg("saving"));
+      const controller = new AbortController(), timeout = setTimeout(() => controller.abort(), 45000);
+      try {
+        const response = await fetch("/api/stations/import", { method: "POST", headers: { "Content-Type": "application/json" }, body: payload, signal: controller.signal });
+        if (!response.ok) {
+          const known = [400, 409, 413, 500, 503].includes(response.status);
+          const code = known ? (await response.text()).trim() : response.status === 404 ? "firmware" : "unknown";
+          throw Error(["invalid", "conflict", "limit", "busy", "memory", "write", "firmware"].includes(code) ? code : "unknown");
+        }
+        const result = await response.json(); await refresh(); parsed = null; file.value = "";
+        setStatus(msg("success", result));
+      } catch (error) {
+        try { await refresh(); } catch (_) { /* retain the last reviewed snapshot */ }
+        setStatus(msg(error.message.startsWith("Failed") || error.name === "AbortError" ? "unknown" : error.message === "conflict" ? "conflict" : ["invalid", "limit", "busy", "memory", "write", "firmware"].includes(error.message) ? error.message : "unknown"), true);
+      } finally { clearTimeout(timeout); setBusy(false); }
+    }
+    async function download() {
+      if (busy) return;
+      setBusy(true); setStatus(msg("loading"));
+      try {
+        await refresh();
+        const content = csv.serialize(base), link = make("a"), url = URL.createObjectURL(new Blob([content], { type: "text/tab-separated-values;charset=utf-8" }));
+        link.href = url; link.download = "playlist.csv"; document.body.append(link); link.click(); link.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 2000); setStatus(msg("exported"));
+      } catch (_) { setStatus(msg("exportError"), true); }
+      finally { setBusy(false); }
+    }
+    panel.addEventListener("cancel", event => { if (busy) event.preventDefault(); });
+    panel.addEventListener("close", () => { if (!document.querySelector("dialog[open]")) document.body.classList.remove("has-dialog"); }); render();
   }
   U.stationDrawer = kind => {
     if (!U.ready) return;

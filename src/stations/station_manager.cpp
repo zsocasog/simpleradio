@@ -4,8 +4,10 @@
 #include <freertos/semphr.h>
 #include <climits>
 #include <vector>
+#include <esp_random.h>
 #include "../config/logging.h"
 #include "../storage/atomic_file.h"
+#include "station_import_policy.h"
 
 static SemaphoreHandle_t stationMutex = nullptr;
 static SemaphoreHandle_t stationWriteMutex = nullptr;
@@ -75,7 +77,9 @@ bool StationManager::begin() {
     return false;
   }
 
-  ++_revision;
+  // A preview from before reboot must not accidentally match the new list's
+  // initial counter. Revisions remain opaque, nonzero change notifications.
+  _revision = (esp_random() & 0x7fffffffU) + 1U;
   return true;
 }
 
@@ -98,10 +102,11 @@ bool StationManager::getStation(int id, Station& out) const {
   return false;
 }
 
-void StationManager::toJson(JsonArray arr) const {
+void StationManager::toJson(JsonArray arr, uint32_t* revision) const {
   StationLock lock;
   if (!lock.ok()) return;
 
+  if (revision) *revision = _revision;
   JsonArrayConst stations = _doc["stations"];
   if (stations.isNull()) return;
 
@@ -198,6 +203,71 @@ bool StationManager::saveStation(int id, const String& name, const String& url, 
     outId = savedId;
   }
   return true;
+}
+
+StationImportStatus StationManager::importStations(JsonArrayConst incoming, bool replace, uint32_t expectedRevision,
+                                                  StationImportResult& result) {
+  using namespace StationImportPolicy;
+  result = {};
+  if (incoming.isNull() || !incoming.size()) return StationImportStatus::Invalid;
+  if (incoming.size() > MAX_STATIONS) return StationImportStatus::Limit;
+  StationWriteLock writeLock;
+  if (!writeLock.ok()) return StationImportStatus::Busy;
+  JsonDocument next(&jsonAllocator_);
+  JsonArrayConst original;
+  int maxId = -1;
+  {
+    StationLock lock;
+    if (!lock.ok()) return StationImportStatus::Busy;
+    if (!expectedRevision || expectedRevision != _revision) return StationImportStatus::Conflict;
+    if (!next.set(_doc)) return StationImportStatus::Memory;
+    original = static_cast<const JsonDocument&>(_doc)["stations"].as<JsonArrayConst>();
+    for (JsonObjectConst station : original) maxId = max(maxId, station["id"].as<int>());
+  }
+  // The writer mutex keeps _doc and its borrowed read-only views stable while
+  // readers remain free to use it. No flash work runs under the reader mutex.
+  JsonArray destination = replace ? next["stations"].to<JsonArray>() : next["stations"].as<JsonArray>();
+  if (destination.isNull()) destination = next["stations"].to<JsonArray>();
+  for (JsonVariantConst value : incoming) {
+    if (!value.is<JsonObjectConst>() || !value["name"].is<const char*>() || !value["url"].is<const char*>())
+      return StationImportStatus::Invalid;
+    const JsonString rawName = value["name"].as<JsonString>(), rawUrl = value["url"].as<JsonString>();
+    const auto nameView = trim({rawName.c_str(), rawName.size()}), urlView = trim({rawUrl.c_str(), rawUrl.size()});
+    if (!validName(nameView) || !validUrl(urlView))
+      return StationImportStatus::Invalid;
+    const String name(nameView.data(), nameView.size()), url(urlView.data(), urlView.size());
+    bool duplicate = false;
+    for (JsonObjectConst station : destination) {
+      if (sameUrl(station["url"] | "", url.c_str())) { duplicate = true; break; }
+    }
+    if (duplicate) { ++result.skipped; continue; }
+    if (destination.size() >= MAX_STATIONS) return StationImportStatus::Limit;
+    JsonObjectConst previous;
+    if (replace) for (JsonObjectConst station : original) {
+      if (sameUrl(station["url"] | "", url.c_str())) { previous = station; break; }
+    }
+    int id = -1;
+    if (!previous.isNull()) id = previous["id"].as<int>();
+    else {
+      if (maxId == INT_MAX) return StationImportStatus::Limit;
+      id = ++maxId;
+    }
+    JsonObject added = destination.add<JsonObject>();
+    added["id"] = id; added["name"] = name; added["url"] = url;
+    added["logo"] = previous.isNull() ? "" : previous["logo"] | "";
+    ++result.added;
+    if (next.overflowed()) return StationImportStatus::Memory;
+  }
+  result.total = destination.size();
+  if (!replace && !result.added) { result.revision = expectedRevision; return StationImportStatus::Ok; }
+  if (!writeJsonAtomic("/stations.json", next, true)) return StationImportStatus::WriteFailed;
+  {
+    StationLock lock(portMAX_DELAY);
+    if (!lock.ok()) return StationImportStatus::Busy;
+    swap(_doc, next);
+    result.revision = ++_revision;
+  }
+  return StationImportStatus::Ok;
 }
 
 bool StationManager::deleteStation(int id) {
