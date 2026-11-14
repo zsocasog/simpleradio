@@ -114,7 +114,7 @@ function setConfigValue(id, value) {
 }
 
 function beginSliderGesture(node) {
-  if (!sliderGestures.has(node.id)) sliderGestures.set(node.id, { node, changed: false, pointer: null, keys: new Set() });
+  if (!sliderGestures.has(node.id)) sliderGestures.set(node.id, { node, changed: false, pointer: null, keys: new Set(), keyboard: false });
   announceSliderEditing(true);
   if (configSaveTimer) {
     clearTimeout(configSaveTimer);
@@ -214,17 +214,36 @@ function initSliderControls() {
   const sliderKeys = new Set(["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End"]);
   document.querySelectorAll('input[type="range"], input[type="color"]').forEach(node => {
     node.addEventListener("pointerdown", event => {
-      if (node.type === "range" && !(event.button > 0)) beginSliderGesture(node).pointer = event.pointerId;
+      if (node.type === "range" && !(event.button > 0)) {
+        const gesture = beginSliderGesture(node);
+        gesture.pointer = event.pointerId;
+        gesture.keyboard = false;
+      }
     });
     node.addEventListener("input", () => trackSliderInput(node), true);
     node.addEventListener("keydown", event => {
-      if (node.type === "range" && sliderKeys.has(event.key)) beginSliderGesture(node).keys.add(event.key);
+      if (node.type !== "range") return;
+      if (sliderKeys.has(event.key)) {
+        const gesture = beginSliderGesture(node);
+        if (gesture.pointer === null) gesture.keyboard = true;
+        gesture.keys.add(event.key);
+      } else if (event.key === "Enter") {
+        const gesture = sliderGestures.get(node.id);
+        if (gesture && gesture.pointer === null) {
+          event.preventDefault();
+          finishSliderGesture(node);
+        }
+      }
     });
     node.addEventListener("change", () => {
       const gesture = sliderGestures.get(node.id);
-      if (gesture && gesture.pointer === null && !gesture.keys.size) finishSliderGesture(node);
+      if (gesture && gesture.pointer === null && !gesture.keys.size && !gesture.keyboard) finishSliderGesture(node);
     });
-    node.addEventListener("blur", () => finishSliderGesture(node));
+    node.addEventListener("blur", () => {
+      // A config reply or focus change can blur a range while its pointer is
+      // still held. Only the matching pointer release may finish that drag.
+      if (sliderGestures.get(node.id)?.pointer === null) finishSliderGesture(node);
+    });
   });
   const releasePointer = event => {
     for (const gesture of [...sliderGestures.values()]) {
@@ -238,7 +257,7 @@ function initSliderControls() {
   document.addEventListener("pointercancel", releasePointer, true);
   document.addEventListener("keyup", event => {
     for (const gesture of [...sliderGestures.values()]) {
-      if (gesture.keys.delete(event.key) && !gesture.keys.size && gesture.pointer === null) finishSliderGesture(gesture.node);
+      if (gesture.keys.delete(event.key) && !gesture.keys.size && gesture.pointer === null && !gesture.keyboard) finishSliderGesture(gesture.node);
     }
   }, true);
   const finishAll = () => {
@@ -305,6 +324,7 @@ function setButtonFeedback(button, state, label) {
   const idleLabel = rememberButtonLabel(button);
   const labels = {
     idle: idleLabel,
+    pending: label || t("save.pending", "Még nincs elmentve"),
     busy: label || t("save.busy", "Mentés..."),
     success: label || t("save.done", "Mentve"),
     error: label || t("save.error", "Hiba")
@@ -329,7 +349,7 @@ function configSaveButtons() {
 
 function setConfigSaveState(state) {
   clearTimeout(configSaveStatusTimer);
-  configSaveButtons().forEach(button => setButtonFeedback(button, state === "pending" ? "busy" : state));
+  configSaveButtons().forEach(button => setButtonFeedback(button, state));
   updateLastFmDeleteButton();
   window.SRUI?.saveState(state);
 

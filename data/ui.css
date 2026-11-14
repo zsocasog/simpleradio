@@ -70,9 +70,9 @@ select { text-overflow: ellipsis; }
 .config-save-status.is-error { color: var(--red); border: 1px solid var(--red); }
 .config-save-status .ui-icon { color: var(--accent); width: 19px; height: 19px; }
 .config-save-status.is-error .ui-icon { color: currentColor; }
-.config-save-status.is-pending .ui-icon { animation: icon-spin 1s linear infinite; }
+.config-save-status.is-saving .ui-icon { animation: icon-spin 1s linear infinite; }
 @keyframes icon-spin { to { transform: rotate(360deg); } }
-@media (prefers-reduced-motion: reduce) { .config-save-status.is-pending .ui-icon { animation: none; } }
+@media (prefers-reduced-motion: reduce) { .config-save-status.is-saving .ui-icon { animation: none; } }
 .brightness-mode { display: none !important; }
 .brightness-selector { display: inline-flex; justify-self: start; margin-bottom: 16px; border: 1px solid var(--line); border-radius: 7px; overflow: hidden; }
 .brightness-selector button { border: 0; border-radius: 0; padding: 10px 24px; background: transparent; }

@@ -11,6 +11,7 @@
     "ui.more": "Több",
     "save.idle": "Mentés",
     "save.busy": "Mentés...",
+    "save.pending": "Még nincs elmentve",
     "save.done": "Mentve",
     "save.error": "Mentés sikertelen",
     "status.connecting": "Kapcsolódás...",

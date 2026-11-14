@@ -2,7 +2,7 @@
 
 [English](README.md)
 
-> Jelenlegi verzió: **1.2.09** · ESP32-S3 N16R8 · magyar és angol felület
+> Jelenlegi verzió: **1.3.14** · ESP32-S3 N16R8 · magyar és angol felület
 
 <a href="https://ko-fi.com/zsoltsogorka" target="_blank" rel="noopener noreferrer"><img src="https://ko-fi.com/img/githubbutton_sm.svg" alt="Támogatás Ko-fi-n"></a>
 

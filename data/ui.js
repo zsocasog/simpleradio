@@ -23,9 +23,9 @@
   };
   U.feedback = (n, state, label) => {
     if (!n.dataset.uiIcon) return false;
-    n.innerHTML = U.icon(({ busy: "refresh", success: "check", error: "x" })[state] || n.dataset.uiIcon);
+    n.innerHTML = U.icon(({ pending: "pencil", busy: "refresh", success: "check", error: "x" })[state] || n.dataset.uiIcon);
     n.disabled = state === "busy"; n.setAttribute("aria-busy", String(state === "busy"));
-    n.title = label || (state === "idle" ? n.dataset.idleLabel : tr("save." + ({ success: "done", error: "error", busy: "busy" }[state] || "idle"), n.dataset.idleLabel));
+    n.title = label || (state === "idle" ? n.dataset.idleLabel : tr("save." + ({ pending: "pending", success: "done", error: "error", busy: "busy" }[state] || "idle"), n.dataset.idleLabel));
     n.classList.toggle("is-saving", state === "busy"); n.classList.toggle("is-error", state === "error");
     return true;
   };
@@ -369,10 +369,12 @@
     if (!U.ready) return;
     document.querySelectorAll(".config-save-status").forEach(n => {
       const error = state === "error"; n.classList.toggle("is-error", error);
-      const busy = state === "busy" || state === "pending";
-      n.classList.toggle("is-pending", busy);
-      const label = error ? tr("ui.saveFailed", "A mentés nem sikerült. Próbáld újra.") : busy ? tr("save.busy", "Mentés…") : tr("ui.allSaved", "Minden módosítás mentve");
-      n.innerHTML = U.icon(error ? "circle-x" : busy ? "loader-2" : "circle-check") + '<span>' + esc(label) + '</span>';
+      const busy = state === "busy", pending = state === "pending";
+      n.classList.toggle("is-pending", busy || pending);
+      n.classList.toggle("is-saving", busy);
+      n.setAttribute("aria-busy", String(busy));
+      const label = error ? tr("ui.saveFailed", "A mentés nem sikerült. Próbáld újra.") : busy ? tr("save.busy", "Mentés…") : pending ? tr("save.pending", "Még nincs elmentve") : tr("ui.allSaved", "Minden módosítás mentve");
+      n.innerHTML = U.icon(error ? "circle-x" : busy ? "loader-2" : pending ? "pencil" : "circle-check") + '<span>' + esc(label) + '</span>';
     });
   };
   function buildSettings() {

@@ -11,6 +11,7 @@
     "ui.more": "More",
     "save.idle": "Save",
     "save.busy": "Saving...",
+    "save.pending": "Not saved yet",
     "save.done": "Saved",
     "save.error": "Save failed",
     "status.connecting": "Connecting...",

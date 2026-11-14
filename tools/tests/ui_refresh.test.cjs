@@ -78,6 +78,26 @@ test('icon assets inherit the generated WebUI cache key without a copied version
   assert.match(context.window.SRUI.icon('wifi'), /href="icons\.svg\?v=5\.6\.7&amp;ui=abc123#wifi"/);
 });
 
+test('unsaved slider changes are distinct from an actual network save', () => {
+  const { context, U } = ui();
+  const classes = new Set(), attributes = {};
+  const node = { innerHTML: '', classList: { toggle(name, on) { if (on) classes.add(name); else classes.delete(name); } },
+    setAttribute(name, value) { attributes[name] = value; } };
+  context.document.querySelectorAll = () => [node];
+  U.saveState('pending');
+  assert.match(node.innerHTML, /Még nincs elmentve/);
+  assert.doesNotMatch(node.innerHTML, /loader-2|Mentés…/);
+  assert.equal(attributes['aria-busy'], 'false'); assert.equal(classes.has('is-saving'), false);
+  U.saveState('busy');
+  assert.match(node.innerHTML, /loader-2/);
+  assert.equal(attributes['aria-busy'], 'true'); assert.equal(classes.has('is-saving'), true);
+  U.saveState('success');
+  assert.equal(classes.has('is-pending'), false); assert.equal(classes.has('is-saving'), false);
+  assert.match(node.innerHTML, /Minden módosítás mentve/);
+  assert.match(read('data/ui.css'), /\.config-save-status\.is-saving \.ui-icon \{ animation:/);
+  assert.doesNotMatch(read('data/ui.css'), /\.config-save-status\.is-pending \.ui-icon \{ animation:/);
+});
+
 test('unrelated autosaves cannot persist uncommitted connection or API key drafts', () => {
   const { U } = ui();
   U.connectionKind = 'mqtt'; U.draft = { mqttHost: 'unsaved.example' };

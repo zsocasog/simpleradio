@@ -1,8 +1,8 @@
 #pragma once
 
 // Edit release versions here; builds generate the WebUI manifest and asset URLs.
-#define APP_VERSION "1.2.09"
-#define WEB_UI_VERSION "1.2.09"
+#define APP_VERSION "1.3.14"
+#define WEB_UI_VERSION "1.3.14"
 
 // Increment only when a WebUI/API change is not backwards compatible.
 #define WEB_API_VERSION 1

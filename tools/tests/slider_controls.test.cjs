@@ -24,7 +24,7 @@ const settle=()=>new Promise(resolve=>setImmediate(resolve));
 function target(){
  const listeners=new Map();
  return {listeners,addEventListener(type,fn,capture=false){if(!listeners.has(type))listeners.set(type,[]);listeners.get(type).push({fn,capture});},
-  fire(type,event={}){const e={type,...event};for(const {fn} of [...listeners.get(type)||[]].sort((a,b)=>Number(b.capture)-Number(a.capture)))fn(e);}};
+  fire(type,event={}){const e={type,preventDefault(){},...event};for(const {fn} of [...listeners.get(type)||[]].sort((a,b)=>Number(b.capture)-Number(a.capture)))fn(e);}};
 }
 function harness({live=true,hold=false}={}){
  const nodes=new Map(),timers=new Map(),frames=[],requests=[],replies=[],statuses=[];
@@ -109,13 +109,42 @@ test('continuous motion is throttled rather than silenced until the pointer stop
  assert.equal(h.commits().length,0);h.up();assert.equal(h.commits().length,1);
  assert.equal(h.commits()[0].volume,29);
 });
-test('keyboard repeat does not save on native change events; key release commits',async()=>{
+test('keyboard repeat and key release do not save; Enter commits the adjustment',async()=>{
  for(const id of ['brightness','volume']){
   const h=harness();h.fire(id,'keydown',{key:'ArrowRight'});
   for(const value of [110,120,130]){h.input(id,value);h.fire(id,'change');await h.advance(300);}
   assert.equal(h.saves().length,0,id);assert.equal(h.commits().length,0,id);
   h.context.document.fire('keyup',{key:'ArrowRight'});await settle();await h.advance(140);
+  assert.equal(h.saves().length+h.commits().length,0,id);
+  h.fire(id,'keydown',{key:'Enter'});await h.advance(140);
   assert.equal(h.saves().length+h.commits().length,1,id);
+ }
+});
+
+test('all ranges keep separate keyboard taps together until Enter or focus leaves',async()=>{
+ for(const s of sliders.filter(s=>s.type==='range')) for(const boundary of ['enter','blur']){
+  const h=harness();
+  for(const key of ['ArrowLeft','ArrowRight','ArrowUp','ArrowDown','PageUp','PageDown','Home','End']){
+   h.fire(s.id,'keydown',{key});h.input(s.id,finalValue(s));h.fire(s.id,'change');
+   h.context.document.fire('keyup',{key});await h.advance(1000);
+   assert.equal(h.saves().length+h.commits().length,0,s.id+' '+key);
+  }
+  if(boundary==='enter')h.fire(s.id,'keydown',{key:'Enter'});else h.fire(s.id,'blur');
+  await h.advance(200);assert.equal(h.saves().length+h.commits().length,1,s.id+' '+boundary);
+  h.fire(s.id,'change');h.fire(s.id,'blur');h.context.document.fire('keyup',{key:'Enter'});
+  await h.advance(1000);assert.equal(h.saves().length+h.commits().length,1,s.id+' duplicate');
+ }
+});
+
+test('a native blur/change while any range pointer is still held cannot save',async()=>{
+ for(const s of sliders.filter(s=>s.type==='range')){
+  const h=harness();h.down(s.id,12);h.input(s.id,finalValue(s));
+  h.fire(s.id,'blur');h.fire(s.id,'change');h.run('saveConfigNow()');await h.advance(2000);
+  assert.equal(h.saves().length+h.commits().length,0,s.id);
+  h.up(12);h.fire(s.id,'change');await h.advance(200);
+  // Config saves deferred by another control may accompany the player commit.
+  assert.equal(h.commits().length,['volume','soundEqLow','soundEqMid','soundEqHigh','soundBalance'].includes(s.id)?1:0,s.id);
+  assert.equal(h.saves().length,1,s.id);
  }
 });
 test('pointer cancel, release outside the slider, and blur share one commit',async()=>{
