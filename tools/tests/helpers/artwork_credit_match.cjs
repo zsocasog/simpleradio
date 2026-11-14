@@ -93,4 +93,17 @@ let queryCode=body('static String albumTitleForSearch(')
 queryCode=strings(queryCode);
 const query=new Function('parse','title',queryCode).bind(null,parts.parse);
 
-module.exports={query,normalizeArtworkText,artistsMatch,prepare,exactWithTypos:typo=>build('static bool exactTrackMatch(',artistsMatch,typo),exactWithArtists:matcher=>build('static bool exactTrackMatch(',matcher),exact:build('static bool exactTrackMatch('),subtitle:build('static bool subtitleTrackMatch('),creditTitle:build('static bool artistCreditTitleMatch(')};
+const creditPolicy=require('./artwork_credit_policy.cjs');
+let contextCode=body('static bool contextualCreditTrackMatch(')
+ .replace(/\*reason/g,'reason.value').replace(/parts->/g,'parts.')
+ .replace(/ArtworkTrackParts::parse/g,'parse').replace(/ArtworkTrackParts::versionText/g,'versionText')
+ .replace(/ArtworkCreditPolicy::/g,'creditPolicy.')
+ .replace('String(value.data(), value.size())','value')
+ .replace('std::string_view second = {}','std::string_view second = ""')
+ .replace(/for \(const auto\* parts : \{&ft, &wt\}\)/g,'for (const parts of [ft,wt])')
+ .replace(/for \(const auto piece : \{parts.version, parts.tail\}\)/g,'for (const piece of [parts.version,parts.tail])')
+ .replace(/const auto /g,'const ').replace(/const char\* /g,'');
+contextCode=strings(contextCode).replace(/\[&\]\(([^)]*)\)/g,'($1) =>');
+const contextual=new Function('parse','versionText','artworkArtistsMatch','normalizeArtworkText','exactTrackMatch','creditPolicy','foundArtist','foundTitle','wantedArtist','wantedTitle','verifiedAliases=null','reason=null',contextCode)
+ .bind(null,parts.parse,parts.versionText,artistsMatch,normalizeArtworkText,build('static bool exactTrackMatch('),creditPolicy);
+module.exports={query,normalizeArtworkText,artistsMatch,prepare,contextual,exactWithTypos:typo=>build('static bool exactTrackMatch(',artistsMatch,typo),exactWithArtists:matcher=>build('static bool exactTrackMatch(',matcher),exact:build('static bool exactTrackMatch('),subtitle:build('static bool subtitleTrackMatch('),creditTitle:build('static bool artistCreditTitleMatch(')};

@@ -230,8 +230,13 @@ test('subtitle quality needs verified own-album evidence at every provider and d
   const needsAlbum = new Function('quality', block(cpp, 'static bool artworkMatchNeedsVerifiedAlbum('));
   assert.equal(needsAlbum(1), true); assert.equal(needsAlbum(2), true);
   assert.equal(needsAlbum(3), false); assert.equal(needsAlbum(4), false);
-  assert.equal((cpp.match(/artworkMatchNeedsVerifiedAlbum\([^)]*\) && (?:album\.)?kind != AlbumArtworkKind::Album/g) || []).length, 5);
-  assert.match(cpp, /!artworkMatchNeedsVerifiedAlbum\(pending.quality\) \|\| kind == AlbumArtworkKind::Album/);
+  const kinds={Album:'Album',Single:'Single',ArtistCollection:'ArtistCollection',Unverified:'Unverified',Compilation:'Compilation'};
+  const allows=new Function('AlbumArtworkKind','artworkMatchNeedsVerifiedAlbum','quality','kind',
+    block(cpp,'static bool artworkMatchAllowsRelease(').replace(/AlbumArtworkKind::/g,'AlbumArtworkKind.')).bind(null,kinds,needsAlbum);
+  for(const quality of [1,2]) for(const kind of Object.values(kinds))
+    assert.equal(allows(quality,kind),kind==='Album',`${quality} / ${kind}`);
+  assert.equal((cpp.match(/!artworkMatchAllowsRelease\([^)]*, (?:album\.)?kind\)/g)||[]).length,5);
+  assert.match(cpp,/if \(artworkMatchAllowsRelease\(pending.quality, kind\)\)/);
   assert.match(cpp, /Last.fm album verification deferred with MusicBrainz/);
   assert.match(cpp, /httpStatus\) \*httpStatus = response.status/);
 });

@@ -75,7 +75,7 @@ test('all provider queries and title verification use the same cleaned title, wh
   const resolver = cpp.slice(cpp.indexOf('std::vector<String> ArtworkCache::resolveAlbumArtworkUrls('),
     cpp.indexOf('bool ArtworkCache::resolveAndDownloadAlbumArtwork('));
   assert.match(resolver, /withoutBroadcastYear\(std::string_view\(title.c_str\(\), title.length\(\)\)\)/);
-  assert.equal((resolver.match(/albumTitleForSearch\(lookupTitle\)/g) || []).length, 3);
+  assert.equal((resolver.match(/albumTitleForSearch\(lookupTitle\)/g) || []).length, 4);
   assert.match(resolver, /current.title != title/);
   assert.match(resolver, /MusicBrainz query: %s - %s", artist.c_str\(\), lookupTitle.c_str\(\)/);
 });

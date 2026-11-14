@@ -1,0 +1,68 @@
+{
+  "retrieved": "2026-11-14",
+  "deezer": {
+    "source": "https://api.deezer.com/track/4328692062",
+    "search": {
+      "id": 4328692062,
+      "title": "Make Love",
+      "artist": {
+        "id": 5296616,
+        "name": "Henri PFR"
+      },
+      "album": {
+        "id": 1114034762,
+        "title": "Make Love",
+        "cover_medium": "https://cdn-images.dzcdn.net/images/cover/b2321318254df778396a7a1150cb91d5/250x250-000000-80-0-0.jpg"
+      }
+    },
+    "detail": {
+      "id": 4328692062,
+      "title": "Make Love",
+      "artist": {
+        "id": 5296616,
+        "name": "Henri PFR"
+      },
+      "album": {
+        "id": 1114034762
+      },
+      "contributors": [
+        {
+          "id": 5296616,
+          "name": "Henri PFR",
+          "role": "Main"
+        },
+        {
+          "id": 115733182,
+          "name": "Carston",
+          "role": "Main"
+        }
+      ]
+    },
+    "album": {
+      "id": 1114034762,
+      "title": "Make Love",
+      "artist": {
+        "id": 5296616,
+        "name": "Henri PFR"
+      },
+      "record_type": "single"
+    }
+  },
+  "itunes": {
+    "source": "https://itunes.apple.com/lookup?id=1628334370&entity=album",
+    "track": {
+      "trackId": 1628334380,
+      "artistName": "Geszti & Lotfi Begi",
+      "trackName": "Embertelen dal'22 (feat. Presser Gábor & Káté)",
+      "collectionId": 1628334370,
+      "collectionName": "Embertelen dal'22 (feat. Presser Gábor & Káté) - Single",
+      "artworkUrl100": "https://is1-ssl.mzstatic.com/image/thumb/Music116/v4/f0/40/a3/f040a3f0-3732-657e-2623-c687daf278dc/cover.jpg/100x100bb.jpg"
+    },
+    "album": {
+      "collectionId": 1628334370,
+      "artistName": "Geszti & Lotfi Begi",
+      "collectionName": "Embertelen dal'22 (feat. Presser Gábor & Káté) - Single",
+      "trackCount": 1
+    }
+  }
+}

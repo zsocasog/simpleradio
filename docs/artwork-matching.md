@@ -1,5 +1,63 @@
 # Album artwork matching
 
+## Közös előadói adatok és hiányos Deezer-találatok (2026-11-14)
+
+- A meglévő pontos egyezés marad az első, változatlan gyors út. Csak utána
+  következik az új, egyetlen felvétel adataiból dolgozó ellenőrzés; nincs új
+  AI-szolgáltatás, előadónkénti kivétellista vagy globálisan tanult névátírás.
+- A fő- és vendégelőadói szerepet megőrizve közösen ellenőrzi az előadómezőt
+  és a cím explicit feat./ft./featuring részét. Minden kért közreműködőnek
+  szerepelnie kell. Plusz főelőadó nem fogadható el; az explicit vendéglista
+  lehet részletesebb, de nem írhatja felül a kért vendéggel ütköző címadatot.
+- Rövid névalak csak az adott felvételnél kaphat gyengébb egyezést: legfeljebb
+  egy, legalább ötbetűs teljes névelem rövidülhet, pontos dal/verzió mellett,
+  egy másik pontos főelőadó ÉS egy tőlük különböző, pontosan kért vendég
+  bizonyítékával. Ez nem változtatja meg más daloknál az előadó személyazonosságát.
+  Nem adódik össze elütés- vagy opcionális alcím-toleranciával.
+- Az új egyezés csak szolgáltatói adatokkal ellenőrzött saját albumhoz vagy
+  kislemez/EP-hez vezethet; ismeretlen, válogatás- és gyűjteményborítóhoz nem.
+  A remix/live/akusztikus stb. verziószűrés és a cím számai továbbra is számítanak.
+- Deezer: először az összes már megkapott találatot feldolgozza. Csak ha nincs
+  használható jelölt, és egy pontos című találatból egy kért közreműködő
+  hiányzik, kérhet legfeljebb egy részletes daladatlapot. A dal-, album- és
+  főelőadó-azonosító, valamint a cím/verzió is kötve marad az eredeti találathoz.
+  Csak Main/Featured közreműködő számít, például zeneszerző nem. Ha már a
+  keresési találat tartalmazza ezeket az adatokat, nincs külön részletkérés.
+- A szolgáltatók sorrendje, a teljes és szolgáltatói időkeret, az ütemezés,
+  képtárolás, hang és spektrum nem változott. Sikeres régi találatnál nincs
+  új hálózati kérés. Az eddig eredménytelen eset egyszeri részletkérése
+  természetesen időt igényel, a meglévő kereten belül. A JSON továbbra is PSRAM.
+- Az elutasítási napló jelzi az okot (hiányzó fő-/vendégelőadó, más verzió,
+  bizonytalan rövid név, nem igazolt adatlap). Az eredeti kijelzett metaadat
+  és a csatornaváltás/megszakítás ellenőrzése változatlan.
+
+A két konkrét szolgáltatói válasz kis méretű mintája:
+`tools/tests/fixtures/artwork-credit-examples.json`. A Geszti / Embertelen dal'22
+eset kiadványa 1628334370 (iTunes), a Henri PFR & Carston / Make Love eset
+4328692062-es dal és 1114034762-es kislemez (Deezer). Mindkettő nyilvános
+adatlapját és kiadványtulajdonosát 2026-11-14-én külön ellenőriztük.
+
+### Ellenőrzés ehhez a javításhoz
+
+- 689 Node-ellenőrzés, 65 + 15 Python-ellenőrzés sikeres; a valódi C++
+  kreditpolitika ESP32-fordítóval ellenőrzött pozitív és negatív mintákkal.
+- A normál firmware fordítása sikeres, statikus RAM: 103172 bájt, ugyanannyi,
+  mint a javítás előtti 1.3.14-ben. A webcsomag és a könyvtárak változatlanok.
+- Fizikai rádió, némított ICY-adás: a Geszti-példa MP3-mal 10,063 s, a Henri
+  PFR-példa FLAC-cal 7,016 s alatt adott borítót. A 16657 és 8189 bájtos képek
+  SHA-256 alapján megegyeztek a fenti ellenőrzött kiadványok képeivel. Az idő
+  az állomásindítást és az összehasonlító képletöltést is tartalmazza.
+- Az ismételt, már gyorsítótáras próba 2,578 és 2,266 s, sikeres teljes
+  visszaállítással. Mind a 7 eredeti állomás, 3 saját logó, minden eredeti
+  beállítás és a frissen mentett lejátszóállapot egyezett az induló mentéssel.
+- A hideg próbát lezáró segédprogram a sikeres törlés szöveges OK válaszát
+  tévesen JSON-ként olvasta, ezért annak folyamatkódja hibás volt, bár mindkét
+  kép és az adat-visszaállítás már igazolt volt. A javított segédprogram
+  ismételt teljes futása sikeres; a korábbi nyers naplók megmaradtak. Egy
+  korábbi induló segédpróba szintén válaszformátum-feltételezésen állt meg.
+- Ezek célzott működési próbák, nem az összes internetes szolgáltató
+  késleltetésének összehasonlító mérései vagy akusztikus/hosszú terheléses tesztek.
+
 ## Gyors csatornaváltás és megszakított keresés (2026-11-09)
 
 - A csatornaváltással vagy leállítással félbeszakított albumkeresés külön
