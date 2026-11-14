@@ -2,6 +2,7 @@
 #include "artwork_http_policy.h"
 #include "artwork_network_gate.h"
 #include "handshake_slices.h"
+#include "ram_work_priority.h"
 #include "../config/version.h"
 
 #include <HTTPClient.h>
@@ -306,13 +307,17 @@ template<class Client> bool request(Client& client, const String& url, size_t li
   encoding.toLowerCase();
   client.expectBody(length, encoding.indexOf("chunked") >= 0);
   const int written = http.writeToStream(&sink);
+  // Judge the transfer before socket/TLS destruction. Cleanup can be delayed
+  // by other tasks and must not turn an already complete response into a
+  // timeout. Partial, cancelled or late bodies still fail the same checks.
+  const bool bodyAccepted = transfer.service() && written >= 0 && sink.size &&
+      (length < 0 || sink.size == static_cast<size_t>(length));
   finish();
   if (sink.limitExceeded) {
     response.error = "response size limit reached: limit=" + String(limit) + " bytes=" + String(sink.size);
     return false;
   }
-  if (!transfer.service() || written < 0 || !sink.size ||
-      (length > 0 && sink.size != static_cast<size_t>(length))) {
+  if (!bodyAccepted) {
     response.error = "body read failed: code=" + String(written) + " bytes=" + String(sink.size) +
                      " expected=" + String(length);
     return false;
@@ -396,6 +401,8 @@ static bool getAttempt(const String& url, size_t limit, Response& response, cons
 }
 
 bool get(const String& url, size_t limit, Response& response, const Options& supplied) {
+  // This scope ends before callers decode/store station logos on flash.
+  const ArtworkRamWorkPriority priority;
   Options options = supplied;
   if (!options.deadlineMs || (!expired(options.deadlineMs) &&
                              options.deadlineMs - millis() > REQUEST_MS)) {

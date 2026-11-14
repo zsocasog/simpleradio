@@ -52,8 +52,8 @@ test('short reads are accumulated and an incomplete body never triggers successf
   const h = clientHarness(10, { actual: 7 });
   assert.equal(h.read(4), 4); assert.equal(h.read(6), 3);
   assert.equal(h.stopped, false); assert.equal(h.read(3), -1);
-  assert.match(http, /written < 0 \|\| !sink.size/);
-  assert.match(http, /sink.size != static_cast<size_t>\(length\)/);
+  assert.match(http, /written >= 0 && sink.size/);
+  assert.match(http, /sink.size == static_cast<size_t>\(length\)/);
 });
 test('chunked and unknown-length bodies keep HTTPClient framing and EOF handling', () => {
   for (const [length, chunked] of [[10, true], [-1, false]]) {

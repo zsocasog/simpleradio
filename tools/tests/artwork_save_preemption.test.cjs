@@ -3,6 +3,7 @@ const source=fs.readFileSync(path.join(__dirname,'../../src/artwork/artwork_http
 function body(marker){const at=source.indexOf(marker);assert.ok(at>=0);const start=source.indexOf('{',at);let n=0;
  for(let i=start;i<source.length;++i){if(source[i]==='{')++n;if(source[i]==='}'&&!--n)return source.slice(start,i+1);}}
 const code=body('bool get(const String&')
+ .replace('const ArtworkRamWorkPriority priority;','') // Scheduling has its own nesting/base-priority tests.
  .replace(/const uint32_t /g,'const ').replace('static_cast<uint32_t>(millis() - retryStarted)','((millis() - retryStarted) >>> 0)').replace('1100U','1100')
  .replace('Options options = supplied;','const options={...supplied};')
  .replace('bool settingsInterrupted = false;','const settingsInterrupted={value:false};')

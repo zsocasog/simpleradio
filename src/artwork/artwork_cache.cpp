@@ -11,6 +11,7 @@
 #include "artwork_title_match.h"
 #include "artwork_track_parts.h"
 #include "artwork_http_policy.h"
+#include "ram_work_priority.h"
 #include "artwork_json.h"
 #include "artwork_json_reader.h"
 #include "picker_logo_loader.h"
@@ -2618,6 +2619,9 @@ std::vector<String> ArtworkCache::resolveAlbumArtworkUrls(const String& artist, 
 
 bool ArtworkCache::resolveAndDownloadAlbumArtwork(const String& artist, const String& title,
                                                    const String& key, String& outPath) {
+  // This path only publishes album pixels in PSRAM; it never writes flash.
+  // Cover lookup, JSON ranking and RAM decode all need a runnable CPU share.
+  const ArtworkRamWorkPriority priority;
   const unsigned long searchStartedMs = millis();
   const AlbumSearchPolicy::Budget budget(searchStartedMs);
   AlbumArtworkFallbacks fallbacks;
@@ -3574,12 +3578,19 @@ void ArtworkCache::invalidateLcdThumbnail(const String& imagePath) {
   }
 
   bool removed = false;
-  if (ReadOnlyStorage::exists(LittleFS.mountpoint(), thumbPath.c_str())) {
-    removed = LittleFS.remove(thumbPath) || removed;
-  }
-  String tempPath = thumbPath + ".tmp";
-  if (ReadOnlyStorage::exists(LittleFS.mountpoint(), tempPath.c_str())) {
-    removed = LittleFS.remove(tempPath) || removed;
+  // A logo can have both a contained list thumbnail and a fill-cropped player
+  // thumbnail. Replacing/deleting its source must retire both disk variants,
+  // just as the RAM variants above are retired. Otherwise stale pixels survive
+  // replacement and deleted/test stations leave an orphaned 62 KiB image.
+  const String thumbnailPaths[] = {thumbPath, lcdThumbnailPath(localPath, true)};
+  for (const String& path : thumbnailPaths) {
+    if (ReadOnlyStorage::exists(LittleFS.mountpoint(), path.c_str())) {
+      removed = LittleFS.remove(path) || removed;
+    }
+    String tempPath = path + ".tmp";
+    if (ReadOnlyStorage::exists(LittleFS.mountpoint(), tempPath.c_str())) {
+      removed = LittleFS.remove(tempPath) || removed;
+    }
   }
 
   if (removed) {

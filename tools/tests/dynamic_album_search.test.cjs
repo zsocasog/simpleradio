@@ -66,6 +66,7 @@ const budgetBody = budgetClass.slice(budgetClass.indexOf('public:') + 7, budgetC
   .replace(/return metadataRemaining\(/g, 'return this.metadataRemaining(');
 const Budget = new Function('LOOKUP_BUDGET_MS','IMAGE_BUDGET_MS','PROVIDER_BUDGET_MS','MIN_PROVIDER_BUDGET_MS',`return class { ${budgetBody} remaining(now,limit) { const elapsed=(now-this.started_)>>>0; return elapsed>=limit?0:limit-elapsed; } }`)(35000,12000,12000,3000);
 const searchBody = block(cpp, 'bool ArtworkCache::resolveAndDownloadAlbumArtwork(')
+  .replace('const ArtworkRamWorkPriority priority;', '') // Tested by artwork_ram_priority.test.cjs.
   .replace('const AlbumSearchPolicy::Budget budget(searchStartedMs);', 'const budget = new Budget(searchStartedMs);')
   .replace('AlbumArtworkFallbacks fallbacks;', 'const fallbacks = { singles:[], artistCollections:[], unverified:[], compilations:[] };')
   .replace('AlbumArtworkSearch search;', 'const search = { musicBrainz:new Round() };')
