@@ -1,4 +1,5 @@
 #pragma once
+#include <atomic>
 
 #include <Arduino.h>
 #include <freertos/FreeRTOS.h>
@@ -43,6 +44,7 @@ private:
   void renderIdleClock(bool force = false);
   void renderAudioMeterFrame(bool force = false);
   void renderDateTimeFooterFrame(bool force = false);
+  void renderFooterConfigFrame();
   void renderVolumePopupFrame(bool forceFull = false);
   void dismissVolumePopupNow();
   void resetStationPickerMarqueeNow(int selectedStationId);
@@ -55,9 +57,9 @@ private:
   bool taskStarted = false;
   DisplayModel pendingModel;
   bool hasPendingModel = false;
-  bool pendingConfigApply = false;
-  bool pendingActivity = false;
-  bool pendingArtworkRefresh = false;
+  std::atomic<bool> pendingConfigApply{false};
+  std::atomic<bool> pendingActivity{false};
+  std::atomic<bool> pendingArtworkRefresh{false};
   bool deferredArtworkRefresh = false;
   int pendingBootProgress = -1;
   bool pendingBootFinish = false;

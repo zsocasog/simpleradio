@@ -1,6 +1,15 @@
 const fs=require('node:fs'),path=require('node:path'),vm=require('node:vm'),test=require('node:test'),assert=require('node:assert/strict');
 const root=path.resolve(__dirname,'../..'),web=fs.readFileSync(path.join(root,'src/web/web_server.cpp'),'utf8');
-function body(s,marker){const b=s.indexOf('{',s.indexOf(marker));let depth=0;for(let i=b;i<s.length;i++){if(s[i]==='{')depth++;if(s[i]==='}'&&!--depth)return s.slice(b,i+1);}throw Error(marker);}
+function body(s,marker){
+ const at=s.indexOf(marker);assert.ok(at>=0,marker);const b=s.indexOf('{',at);let depth=0;
+ // JSON literals in webServerLoop contain braces; they are not C++ scopes.
+ for(let i=b;i<s.length;i++){
+  if(s[i]==='"'||s[i]==="'"){const quote=s[i];while(++i<s.length){if(s[i]==='\\')i++;else if(s[i]===quote)break;}continue;}
+  if(s[i]==='/'&&s[i+1]==='/'){i=s.indexOf('\n',i);if(i<0)break;continue;}
+  if(s[i]==='/'&&s[i+1]==='*'){i=s.indexOf('*/',i+2)+1;continue;}
+  if(s[i]==='{')depth++;if(s[i]==='}'&&!--depth)return s.slice(b,i+1);
+ }throw Error(marker);
+}
 function harness(){
  const sent=[];
  const c=vm.createContext({active:0,stationSaveImageHolds:0,stationImageHead:0,stationImageTail:0,stationImageCount:0,stationImageConnected:0,

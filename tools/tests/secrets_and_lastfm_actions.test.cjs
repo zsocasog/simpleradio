@@ -111,3 +111,29 @@ test("a deliberate key deletion waits for an active slider gesture instead of be
   assert.equal(app.requests[0].params.get("clearLastFmApiKey"), "1");
   assert.equal(app.requests[0].params.has("lastFmApiKey"), false);
 });
+
+test('an old tab saving brightness cannot switch artwork mode or undo newer device settings', async () => {
+  const app = frontend();
+  app.context.currentConfig = {displayArtworkMode:'logo',brightness:128,irEnabled:true,mqttHost:'old.local'};
+  app.context.collectConfig = () => ({displayArtworkMode:'logo',brightness:'200',irEnabled:'1',mqttHost:'old.local'});
+  const backend = {displayArtworkMode:'album',brightness:128,irEnabled:false,mqttHost:'new.local'};
+  app.context.fetch = async (_url, options) => {
+    const patch=Object.fromEntries(new URLSearchParams(options.body));
+    assert.deepEqual(patch,{brightness:'200'});
+    Object.assign(backend,patch);
+    return {ok:true,json:async()=>({...backend})};
+  };
+  await app.context.postConfig();
+  assert.equal(backend.displayArtworkMode,'album');assert.equal(backend.irEnabled,false);
+  assert.equal(backend.mqttHost,'new.local');assert.equal(app.context.currentConfig.displayArtworkMode,'album');
+});
+
+test('intentional mode changes and false/zero values still reach the device', async () => {
+  const app = frontend();
+  app.context.currentConfig = {displayArtworkMode:'logo',brightness:128,irEnabled:true};
+  app.context.collectConfig = () => ({displayArtworkMode:'album',brightness:'0',irEnabled:'0'});
+  await app.context.postConfig();
+  assert.equal(app.requests[0].params.get('displayArtworkMode'),'album');
+  assert.equal(app.requests[0].params.get('brightness'),'0');
+  assert.equal(app.requests[0].params.get('irEnabled'),'0');
+});

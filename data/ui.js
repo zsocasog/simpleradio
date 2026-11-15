@@ -636,7 +636,8 @@
     const sensitivity = id("irSensitivity").closest("label") || id("irSensitivity").parentElement;
     sensitivity.className = "ir-sensitivity";
     const range = make("span", "ir-sensitivity-range"); range.append(id("irSensitivity"), id("irSensitivityValue"));
-    sensitivity.appendChild(range); details.after(sensitivity);
+    const sensitivityHelp = sensitivity.querySelector(".form-note");
+    sensitivity.appendChild(range); if (sensitivityHelp) sensitivity.appendChild(sensitivityHelp); details.after(sensitivity);
   }
   function buildMobileNavigation() {
     const nav = make("nav", "mobile-navigation"); nav.setAttribute("aria-label", tr("ui.mobileNavigation", "Mobilnavigáció"));
@@ -764,12 +765,12 @@
         drawing += rect(51 + i * 16, meterAxis - height, 9, height * 2 + 1);
       });
     } else if (mode === "station") {
-      drawing = text(state.station || "SimpleRadio", 240, 292, 20);
+      drawing = '<g font-weight="700">' + text(state.station || "SimpleRadio", 240, 296, 32) + '</g>';
     } else if (mode === "datetime") {
       const now = new Date(), pad = n => String(n).padStart(2, "0");
       const separator = document.documentElement.lang === "hu" ? "." : "-";
       const date = [now.getFullYear(), pad(now.getMonth() + 1), pad(now.getDate())].join(separator) + (separator === "." ? "." : "");
-      drawing = text(date + "  " + pad(now.getHours()) + ":" + pad(now.getMinutes()), 240, 292, 20);
+      drawing = '<g font-weight="700">' + text(date + "  " + pad(now.getHours()) + ":" + pad(now.getMinutes()), 240, 296, 32) + '</g>';
     }
     id("layoutPreviewFooter").innerHTML = drawing;
   };

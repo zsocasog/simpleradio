@@ -32,6 +32,7 @@ public:
 
   void load();
   bool save();
+  uint32_t revision() const;
   void applyTimeZone() const;
 
   String toJson() const;

@@ -34,6 +34,9 @@ let onlineSearchQueryKey = "";
 let onlineSearchVisibleCount = 0;
 let onlineSearchSeen = new Set();
 let irPollTimer;
+let configRefreshRevision = 0;
+let configRefreshTimer = null;
+let configRefreshBusy = false;
 let systemStatusTimer;
 let currentConfig = {};
 let hardwareCapabilities = {
@@ -402,6 +405,11 @@ function connectWS() {
   ws = new WebSocket(`ws://${location.host}/ws`);
   ws.onopen = () => {
     lastWsMessageAt = Date.now();
+    if (configLoaded) {
+      clearTimeout(configRefreshTimer); configRefreshTimer = null; configRefreshRevision = 0;
+      currentConfig.configurationRevision = 0; // A reboot starts a new revision sequence.
+      loadConfig().catch(error => console.warn("Reconnected settings refresh failed", error));
+    }
     setText("connectionInfo", t("status.connected", "Csatlakozva"));
     sendHeartbeat();
     wsHeartbeatTimer = setInterval(sendHeartbeat, WS_HEARTBEAT_MS);
@@ -423,6 +431,10 @@ function connectWS() {
       lastWsMessageAt = Date.now();
       const payload = JSON.parse(event.data);
       if (payload && payload.pong) return;
+      if (payload && payload.configurationChanged) {
+        requestConfigRefresh(payload.configurationRevision);
+        return; // Refresh settings independently of the unchanged player state.
+      }
       if (payload && payload.stationArtworkReady) refreshMissingStationArtwork();
       if (payload && payload.stationsChanged && Number(payload.stationsRevision) !== stationListRevision)
         loadStations().catch(error => console.warn("Station list refresh failed", error));
@@ -2197,7 +2209,14 @@ async function postConfig(action = {}) {
   let savedOk = false;
 
   try {
-    const submittedConfig = { ...collectConfig(), ...deferredConfigAction };
+    // A stale tab must not overwrite unrelated device settings when saving one
+    // control. Compare with the form's own loaded baseline, not a fresh read
+    // that would erase the user's edit. The server merges this partial update.
+    const changes = Object.fromEntries(Object.entries(collectConfig()).filter(([key, value]) => {
+      const previous = currentConfig[key];
+      return sliderDirty.has(key) || String(value) !== (typeof previous === "boolean" ? (previous ? "1" : "0") : String(previous));
+    }));
+    const submittedConfig = { ...changes, ...deferredConfigAction };
     deferredConfigAction = {};
     const submittedSliderRevisions = new Map([...sliderDirty].map(([id, dirty]) => [id, dirty.revision]));
     if (submittedConfig.clearLastFmApiKey === "1") delete submittedConfig.lastFmApiKey;
@@ -2439,8 +2458,38 @@ function applyConfigToUI(config) {
 }
 
 async function loadConfig() {
+  const connection = ws;
+  const previousRevision = currentConfig.configurationRevision;
   const response = await fetch("/api/config");
-  if (response.ok) applyConfigToUI(await response.json());
+  if (!response.ok) return;
+  const config = await response.json();
+  if (ws !== connection || configSaving) return;
+  if (previousRevision !== currentConfig.configurationRevision && config.configurationRevision < currentConfig.configurationRevision) return;
+  applyConfigToUI(config);
+}
+
+function requestConfigRefresh(revision) {
+  if (!Number.isInteger(revision) || revision < 1) return;
+  if (revision <= Number(currentConfig.configurationRevision || 0)) return;
+  configRefreshRevision = Math.max(configRefreshRevision, revision);
+  if (!configRefreshBusy && configRefreshTimer === null) configRefreshTimer = setTimeout(refreshChangedConfig, 120);
+}
+
+async function refreshChangedConfig() {
+  configRefreshTimer = null;
+  if (Number(currentConfig.configurationRevision || 0) >= configRefreshRevision) return;
+  // A device-side change must not overwrite a locally edited or saving form.
+  if (configSaving || configSaveTimer || configSaveDeferred || sliderGestures.size || document.hidden) {
+    configRefreshTimer = setTimeout(refreshChangedConfig, 250);
+    return;
+  }
+  configRefreshBusy = true;
+  try { await loadConfig(); }
+  catch (error) { console.warn("Device settings refresh failed", error); }
+  finally {
+    configRefreshBusy = false;
+    if (Number(currentConfig.configurationRevision || 0) < configRefreshRevision) configRefreshTimer = setTimeout(refreshChangedConfig, 1500);
+  }
 }
 
 async function loadHardwareCapabilities() {

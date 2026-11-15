@@ -21,7 +21,7 @@ VERSIONS = read_versions(ROOT.parent / 'src/config/version.h')
 WEB_BUILD = json.loads((ROOT / 'build-info.json').read_text(encoding='utf-8'))
 LOCK = threading.Lock()
 REQUESTS = []
-CONFIG = dict(displayInvert=False, brightness=230, displayIdleEnabled=True,
+CONFIG = dict(configurationRevision=1, displayInvert=False, brightness=230, displayIdleEnabled=True,
     displayIdleBlank=False, displayIdleSeconds=120, displayIdleBrightness=13,
     displayClockEnabled=True, displayClockStyle='digital', displayFooterMode='spectrum',
     displayArtworkMode='album', displayVuStyle='symmetric',
@@ -142,6 +142,7 @@ class Handler(BaseHTTPRequestHandler):
                     IR_BANKS[CONFIG['irRemoteProfile']]={ir_key(action):CONFIG[ir_key(action)] for action in IR_ACTIONS}
                 if data.get('lastFmApiKey'): CONFIG.update(hasLastFmApiKey=True,hasSavedLastFmApiKey=True)
                 if data.get('clearLastFmApiKey')=='1': CONFIG.update(hasLastFmApiKey=True,hasSavedLastFmApiKey=False)
+                CONFIG['configurationRevision']+=1
                 return self.reply(CONFIG)
             if path=='/__preview/learn':
                 action=CONFIG.get('irActionLearning','')

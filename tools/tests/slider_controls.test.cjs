@@ -220,3 +220,19 @@ test('zero standby brightness survives save acknowledgement and UI refresh',asyn
  const h=harness();h.down('displayIdleBrightness');h.input('displayIdleBrightness',0);h.up();await h.advance(140);
  assert.equal(h.nodes.get('displayIdleBrightness').value,'0');
 });
+test('device-side footer refresh preserves a locally edited brightness value',()=>{
+ const h=harness();h.down('brightness');h.input('brightness',211);
+ h.context.applyConfigToUI({brightness:80,displayFooterMode:'datetime',displayVuStyle:'classic'});
+ assert.equal(h.nodes.get('brightness').value,'211');
+ assert.equal(h.nodes.get('displayFooterMode').value,'datetime');
+ assert.equal(h.nodes.get('displayVuStyle').value,'classic');
+});
+
+test('returning a config slider to its loaded value still commits once and releases editing protection',async()=>{
+ for(const s of sliders.filter(s=>!['volume','soundEqLow','soundEqMid','soundEqHigh','soundBalance'].includes(s.id))){
+  const h=harness(),original=h.nodes.get(s.id).value;
+  h.down(s.id);h.input(s.id,finalValue(s));h.input(s.id,original);h.up();if(s.type==='color')h.fire(s.id,'change');await h.advance(140);
+  assert.equal(h.saves().length,1,s.id);assert.equal(h.saves()[0].values[s.id],original,s.id);
+  assert.equal(h.run('sliderDirty.has('+JSON.stringify(s.id)+')'),false,s.id);
+ }
+});

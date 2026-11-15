@@ -9,6 +9,7 @@
 #include "station_logo_policy.h"
 #include "lcd_image_policy.h"
 #include "artwork_title_match.h"
+#include "artwork_title_cleanup.h"
 #include "artwork_soundtrack_match.h"
 #include "artwork_track_parts.h"
 #include "artwork_credit_policy.h"
@@ -2204,7 +2205,9 @@ std::vector<String> ArtworkCache::resolveAlbumArtworkUrls(const String& artist, 
       ? requestStartedMs + AlbumSearchPolicy::PROVIDER_BUDGET_MS : deadlineMs;
   const auto titleView = ArtworkTitleMatch::withoutBroadcastYear(std::string_view(title.c_str(), title.length()));
   const auto lookupView = ArtworkTitleMatch::withoutBiographicalNote(titleView);
-  const String lookupTitle(lookupView.data(), lookupView.size());
+  const auto cleanedTitle = ArtworkTitleCleanup::normalize(lookupView);
+  const auto providerTitle = cleanedTitle.changed ? cleanedTitle.view() : lookupView;
+  const String lookupTitle(providerTitle.data(), providerTitle.size());
   const String artistQuery = encodeArtworkQuery(confirmedPrimaryArtist(artist, search.lastFmConfirmedRecordingCredits));
   const String titleQuery = encodeArtworkQuery(albumTitleForSearch(lookupTitle));
   ArtworkJson::Allocator jsonAllocator;

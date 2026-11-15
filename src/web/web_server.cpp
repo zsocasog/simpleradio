@@ -2119,6 +2119,18 @@ static void queueStationImage(AsyncWebServerRequest* request) {
 
 void webServerLoop() {
   processSettingsSave();
+  static uint32_t sentConfigRevision = 0;
+  const uint32_t configRevision = AppConfig::instance().revision();
+  if (ws.count() && configRevision != sentConfigRevision) {
+    // Retain the ordinary player fields for already-open older WebUIs.
+    String notice = PlayerState::instance().toJson();
+    if (notice.endsWith("}")) {
+      notice.remove(notice.length() - 1);
+      notice += ",\"configurationChanged\":true,\"configurationRevision\":" + String(configRevision) + "}";
+      ws.textAll(notice);
+      sentConfigRevision = configRevision;
+    }
+  }
   completeStationSave();
   dispatchPendingStationSave();
   dispatchStationImages();

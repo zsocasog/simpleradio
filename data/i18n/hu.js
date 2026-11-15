@@ -1,6 +1,7 @@
 /* Translate dictionary values only; keep keys and {placeholders}. */
 (function () {
   const dict = {
+    "ir.sensitivityHelp": "Időzítési tűrés, nem vételi teljesítmény. A nagyobb érték nem mindig javítja a felismerést.",
     "led.title": "LED világítás",
     "led.enabled": "Bekapcsolva",
     "led.volumeEnabled": "Hangerőjelzés",

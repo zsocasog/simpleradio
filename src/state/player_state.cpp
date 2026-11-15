@@ -1,4 +1,6 @@
 #include "player_state.h"
+#include "broadcast_metadata.h"
+#include "../artwork/artwork_title_cleanup.h"
 #include "../artwork/artwork_json.h"
 #include "../config/app_config.h"
 #include "../stations/station_manager.h"
@@ -632,6 +634,14 @@ void PlayerState::setStreamArtistTitle(const String& streamArtist, const String&
 
   String nextArtist = normalizeText(streamArtist);
   String nextTitle = normalizeText(streamTitle);
+  const auto cleaned = BroadcastMetadata::cleanTitle(std::string_view(nextTitle.c_str(), nextTitle.length()));
+  if (cleaned.main.size() + cleaned.year.size() != nextTitle.length()) {
+    // The cleaned title is a prefix plus the original year suffix. Erase the
+    // intervening prose in place, without another String/heap allocation.
+    nextTitle.remove(cleaned.main.size(), nextTitle.length() - cleaned.main.size() - cleaned.year.size());
+  }
+  const auto deduplicated = ArtworkTitleCleanup::normalize(std::string_view(nextTitle.c_str(), nextTitle.length()), false);
+  if (deduplicated.changed) nextTitle = deduplicated.bytes;
   nextArtist.trim();
   nextTitle.trim();
 

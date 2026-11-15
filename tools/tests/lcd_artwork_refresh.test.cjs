@@ -39,12 +39,13 @@ function model(fields = {}) {
 }
 function harness() {
   const draws = [], files = new Set(), valid = new Set(), ready = new Set(), ram = new Map();
+  const atomic = () => ({ value: false, store(v) { this.value = v; }, exchange(v) { const old = this.value; this.value = v; return old; } });
   const thumb = (image, fill = false) => image.startsWith('/api/artwork/album?')
     ? image : `${image}${fill ? '_fill' : ''}.sr565`;
   const c = vm.createContext({ model, now: 1000, millis: () => c.now,
     taskStarted: true, pendingMutex: {}, hasPendingModel: false, pendingModel: null,
-    pendingArtworkRefresh: false, deferredArtworkRefresh: false,
-    pendingConfigApply: false, pendingActivity: false, pendingBootProgress: -1,
+    pendingArtworkRefresh: atomic(), deferredArtworkRefresh: false,
+    pendingConfigApply: atomic(), pendingActivity: atomic(), pendingBootProgress: -1,
     pendingBootFinish: false, pendingPickerAction: 0, pendingPickerStationId: -1, pendingPickerRequest: 0,
     bootActive: false, hasDeferredBootModel: false, hasRenderedModel: true,
     idleBlanked: false, idleClockActive: false, idleGuardBlanked: false,
@@ -166,7 +167,7 @@ for (const overlay of ['stationPickerActive', 'idleBlanked', 'volumePopupUntil']
 test('an obsolete station completion cannot request a redraw of the current station', () => {
   const h = harness(); h.prepare('/logos/old.png');
   assert.equal(h.c.completed('/logos/old.png', {}), false); h.service();
-  assert.equal(h.draws.length, 0); assert.equal(h.c.pendingArtworkRefresh, false);
+  assert.equal(h.draws.length, 0); assert.equal(h.c.pendingArtworkRefresh.value, false);
 });
 
 test('an unfinished thumbnail cannot publish itself as ready', () => {

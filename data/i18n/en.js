@@ -1,6 +1,7 @@
 /* Translate dictionary values only; keep keys and {placeholders}. */
 (function () {
   const dict = {
+    "ir.sensitivityHelp": "Timing tolerance, not receiver power. A higher value does not always improve recognition.",
     "led.title": "LED lighting",
     "led.enabled": "Enabled",
     "led.volumeEnabled": "Volume feedback",

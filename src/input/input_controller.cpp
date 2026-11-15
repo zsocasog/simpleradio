@@ -28,7 +28,8 @@ static constexpr TickType_t INPUT_TASK_DELAY = pdMS_TO_TICKS(2);
 #include <IRutils.h>
 
 static constexpr uint16_t IR_CAPTURE_BUFFER_SIZE = 128;
-static constexpr uint8_t IR_CAPTURE_TIMEOUT_MS = 80;
+// Short gaps delimit ordinary remote frames before the next repeat arrives.
+static constexpr uint8_t IR_CAPTURE_TIMEOUT_MS = 15;
 static constexpr uint16_t IR_MIN_UNKNOWN_SIZE = 12;
 static constexpr unsigned long IR_LEARNING_ARM_MS = 300;
 static constexpr unsigned long IR_REPEAT_WINDOW_MS = 800;
@@ -713,6 +714,7 @@ static bool decodedIrCode(const decode_results& result, uint64_t& code, bool& re
   repeat = result.repeat;
   if (repeat) {
     code = lastIrCode;
+    lastIrCodeMs = millis(); // Keep a continuous hold alive, not just its first 800ms.
     return code != 0;
   }
 
@@ -722,6 +724,13 @@ static bool decodedIrCode(const decode_results& result, uint64_t& code, bool& re
   return true;
 }
 #endif
+
+static bool repeatableIrAction(const char* action) {
+  return strcmp(action, "volUp") == 0 || strcmp(action, "volDown") == 0 ||
+    strcmp(action, "prev") == 0 || strcmp(action, "next") == 0 ||
+    strcmp(action, "up") == 0 || strcmp(action, "down") == 0 ||
+    strcmp(action, "left") == 0 || strcmp(action, "right") == 0;
+}
 
 static void handleIrCode(uint64_t code, bool repeat) {
   AppConfig& config = AppConfig::instance();
@@ -754,6 +763,7 @@ static void handleIrCode(uint64_t code, bool repeat) {
   for (const char* action : actions) {
     uint64_t* slot = irSlot(config, action);
     if (slot && *slot && code == *slot) {
+      if (repeat && !repeatableIrAction(action)) return;
       applyIrAction(action);
       return;
     }
@@ -838,7 +848,8 @@ void InputController::loop() {
     if (decodedIrCode(irResults, code, repeat)) {
       handleIrCode(code, repeat);
     }
-    irrecv.resume();
+    // save_buffer=true already resumes capture inside decode(). Resuming here
+    // would erase the start of a new frame received while handling this one.
   }
 #endif
 }

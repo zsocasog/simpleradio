@@ -1850,7 +1850,7 @@ static void drawStationFooter(const DisplayModel& m) {
   resetRenderedVuMeter();
 
   String station = lcdSafeText(m.station.length() ? m.station : I18n::NO_STATION);
-  setUiFont(2);
+  setUiFont(3);
   drawUiText(fitText(station, SCREEN_W - sx(44)),
              SCREEN_W / 2,
              FOOTER_TEXT_CENTER_Y,
@@ -1905,7 +1905,7 @@ static void drawDateTimeFooter(bool force = false) {
   resetRenderedVuMeter();
 
   String line = lcdSafeText(footerDateTimeText(timeinfo, haveTime));
-  setUiFont(2);
+  setUiFont(3);
   drawUiText(fitText(line, SCREEN_W - sx(44)),
              SCREEN_W / 2,
              FOOTER_TEXT_CENTER_Y,
@@ -3474,12 +3474,6 @@ void Display::taskLoop() {
       hasModel = true;
       hasPendingModel = false;
     }
-    applyConfigRequest = pendingConfigApply;
-    pendingConfigApply = false;
-    activityRequest = pendingActivity;
-    pendingActivity = false;
-    artworkRefreshRequest = pendingArtworkRefresh;
-    pendingArtworkRefresh = false;
     bootProgressRequest = pendingBootProgress;
     pendingBootProgress = -1;
     bootFinishRequest = pendingBootFinish;
@@ -3492,6 +3486,11 @@ void Display::taskLoop() {
     pendingPickerRequest = 0;
     xSemaphoreGive(pendingMutex);
   }
+
+  // Flag-only requests must survive contention with model/string copies.
+  applyConfigRequest = pendingConfigApply.exchange(false);
+  activityRequest = pendingActivity.exchange(false);
+  artworkRefreshRequest = pendingArtworkRefresh.exchange(false);
 
   // Open the list before an unrelated model update can paint the player again.
   if (pickerAction == 1) showStationPickerNow(pickerStationId, pickerRequest);
@@ -3579,10 +3578,7 @@ void Display::applyConfig() {
     return;
   }
 
-  if (xSemaphoreTake(pendingMutex, pdMS_TO_TICKS(20)) == pdTRUE) {
-    pendingConfigApply = true;
-    xSemaphoreGive(pendingMutex);
-  }
+  pendingConfigApply.store(true);
 }
 
 void Display::applyConfigNow() {
@@ -3753,7 +3749,6 @@ void Display::renderNow(const DisplayModel& m) {
     notifyActivityNow();
   }
   lastModel = m;
-  lastFooterMode = currentFooterMode;
   hasRenderedModel = true;
 
   if (dismissVolumePopup) {
@@ -3825,7 +3820,9 @@ void Display::renderCurrent() {
   deferredArtworkRefresh = false;
 
   drawInfoRegion(m);
+  const uint8_t drawnFooter = footerRenderKey();
   drawFooterRegion(m);
+  lastFooterMode = drawnFooter;
 }
 
 void Display::renderPartial(const DisplayModel& previous, bool footerModeChanged) {
@@ -3882,7 +3879,9 @@ void Display::renderPartial(const DisplayModel& previous, bool footerModeChanged
   }
 
   if (footerChanged) {
+    const uint8_t drawnFooter = footerRenderKey();
     drawFooterRegion(m);
+    lastFooterMode = drawnFooter;
   }
 
 }
@@ -4040,6 +4039,7 @@ void Display::tickNow() {
     renderIdleClock(false);
   }
 
+  renderFooterConfigFrame();
   renderAudioMeterFrame(false);
   renderDateTimeFooterFrame(false);
   renderStationPickerMarqueeFrame();
@@ -4053,6 +4053,17 @@ void Display::tickNow() {
   }
   renderVolumePopupFrame(false);
   applyConfigNow();
+}
+
+void Display::renderFooterConfigFrame() {
+  const uint8_t desiredFooter = footerRenderKey();
+  if (!hasRenderedModel || desiredFooter == lastFooterMode || bootActive ||
+      idleBlanked || idleClockActive || idleGuardBlanked || lastModel.apMode ||
+      stationPickerActive || (volumePopupUntil && millis() < volumePopupUntil)) return;
+  clearVuBars();
+  resetVuAutoScale();
+  drawFooterRegion(lastModel);
+  lastFooterMode = desiredFooter; // Acknowledge only the footer actually painted.
 }
 
 void Display::renderDateTimeFooterFrame(bool force) {
@@ -4215,10 +4226,7 @@ void Display::notifyActivity() {
     return;
   }
 
-  if (xSemaphoreTake(pendingMutex, 0) == pdTRUE) {
-    pendingActivity = true;
-    xSemaphoreGive(pendingMutex);
-  }
+  pendingActivity.store(true);
 }
 
 void Display::notifyActivityNow() {
@@ -4244,10 +4252,7 @@ void Display::refreshArtwork() {
     return;
   }
 
-  if (xSemaphoreTake(pendingMutex, pdMS_TO_TICKS(10)) == pdTRUE) {
-    pendingArtworkRefresh = true;
-    xSemaphoreGive(pendingMutex);
-  }
+  pendingArtworkRefresh.store(true);
 }
 
 void Display::refreshArtworkNow() {

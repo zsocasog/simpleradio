@@ -3,12 +3,18 @@
 
 #include <LittleFS.h>
 #include <time.h>
+#include <atomic>
 #include <esp_heap_caps.h>
 #include "hardware_capabilities.h"
 #include "../storage/atomic_file.h"
 #include "../diagnostics/runtime_probe.h"
 
 static const char* CONFIG_FILE = "/config.json";
+static std::atomic<uint32_t> configurationRevision{1};
+
+uint32_t AppConfig::revision() const {
+  return configurationRevision.load(std::memory_order_acquire);
+}
 
 // Layout parsing is infrequent, bounded and PSRAM-only. It must not fragment
 // the internal heap needed by the audio/image workers.
@@ -310,13 +316,16 @@ bool AppConfig::save() {
   doc["frontLedReverse"] = frontLedReverse;
 
   if (doc.overflowed()) return false; // Never replace settings with a partial document.
-  return writeJsonAtomic(CONFIG_FILE, doc, true);
+  if (!writeJsonAtomic(CONFIG_FILE, doc, true)) return false;
+  configurationRevision.fetch_add(1, std::memory_order_release);
+  return true;
 }
 
 String AppConfig::toJson() const {
   SR_PERF_SPAN(ConfigJson);
   ArtworkJson::Allocator jsonAllocator;
   JsonDocument doc(&jsonAllocator);
+  doc["configurationRevision"] = revision();
   doc["irRemoteProfilesVersion"] = 1;
   doc["irRemoteProfile"] = irRemoteProfile;
   doc["irRemoteCustom"] = irRemoteCustom;
