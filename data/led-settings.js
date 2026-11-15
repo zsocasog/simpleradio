@@ -5,6 +5,15 @@
   const orders = ["RGB", "RBG", "GRB", "GBR", "BRG", "BGR"];
   const normalized = value => Object.fromEntries(keys.map(key => [key, key === "frontLedInverted" ? !!value[key] : key.endsWith("Pin") || key === "frontLedCount" ? Number(value[key] ?? defaults[key]) : String(value[key] ?? defaults[key])]));
   const same = (a, b) => keys.every(key => a[key] === b[key]);
+  function preview(count, start, reverse, volume = 50) {
+    count = Math.max(1, Math.min(64, Math.trunc(Number(count) || 1)));
+    const first = (Math.max(1, Math.trunc(Number(start) || 1)) - 1) % count;
+    const filled = Math.ceil(count * Math.max(0, Math.min(100, Number(volume) || 0)) / 100);
+    return Array.from({ length: count }, (_, physical) => ({
+      first: physical === first,
+      lit: (reverse ? (first + count - physical) % count : (physical + count - first) % count) < filled
+    }));
+  }
   function validate(value, hardware) {
     if (!["none", "pwm", "neopixel"].includes(value.frontLedType) || !orders.includes(value.frontLedOrder)) return "invalid";
     if (!Number.isInteger(value.frontLedCount) || value.frontLedCount < 1 || value.frontLedCount > Number(hardware.maxCount || 64)) return "countError";
@@ -17,11 +26,34 @@
     }
     return "";
   }
-  if (typeof module === "object" && module.exports) module.exports = { keys, defaults, normalized, same, validate };
+  if (typeof module === "object" && module.exports) module.exports = { keys, defaults, normalized, same, validate, preview };
   if (!root.document) return;
   const $ = id => root.document.getElementById(id);
   const tr = (key, vars) => root.srT ? root.srT("led." + key, key, vars) : key;
   let cap = {}, saved = normalized(defaults), active = normalized(defaults), dirty = false, saving = false, initialized = false;
+  let volumeConfig = {};
+  function volumePreview() {
+    const strip = volumeConfig.frontLedType === "neopixel";
+    const count = Math.max(1, Math.min(64, Number(volumeConfig.frontLedCount) || 1));
+    const panel = $("frontLedVolumeControls");
+    panel.classList.toggle("hidden", !cap.volumeCue);
+    const enabled = !!$("frontLedVolumeEnabled").checked;
+    root.document.querySelectorAll("[data-led-volume-geometry]").forEach(row => row.classList.toggle("hidden", !strip || !enabled));
+    $("frontLedVolumeHelp").textContent = tr(strip && count > 1 ? "volumeStripHelp" : "volumeSingleHelp");
+    const start = $("frontLedStartPixel");
+    if (start.options.length !== count) {
+      const selected = Math.max(1, Math.min(count, Number(volumeConfig.frontLedStartPixel) || 1));
+      start.replaceChildren();
+      for (let i = 1; i <= count; i++) { const option = root.document.createElement("option"); option.value = String(i); option.textContent = String(i); start.append(option); }
+      start.value = String(selected);
+    }
+    const view = $("frontLedVolumePreview"); view.classList.toggle("hidden", !strip || !enabled);
+    $("frontLedVolumePreviewLabel").classList.toggle("hidden", !strip || !enabled);
+    view.replaceChildren();
+    if (strip && enabled) for (const item of preview(count, start.value, $("frontLedReverse").value === "1")) {
+      const dot = root.document.createElement("i"); dot.classList.toggle("is-lit", item.lit); dot.classList.toggle("is-first", item.first); view.append(dot);
+    }
+  }
   function values() {
     const value = Object.fromEntries(keys.map(key => [key, $(key).value]));
     value.frontLedInverted = value.frontLedInverted === "1";
@@ -59,6 +91,7 @@
       $("frontLedHardwareBadge").textContent = label;
       $("frontLedHardwareBadge").classList.toggle("is-unavailable", saved.frontLedType === "none");
     }
+    volumePreview();
   }
   async function save() {
     if (saving || !dirty || validate(values(), cap)) return;
@@ -76,6 +109,7 @@
     if (initialized || !$("frontLedSetup")) return;
     initialized = true;
     for (const key of keys) $(key).addEventListener("input", () => { dirty = !same(values(), saved); refresh(); });
+    for (const key of ["frontLedVolumeEnabled", "frontLedStartPixel", "frontLedReverse"]) $(key).addEventListener("input", volumePreview);
     $("saveLedHardware").addEventListener("click", save);
     $("cancelLedHardware").addEventListener("click", () => { dirty = false; write(saved); refresh(); });
     $("rebootLedHardware").addEventListener("click", () => requestSystemReboot());
@@ -93,7 +127,7 @@
       $("frontLedCount").max = String(cap.maxCount || 64); write(saved); refresh();
     },
     configuration(config) {
-      init(); saved = normalized(config);
+      init(); saved = normalized(config); volumeConfig = config;
       if (!dirty && !saving) write(saved);
       refresh();
     }

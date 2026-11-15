@@ -654,6 +654,7 @@ static String hardwareCapabilitiesJson() {
   frontLed["inverted"] = ledHardware.inverted;
   frontLed["order"] = FrontLedPolicy::name(ledHardware.order);
   frontLed["maxCount"] = FrontLedPolicy::MAX_PIXELS;
+  frontLed["volumeCue"] = true;
   frontLed["ready"] = StatusLed::instance().ready();
   frontLed["error"] = StatusLed::instance().error();
   JsonArray ledPins = frontLed["pins"].to<JsonArray>();
@@ -2875,11 +2876,12 @@ void webServerBegin() {
       if (value != String(value.toInt())) doc[name] = value;
       else doc[name] = value.toInt();
     };
-    for (const char* name : {"frontLedCount", "frontLedDataPin", "frontLedRedPin", "frontLedGreenPin", "frontLedBluePin"}) setLedInteger(name);
-    if (request->hasParam("frontLedInverted", true)) {
-      const String value = request->getParam("frontLedInverted", true)->value();
-      if (value == "0" || value == "1") doc["frontLedInverted"] = value == "1";
-      else doc["frontLedInverted"] = value;
+    for (const char* name : {"frontLedCount", "frontLedDataPin", "frontLedRedPin", "frontLedGreenPin", "frontLedBluePin", "frontLedStartPixel"}) setLedInteger(name);
+    for (const char* name : {"frontLedInverted", "frontLedVolumeEnabled", "frontLedReverse"}) {
+      if (!request->hasParam(name, true)) continue;
+      const String value = request->getParam(name, true)->value();
+      if (value == "0" || value == "1") doc[name] = value == "1";
+      else doc[name] = value;
     }
     setString("frontLedOrder");
 

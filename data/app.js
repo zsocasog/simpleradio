@@ -2043,6 +2043,11 @@ function syncFrontLedControls() {
   if (standbyBrightness) standbyBrightness.disabled = !enabled;
   if (color) color.disabled = !enabled || useTheme;
   if (colorText) colorText.disabled = !enabled || useTheme;
+  const volume = $("frontLedVolumeEnabled");
+  if (volume) volume.disabled = !enabled || !hardware?.volumeCue;
+  ["frontLedStartPixel", "frontLedReverse"].forEach(name => {
+    const node = $(name); if (node) node.disabled = !enabled || !volume?.checked;
+  });
 }
 
 function syncIrHardwareControls() {
@@ -2159,6 +2164,11 @@ function collectConfig() {
     frontLedStandbyBrightness: $("frontLedStandbyBrightness").value,
     frontLedColor: normalizeHexColor($("frontLedColor").value)
   };
+  if (hardwareCapabilities.frontRgbLed?.volumeCue) Object.assign(data, {
+    frontLedVolumeEnabled: $("frontLedVolumeEnabled").checked ? "1" : "0",
+    frontLedStartPixel: $("frontLedStartPixel").value || "1",
+    frontLedReverse: $("frontLedReverse").value || "0"
+  });
   const lastFmApiKey = $("lastFmApiKey").value.trim();
   if (lastFmApiKey) data.lastFmApiKey = lastFmApiKey;
   irActions.forEach(item => {
@@ -2413,6 +2423,9 @@ function applyConfigToUI(config) {
   syncVolumeCurve();
   $("frontLedEnabled").checked = !!config.frontLedEnabled;
   $("frontLedUseTheme").checked = config.frontLedUseTheme !== false;
+  $("frontLedVolumeEnabled").checked = !!config.frontLedVolumeEnabled;
+  setConfigValue("frontLedStartPixel", config.frontLedStartPixel ?? 1);
+  setConfigValue("frontLedReverse", config.frontLedReverse ? "1" : "0");
   setConfigValue("frontLedBrightness", config.frontLedBrightness ?? 128);
   setPercentLabel("frontLedBrightness");
   setConfigValue("frontLedStandbyBrightness", config.frontLedStandbyBrightness ?? 13);

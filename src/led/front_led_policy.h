@@ -81,6 +81,50 @@ constexpr uint8_t pwm(uint8_t value, bool inverted) { return inverted ? 255 - va
 constexpr uint16_t highTicks(bool bit) { return bit ? 8 : 4; }
 constexpr uint16_t lowTicks(bool bit) { return bit ? 4 : 8; }
 constexpr unsigned symbols(int count) { return count * 24 + 1; } // Last symbol is the 300us latch.
+constexpr uint32_t VOLUME_HOLD_MS = 3000, VOLUME_FADE_MS = 300;
+struct VolumeCue {
+  bool known = false, active = false;
+  uint8_t volume = 0;
+  uint32_t changedMs = 0;
+  constexpr void observe(uint8_t next, bool enabled, uint32_t now) {
+    if (next > 100) next = 100;
+    if (known && next != volume && enabled) { active = true; changedMs = now; }
+    if (!enabled || (active && uint32_t(now - changedMs) >= VOLUME_HOLD_MS)) active = false;
+    known = true; volume = next;
+  }
+  constexpr void cancel() { active = false; }
+  constexpr uint8_t weight(uint32_t now) const {
+    const uint32_t age = uint32_t(now - changedMs);
+    if (!active || age >= VOLUME_HOLD_MS) return 0;
+    return age <= VOLUME_HOLD_MS - VOLUME_FADE_MS ? 255 : (VOLUME_HOLD_MS - age) * 255 / VOLUME_FADE_MS;
+  }
+};
+struct Frame {
+  std::array<uint8_t, 3> color{};
+  uint8_t volume = 0, weight = 0, startPixel = 1;
+  bool reverse = false;
+};
+constexpr bool sameFrame(const Frame& a, const Frame& b) {
+  return a.color[0] == b.color[0] && a.color[1] == b.color[1] && a.color[2] == b.color[2] && a.weight == b.weight &&
+    (!a.weight || (a.volume == b.volume && a.startPixel == b.startPixel && a.reverse == b.reverse));
+}
+constexpr bool validStart(int start) { return start >= 1 && start <= MAX_PIXELS; }
+constexpr unsigned filledPixels(unsigned count, unsigned volume) { return (count * (volume > 100 ? 100 : volume) + 99) / 100; }
+constexpr unsigned logicalPixel(unsigned physical, unsigned count, unsigned start, bool reverse) {
+  if (!count) return 0;
+  const unsigned first = (start ? start - 1 : 0) % count;
+  return reverse ? (first + count - physical % count) % count : (physical + count - first) % count;
+}
+constexpr std::array<uint8_t, 3> pixel(const Frame& frame, unsigned physical, unsigned count) {
+  auto result = frame.color;
+  if (!frame.weight) return result;
+  const bool lit = logicalPixel(physical, count, frame.startPixel, frame.reverse) < filledPixels(count, frame.volume);
+  for (unsigned channel = 0; channel < 3; ++channel) {
+    const uint8_t cue = count <= 1 ? uint16_t(frame.color[channel]) * frame.volume / 100 : lit ? frame.color[channel] : 0;
+    result[channel] = (uint32_t(cue) * frame.weight + uint32_t(frame.color[channel]) * (255 - frame.weight) + 127) / 255;
+  }
+  return result;
+}
 struct Transfer {
   bool inFlight = false;
   uint32_t startedUs = 0;

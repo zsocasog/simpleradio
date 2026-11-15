@@ -42,3 +42,48 @@ constexpr bool timing() {
     t.stalled(false, 100000) && !t.stalled(true, 100000);
 }
 static_assert(timing());
+constexpr bool volumeTiming() {
+  VolumeCue cue;
+  cue.observe(60, true, 0);
+  if (cue.active || cue.weight(0)) return false; // No cue at startup.
+  cue.observe(70, true, 100);
+  if (cue.weight(100) != 255 || cue.weight(2800) != 255 || cue.weight(2950) != 127 || cue.weight(3100)) return false;
+  cue.observe(80, true, 3000); // Continuous adjustments restart the hold.
+  if (cue.weight(3100) != 255) return false;
+  cue.observe(80, true, 6000);
+  if (cue.active) return false;
+  cue.observe(0, true, 6100);
+  if (!cue.active) return false;
+  cue.observe(0, false, 6101);
+  if (cue.active || cue.weight(6101)) return false;
+  cue.observe(0, true, 6200);
+  if (cue.active) return false;
+  cue.observe(10, true, 0xfffffff0U);
+  return cue.weight(84) == 255 && cue.weight(0x00000ba8U) == 0;
+}
+static_assert(volumeTiming());
+static_assert(validStart(1) && validStart(64) && !validStart(0) && !validStart(65));
+constexpr bool pixelMapping() {
+  for (unsigned count : {2U, 8U, 16U, 24U, 64U}) for (unsigned start : {1U, count / 2 + 1, count})
+    for (unsigned volume : {0U, 1U, 25U, 50U, 99U, 100U}) for (bool reverse : {false, true}) {
+      Frame f{{100, 120, 140}, uint8_t(volume), 255, uint8_t(start), reverse};
+      unsigned lit = 0;
+      for (unsigned position = 0; position < count; ++position) {
+        const auto color = pixel(f, position, count);
+        if (color[0]) { ++lit; if (color[0] != 100 || color[1] != 120 || color[2] != 140) return false; }
+      }
+      if (lit != filledPixels(count, volume)) return false;
+    }
+  Frame f{{100, 120, 140}, 50, 255, 3, false};
+  if (pixel(f, 0, 8)[0] != 0 || pixel(f, 2, 8)[0] != 100 || pixel(f, 5, 8)[0] != 100 || pixel(f, 6, 8)[0]) return false;
+  f.reverse = true;
+  if (pixel(f, 7, 8)[0] != 100 || pixel(f, 3, 8)[0]) return false;
+  if (pixel(f, 0, 1)[0] != 50) return false; // One LED uses proportional intensity.
+  f.weight = 0;
+  if (pixel(f, 3, 8)[0] != 100) return false; // Background returns on expiry.
+  Frame same = f; same.volume = 1; same.startPixel = 8; same.reverse = false;
+  if (!sameFrame(f, same)) return false; // No redundant background transfers.
+  same.weight = 255;
+  return !sameFrame(f, same);
+}
+static_assert(pixelMapping());

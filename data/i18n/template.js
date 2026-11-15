@@ -1,6 +1,16 @@
 /* Translate dictionary values only; keep keys and {placeholders}. */
 (function () {
   const dict = {
+    "led.title": "LED lighting",
+    "led.enabled": "Enabled",
+    "led.volumeEnabled": "Volume feedback",
+    "led.startPixel": "Starting LED",
+    "led.direction": "Fill direction",
+    "led.forward": "Forward",
+    "led.reverse": "Reverse",
+    "led.volumePreview": "50% example; the outlined dot is the starting LED.",
+    "led.volumeStripHelp": "After a volume change, the fill shows the volume for 3 seconds, then gently returns to ambient lighting.",
+    "led.volumeSingleHelp": "After a volume change, the LED shows proportional brightness for 3 seconds, then gently returns to ambient lighting.",
     "led.setupHelp": "Configure the LED type and wiring here. Hardware changes take effect after restarting.",
     "led.type": "LED type",
     "led.none": "No LED",

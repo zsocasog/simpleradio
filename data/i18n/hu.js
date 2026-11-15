@@ -1,6 +1,16 @@
 /* Translate dictionary values only; keep keys and {placeholders}. */
 (function () {
   const dict = {
+    "led.title": "LED világítás",
+    "led.enabled": "Bekapcsolva",
+    "led.volumeEnabled": "Hangerőjelzés",
+    "led.startPixel": "Kezdő LED",
+    "led.direction": "Kitöltés iránya",
+    "led.forward": "Előre",
+    "led.reverse": "Visszafelé",
+    "led.volumePreview": "50%-os példa; a keretes pont a kezdő LED.",
+    "led.volumeStripHelp": "Hangerőváltozáskor a kitöltés 3 másodpercig jelzi a hangerőt, majd finoman visszatér a hangulatfényhez.",
+    "led.volumeSingleHelp": "Hangerőváltozáskor a LED 3 másodpercig hangerőarányos fényerővel jelez, majd finoman visszatér a hangulatfényhez.",
     "led.setupHelp": "A bekötést és a LED típusát itt állíthatod be. A hardverváltozások újraindítás után lépnek életbe.",
     "led.type": "LED típusa",
     "led.none": "Nincs LED",

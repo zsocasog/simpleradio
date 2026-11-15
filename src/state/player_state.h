@@ -66,6 +66,7 @@ public:
   bool hasStreamImage = false;
 
   PlayerStateSnapshot snapshot() const;
+  bool tryVolume(uint8_t& value) const;
   uint32_t revision() const;
   String toJson() const;
   bool applyCommand(const JsonDocument& cmd);

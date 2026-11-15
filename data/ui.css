@@ -477,17 +477,23 @@ body[data-view=player] .station-playing:not([hidden]) .station-activity-bar { an
 .system-local-tabs { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); max-width: 560px; gap: 0; overflow: visible; }
 .system-local-tabs button { min-width: 0; }
 .appearance-settings { margin-bottom: 0; border-bottom: 0; }
-.led-settings { margin: 18px 0 30px; }
-.led-settings > summary { color: var(--accent); }
-.led-settings > summary .hardware-badge { margin-left: auto; }
-.led-settings > .led-fields { border-left: 0; padding: 0; }
-.led-settings[open] > summary { margin-bottom: 18px; }
+.led-fields { border-left: 0; padding: 0; min-width: 0; }
+.led-dialog-meta { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 22px; }
+#ledSettingsDialog .setting-range { width: 100%; }
+#ledSettingsDialog .setting-range input { min-width: 0; }
+#ledSettingsDialog .setting-toggle { justify-content: space-between; }
 .led-hardware-setup { margin-bottom: 24px; padding-bottom: 22px; border-bottom: 1px solid var(--line); }
 .led-hardware-setup .form-note { line-height: 1.55; }
 .led-hardware-setup .setting-row { gap: 12px; }
 .led-hardware-setup select, .led-hardware-setup input { min-width: 0; max-width: 100%; }
 .led-setup-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 16px; }
 .led-hardware-setup .is-error { color: var(--danger, #f48d8d); }
+.led-volume-controls { margin-top: 22px; border-top: 1px solid var(--line); }
+.led-volume-controls .form-note { line-height: 1.55; }
+.led-volume-preview { display: flex; flex-wrap: wrap; gap: 5px; margin: 14px 0 10px; padding: 3px; }
+.led-volume-preview i { width: 10px; height: 10px; border-radius: 50%; background: var(--line); }
+.led-volume-preview i.is-lit { background: var(--accent); }
+.led-volume-preview i.is-first { outline: 1px solid var(--accent); outline-offset: 2px; }
 /* Equal resting height, with sensitivity always visible rather than disclosed. */
 .ir-workbench { align-items: stretch; }
 .ir-workbench:has(.ir-mappings[open]) .remote-unit { align-self: start; }

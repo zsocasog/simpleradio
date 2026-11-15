@@ -277,13 +277,17 @@
     addMarkup(integrations, '<h2>' + esc(tr("ui.integrations", "Integrációk")) + '</h2>');
     const service = (kind, title, infoId) => {
       const row = make("div", "integration-row");
+      row.dataset.integration = kind;
       const name = make("strong", "service-name");
-      name.innerHTML = U.icon(kind === "mqtt" ? "broadcast" : "brand-lastfm") + '<span>' + esc(title) + '</span>';
+      name.innerHTML = U.icon(kind === "led" ? "bulb" : kind === "mqtt" ? "broadcast" : "brand-lastfm") + '<span>' + esc(title) + '</span>';
       row.appendChild(name);
       const statusText = make("span", "muted"); statusText.id = infoId;
-      row.append(statusText, button(tr(kind === "mqtt" ? "ui.settings" : "ui.modify", kind === "mqtt" ? "Beállítások" : "Módosítás"), "chevron-right", () => U.openConnection(kind))); return row;
+      const settings = button(tr(kind === "lastfm" ? "ui.modify" : "ui.settings", kind === "lastfm" ? "Módosítás" : "Beállítások"), "chevron-right", () => kind === "led" ? U.openLed() : U.openConnection(kind));
+      settings.setAttribute("aria-haspopup", "dialog"); settings.setAttribute("aria-controls", kind === "led" ? "ledSettingsDialog" : "connectionDialog");
+      row.append(statusText, settings); return row;
     };
-    integrations.append(service("mqtt", "MQTT", "overviewMqtt"), service("lastfm", "Last.fm", "overviewLastfm")); sections.overview.appendChild(integrations);
+    const ledTitle = tr("led.title", "LED világítás");
+    integrations.append(service("mqtt", "MQTT", "overviewMqtt"), service("lastfm", "Last.fm", "overviewLastfm"), service("led", ledTitle, "overviewLed")); sections.overview.appendChild(integrations);
     const overviewTools = make("div", "overview-tools");
     const github = about.querySelector(".status-about-link")?.cloneNode(true);
     if (github) {
@@ -299,14 +303,15 @@
     }
     const led = id("frontLedPanel"); const retry = id("streamRetryEnabled").closest(".settings-section");
     id("controlsView").querySelector(".settings-column:last-child").appendChild(retry);
-    const ledDetails = make("details", "disclosure led-settings");
-    const ledSummary = make("summary");
-    ledSummary.innerHTML = U.icon("chevron-right") + U.icon("bulb") + '<span>' + esc(led.querySelector("h2").textContent) + '</span>';
-    ledSummary.appendChild(id("frontLedHardwareBadge"));
+    U.ledDialog = dialog("ledSettingsDialog", ledTitle);
+    U.ledDialog.dataset.dismissOnBackdrop = "false";
+    const ledStatus = button(tr("ui.allSaved", "Minden módosítás mentve"), "", () => { if (U.lastSaveState === "error") saveConfigNow(); }, "config-save-status");
+    ledStatus.setAttribute("aria-live", "polite");
+    const ledMeta = make("div", "led-dialog-meta"); ledMeta.append(id("frontLedHardwareBadge"), ledStatus);
     led.querySelector(".settings-section-head").remove();
     led.classList.remove("settings-column"); led.classList.add("led-fields");
-    ledDetails.append(ledSummary, led);
-    id("displayView").querySelector(".settings-column:last-child").appendChild(ledDetails);
+    U.ledDialog.querySelector(".dialog-body").append(ledMeta, led);
+    U.ledDialog.addEventListener("close", () => { if (!document.querySelector("dialog[open]")) document.body.classList.remove("has-dialog"); });
     U.connectionDialog = dialog("connectionDialog", "");
     const lastfm = root.querySelector(".lastfm-settings-panel"), mqtt = id("mqttSettingsForm");
     U.connectionPanels = { mqtt, lastfm };
@@ -333,7 +338,7 @@
     });
     const connections = sections.connections;
     connections.append(make("h2", "", tr("ui.services", "Kapcsolatok és szolgáltatások")));
-    connections.append(service("mqtt", "MQTT", "connectionMqtt"), service("lastfm", "Last.fm", "connectionLastfm"));
+    connections.append(service("mqtt", "MQTT", "connectionMqtt"), service("lastfm", "Last.fm", "connectionLastfm"), service("led", ledTitle, "connectionLed"));
     const hint = make("p", "muted", tr("ui.connectionsHelp", "A szolgáltatás beállításai a Módosítás gombbal nyithatók meg.")); connections.appendChild(hint);
     const ota = root.querySelector(".ota-panel"); sections.update.appendChild(ota);
     const oldSurface = root.querySelector(":scope > .settings-surface"); oldSurface?.remove();
@@ -343,6 +348,12 @@
     if (!U.sections || !U.sections[name]) return;
     U.localTab = name;
     Object.entries(U.sections).forEach(([key, n]) => { visible(n, key === name); const b = id("systemLocal-" + key); b.classList.toggle("active", key === name); b.setAttribute("aria-selected", String(key === name)); b.tabIndex = key === name ? 0 : -1; });
+  };
+  U.openLed = async () => {
+    if (!configLoaded) { try { await loadConfig(); } catch (_) { return; } }
+    if (!configLoaded) return;
+    showView("system"); U.saveState(U.lastSaveState || "idle"); openDialog(U.ledDialog);
+    setTimeout(() => id("frontLedType")?.focus(), 0);
   };
   function captureConnectionDraft() {
     if (!U.connectionKind) return;
@@ -513,7 +524,6 @@
     const appearance = make("section", "settings-section appearance-settings");
     appearance.append(make("h2", "", tr("ui.appearance", "Megjelenés")), make("small", "theme-help", tr("ui.sharedTheme", "Az LCD és a webfelület közös színei.")), id("themeAccent").closest("label"), id("themeCustomColorField"), id("displayInvert").closest("label"));
     brightnessSection.after(appearance);
-    appearance.after(document.querySelector(".led-settings"));
     for (const [time, level, key, fallback] of [["dayStartTime", "dayBrightness", "ui.day", "Nappali"], ["nightStartTime", "nightBrightness", "ui.night", "Éjszakai"]]) {
       const clockRow = id(time).closest("label"), levelRow = id(level).closest("label");
       const row = make("div", "schedule-row"); clockRow.before(row); row.append(clockRow, levelRow);
@@ -670,6 +680,10 @@
     }
     const source = config.hasSavedLastFmApiKey ? tr("ui.webKeyActive", "Weben mentett kulcs aktív") : config.hasLastFmApiKey ? tr("ui.firmwareKeyActive", "Firmware-kulcs aktív") : tr("ui.notConfigured", "Nincs megadva");
     ["connectionLastfm", "overviewLastfm"].forEach(name => { id(name).textContent = source; });
+    const ledType = config.frontLedType || hardwareCapabilities.frontRgbLed?.type || "none";
+    const ledName = ledType === "pwm" ? "RGB" : ledType === "neopixel" ? "WS2812 · " + (config.frontLedCount || 1) : tr("led.none", "Nincs LED");
+    const ledState = config.frontLedEnabled ? tr("led.enabled", "Bekapcsolva") : tr("status.disabled", "Kikapcsolva");
+    ["overviewLed", "connectionLed"].forEach(name => { id(name).textContent = ledType === "none" ? ledName : ledName + " · " + ledState; });
     visible(id("deleteLastFmApiKey"), !!config.hasSavedLastFmApiKey);
     visible(id("lastFmKeyDeleteHelp"), !!config.hasSavedLastFmApiKey);
     (U.secondFields || []).forEach(([source, target]) => { if (document.activeElement !== id(target)) id(target).value = String(Number(id(source).value) / 1000); });
@@ -797,6 +811,7 @@
     U.moreDialog?.querySelectorAll("[data-mobile-destination]").forEach(n => { n.classList.toggle("active", n.dataset.mobileDestination === view); });
     if (view !== "stations" && U.stationDialog.open) U.stationDialog.close();
     if (view !== "system" && U.connectionDialog.open) U.connectionDialog.close();
+    if (view !== "system" && U.ledDialog.open) U.ledDialog.close();
   };
   function init() {
     buildStations(); buildSystem(); buildSettings(); buildPlayer(); buildRemote(); buildMobileNavigation();

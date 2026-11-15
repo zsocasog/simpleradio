@@ -1,13 +1,14 @@
 # Előlapi LED
 
-A **Kijelző → Előlapi RGB LED** részen választható a LED típusa és bekötése.
+A **Rendszer → Integrációk → LED világítás → Beállítások** panelen
+választható a LED típusa és bekötése. A Kapcsolatok fülön is elérhető.
 A firmware és a webcsomag frissítése egyaránt szükséges az új beállításokhoz.
 
 - **Nincs LED:** a kijelölt hagyományos RGB-lábak kikapcsolt szintet kapnak; nincs PWM-vezérlés vagy szalagpuffer-foglalás.
 - **Hagyományos RGB LED:** egy háromcsatornás RGB fényforrás, külön piros,
   zöld és kék GPIO-val; közös katód vagy közös anód.
 - **WS2812 / WS2812B RGB:** 1–64 címezhető RGB pixel, egy adatvezetéken.
-  A gyűrű/szalag minden pixelén ugyanaz a beállított szín jelenik meg.
+  Alaphelyzetben a gyűrű/szalag minden pixelén ugyanaz a beállított szín jelenik meg.
   Ez a mód nem SK6812 RGBW, APA102 vagy analóg RGB szalagvezérlő.
 
 A **LED hardver mentése** gomb egyben menti a típust, darabszámot, GPIO-kat,
@@ -25,15 +26,22 @@ ezt a konkrét panel bekötésén ellenőrizni kell.
 A LED használata, témaszín vagy egyedi szín, normál és készenléti fényerő
 újraindítás nélkül változtatható. A fényerőcsúszkák egér/érintés felengedésekor,
 billentyűzetnél Enterre vagy a mező elhagyásakor mentenek. Kikapcsolt
-kijelzőnél a LED is kialszik. VU, hangerő- és boot-animáció ebben a körben
-nem került a LED-re.
+kijelzőnél a LED is kialszik.
+
+A **Hangerőjelzés** külön bekapcsolható. Hangerőváltozáskor a szalag vagy
+gyűrű kitöltése három másodpercig jelzi a hangerőt, majd az utolsó 300 ms-ban
+finoman visszatér a hangulatfényhez. A kezdő LED és a haladás iránya
+újraindítás nélkül választható; az 50%-os előnézet segít a beállításban.
+Egyetlen RGB LED esetén a jelzés hangerőarányos fényerővel működik.
+A beállított LED-fényerőt a jelzés sem lépi túl, 0%-nál kialszik,
+induláskor pedig nincs külön hangerőjelzés. VU- és boot-animáció még nincs.
 
 A GPIO vezérlőjelet ad: a tápellátást a konkrét LED/modul adatlapja szerint
 kell kialakítani, szükség szerinti meghajtóval, ellenállással és
 jelszintillesztéssel. Az ESP és a LED-táp földje közös legyen.
 
 A szalag hardveres RMT-adóval, aszinkron módon működik. A kód nem vár a
-küldés végére, a még használt puffert nem írja felül, és csak színváltozáskor
+küldés végére, a még használt puffert nem írja felül, és csak megváltozott kép esetén
 küld új képet. A puffer egyszer, induláskor készül el; 64 RGB pixelnél
 6148 bájt belső RAM, a meghajtó saját foglalásán felül. Külön LED-feladat
 és új hangelemzés nem indul. Inicializálási vagy küldési hiba csak a LED-et

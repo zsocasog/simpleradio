@@ -4,9 +4,9 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>SimpleRadio</title>
-  <link rel="icon" type="image/svg+xml" sizes="any" href="favicon.svg?v=1.3.14&amp;ui=6da5c4de7a8a">
-  <link rel="stylesheet" href="style.css?v=1.3.14&amp;ui=6da5c4de7a8a">
-  <link rel="stylesheet" href="ui.css?v=1.3.14&amp;ui=6da5c4de7a8a">
+  <link rel="icon" type="image/svg+xml" sizes="any" href="favicon.svg?v=1.3.14&amp;ui=1aa9e329a566">
+  <link rel="stylesheet" href="style.css?v=1.3.14&amp;ui=1aa9e329a566">
+  <link rel="stylesheet" href="ui.css?v=1.3.14&amp;ui=1aa9e329a566">
 </head>
 <body>
   <div class="app-shell">
@@ -655,6 +655,14 @@
                   <label class="setting-row"><span>LED készenléti fényerő</span><span class="setting-range"><input id="frontLedStandbyBrightness" type="range" min="0" max="255" oninput="setPercentLabel('frontLedStandbyBrightness')"><strong id="frontLedStandbyBrightnessValue">0%</strong></span></label>
                   <label class="setting-row"><span>Egyedi szín</span><span class="color-picker-row"><input id="frontLedColor" type="color" value="#a9f7bf" oninput="syncFrontLedColorFromPicker()"><input id="frontLedColorText" type="text" value="#a9f7bf" maxlength="7" autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false" oninput="syncFrontLedColorFromText(); queueConfigSave()" onchange="syncFrontLedColorFromText(); saveConfigNow()"></span></label>
                 </div>
+                <div id="frontLedVolumeControls" class="led-volume-controls hidden">
+                  <label class="setting-row setting-toggle"><span class="setting-copy"><strong data-i18n="led.volumeEnabled">Hangerőváltozás jelzése</strong></span><span class="toggle-switch"><input id="frontLedVolumeEnabled" type="checkbox" onchange="syncFrontLedControls(); saveConfigNow()"><span></span></span></label>
+                  <p id="frontLedVolumeHelp" class="form-note"></p>
+                  <label class="setting-row" data-led-volume-geometry><span data-i18n="led.startPixel">Kezdő LED</span><select id="frontLedStartPixel" onchange="saveConfigNow()"><option value="1">1</option></select></label>
+                  <label class="setting-row" data-led-volume-geometry><span data-i18n="led.direction">Haladási irány</span><select id="frontLedReverse" onchange="saveConfigNow()"><option value="0" data-i18n="led.forward">Előre</option><option value="1" data-i18n="led.reverse">Fordítva</option></select></label>
+                  <div id="frontLedVolumePreview" class="led-volume-preview" aria-hidden="true"></div>
+                  <small id="frontLedVolumePreviewLabel" class="form-note" data-i18n="led.volumePreview">Elrendezési előnézet: 50%-os hangerő. A keretes pont a kezdő LED.</small>
+                </div>
               </section>
             </div>
 
@@ -689,13 +697,13 @@
       <span id="footerVersion">v-</span>
     </footer>
   </div>
-  <script src="i18n-catalog.js?v=1.3.14&amp;ui=6da5c4de7a8a"></script>
-  <script src="i18n.js?v=1.3.14&amp;ui=6da5c4de7a8a"></script>
-  <script src="ir-profiles.js?v=1.3.14&amp;ui=6da5c4de7a8a"></script>
-  <script src="ir-editor.js?v=1.3.14&amp;ui=6da5c4de7a8a"></script>
-  <script src="station-playlist.js?v=1.3.14&amp;ui=6da5c4de7a8a"></script>
-  <script src="led-settings.js?v=1.3.14&amp;ui=6da5c4de7a8a"></script>
-  <script src="ui.js?v=1.3.14&amp;ui=6da5c4de7a8a"></script>
-  <script src="app.js?v=1.3.14&amp;ui=6da5c4de7a8a"></script>
+  <script src="i18n-catalog.js?v=1.3.14&amp;ui=1aa9e329a566"></script>
+  <script src="i18n.js?v=1.3.14&amp;ui=1aa9e329a566"></script>
+  <script src="ir-profiles.js?v=1.3.14&amp;ui=1aa9e329a566"></script>
+  <script src="ir-editor.js?v=1.3.14&amp;ui=1aa9e329a566"></script>
+  <script src="station-playlist.js?v=1.3.14&amp;ui=1aa9e329a566"></script>
+  <script src="led-settings.js?v=1.3.14&amp;ui=1aa9e329a566"></script>
+  <script src="ui.js?v=1.3.14&amp;ui=1aa9e329a566"></script>
+  <script src="app.js?v=1.3.14&amp;ui=1aa9e329a566"></script>
 </body>
 </html>

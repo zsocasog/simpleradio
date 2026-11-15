@@ -4,6 +4,7 @@
 #include <esp_heap_caps.h>
 #include "../config/app_config.h"
 #include "../config/hardware_config.h"
+#include "../state/player_state.h"
 
 struct LedRgb {
   uint8_t r;
@@ -121,8 +122,18 @@ void StatusLed::writePwmPin(int pin, uint8_t value) {
 
 void StatusLed::writeFrontLed(uint8_t r, uint8_t g, uint8_t b) {
   if (!configured) return;
-  red = r; green = g; blue = b;
-  dirty = !sentOnce || red != sentRed || green != sentGreen || blue != sentBlue;
+  requestedFrame.color = {r, g, b};
+  prepareFrame();
+}
+
+void StatusLed::prepareFrame() {
+  const auto& config = AppConfig::instance();
+  if (!config.frontLedEnabled || !config.frontLedVolumeEnabled || displayOff) volumeCue.cancel();
+  requestedFrame.volume = volumeCue.volume;
+  requestedFrame.weight = (requestedFrame.color[0] | requestedFrame.color[1] | requestedFrame.color[2]) ? volumeCue.weight(millis()) : 0;
+  requestedFrame.startPixel = config.frontLedStartPixel;
+  requestedFrame.reverse = config.frontLedReverse;
+  dirty = !sentOnce || !FrontLedPolicy::sameFrame(requestedFrame, sentFrame);
 }
 
 void StatusLed::flush() {
@@ -136,15 +147,19 @@ void StatusLed::flush() {
   }
   if (!dirty) return;
   if (activeHardware.type == Type::Pwm) {
-    writePwmPin(activeHardware.redPin, red); writePwmPin(activeHardware.greenPin, green); writePwmPin(activeHardware.bluePin, blue);
+    const auto color = pixel(requestedFrame, 0, 1);
+    writePwmPin(activeHardware.redPin, color[0]); writePwmPin(activeHardware.greenPin, color[1]); writePwmPin(activeHardware.bluePin, color[2]);
   } else {
-    const auto colors = ordered(activeHardware.order, red, green, blue);
     unsigned index = 0;
-    for (int pixel = 0; pixel < activeHardware.count; ++pixel) for (uint8_t color : colors) for (int bit = 7; bit >= 0; --bit) {
-      const bool one = color & (1U << bit);
-      auto& symbol = pixelSymbols[index++];
-      symbol.level0 = 1; symbol.duration0 = highTicks(one);
-      symbol.level1 = 0; symbol.duration1 = lowTicks(one);
+    for (int position = 0; position < activeHardware.count; ++position) {
+      const auto rgb = pixel(requestedFrame, position, activeHardware.count);
+      const auto colors = ordered(activeHardware.order, rgb[0], rgb[1], rgb[2]);
+      for (uint8_t color : colors) for (int bit = 7; bit >= 0; --bit) {
+        const bool one = color & (1U << bit);
+        auto& symbol = pixelSymbols[index++];
+        symbol.level0 = 1; symbol.duration0 = highTicks(one);
+        symbol.level1 = 0; symbol.duration1 = lowTicks(one);
+      }
     }
     auto& latch = pixelSymbols[index++];
     latch.level0 = 0; latch.duration0 = 3000; latch.level1 = 0; latch.duration1 = 1;
@@ -155,7 +170,7 @@ void StatusLed::flush() {
     transfer.started(micros());
   }
   failures = 0; sentOnce = true; dirty = false;
-  sentRed = red; sentGreen = green; sentBlue = blue;
+  sentFrame = requestedFrame;
 }
 
 void StatusLed::applyConfig() {
@@ -197,6 +212,20 @@ void StatusLed::setDisplayBacklight(uint8_t brightness, bool standby, bool scree
 }
 
 void StatusLed::loop() {
+  if (!configured) return;
+  const uint32_t now = millis();
+  if (uint32_t(now - lastVolumeCheckMs) >= 20) {
+    lastVolumeCheckMs = now;
+    const auto& config = AppConfig::instance();
+    uint8_t volume = 0;
+    if (config.frontLedVolumeEnabled && config.frontLedEnabled && !displayOff) {
+      if (PlayerState::instance().tryVolume(volume)) volumeCue.observe(volume, true, now);
+    } else {
+      volumeCue.cancel();
+      if (!config.frontLedVolumeEnabled || !config.frontLedEnabled) volumeCue.known = false;
+    }
+    prepareFrame();
+  }
   flush();
   if (!configured || millis() - lastCheckMs < 250) return;
   lastCheckMs = millis();

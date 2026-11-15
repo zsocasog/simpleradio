@@ -24,14 +24,16 @@ private:
   void parkPwmPins();
   void writeFrontLed(uint8_t r, uint8_t g, uint8_t b);
   void writePwmPin(int pin, uint8_t value);
+  void prepareFrame();
   void flush();
   void fail(const char* reason);
   FrontLedPolicy::Hardware activeHardware;
   FrontLedPolicy::Transfer transfer;
+  FrontLedPolicy::VolumeCue volumeCue;
+  FrontLedPolicy::Frame requestedFrame, sentFrame;
   rmt_data_t* pixelSymbols = nullptr;
   const char* errorCode = nullptr;
   bool dirty = false, sentOnce = false;
-  uint8_t red = 0, green = 0, blue = 0, sentRed = 0, sentGreen = 0, sentBlue = 0;
   uint8_t failures = 0;
   bool configured = false;
   bool lastEnabled = false;
@@ -45,4 +47,5 @@ private:
   bool displayStandby = false;
   bool displayOff = false;
   unsigned long lastCheckMs = 0;
+  unsigned long lastVolumeCheckMs = 0;
 };

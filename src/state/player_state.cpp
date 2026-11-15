@@ -367,6 +367,15 @@ uint32_t PlayerState::revision() const {
   return playerStateRevision;
 }
 
+bool PlayerState::tryVolume(uint8_t& value) const {
+  // Optional lighting must never block playback or copy metadata Strings.
+  const SemaphoreHandle_t mutex = playerStateMutex;
+  if (!mutex || xSemaphoreTakeRecursive(mutex, 0) != pdTRUE) return false;
+  value = volume;
+  xSemaphoreGiveRecursive(mutex);
+  return true;
+}
+
 String PlayerState::toJson() const {
   PlayerStateSnapshot s = snapshot();
   ArtworkJson::Allocator jsonAllocator;

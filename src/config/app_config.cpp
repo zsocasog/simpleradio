@@ -193,6 +193,10 @@ void AppConfig::load() {
     doc["frontLedEnabled"] = false;
     Serial.println("[led] saved hardware invalid; LED disabled, other settings preserved");
   }
+  if (!validFrontLedVolume(doc)) {
+    frontLedVolumeEnabled = false; frontLedStartPixel = 1; frontLedReverse = false;
+    doc.remove("frontLedVolumeEnabled"); doc.remove("frontLedStartPixel"); doc.remove("frontLedReverse");
+  }
   if (!applyJson(doc)) {
     // A damaged optional layout must not discard WiFi-independent settings or
     // the previously taught legacy IR codes.
@@ -301,6 +305,9 @@ bool AppConfig::save() {
   doc["frontLedBluePin"] = frontLedBluePin;
   doc["frontLedInverted"] = frontLedInverted;
   doc["frontLedOrder"] = frontLedOrder;
+  doc["frontLedVolumeEnabled"] = frontLedVolumeEnabled;
+  doc["frontLedStartPixel"] = frontLedStartPixel;
+  doc["frontLedReverse"] = frontLedReverse;
 
   if (doc.overflowed()) return false; // Never replace settings with a partial document.
   return writeJsonAtomic(CONFIG_FILE, doc, true);
@@ -399,6 +406,9 @@ String AppConfig::toJson() const {
   doc["frontLedBluePin"] = frontLedBluePin;
   doc["frontLedInverted"] = frontLedInverted;
   doc["frontLedOrder"] = frontLedOrder;
+  doc["frontLedVolumeEnabled"] = frontLedVolumeEnabled;
+  doc["frontLedStartPixel"] = frontLedStartPixel;
+  doc["frontLedReverse"] = frontLedReverse;
 
   String out;
   serializeJson(doc, out);
@@ -438,7 +448,16 @@ bool AppConfig::readFrontLedHardware(const JsonDocument& doc, FrontLedPolicy::Ha
   return FrontLedPolicy::valid(hw);
 }
 
+bool AppConfig::validFrontLedVolume(const JsonDocument& doc) const {
+  for (const char* key : {"frontLedVolumeEnabled", "frontLedReverse"}) {
+    if (!doc[key].isUnbound() && !doc[key].is<bool>()) return false;
+  }
+  return doc["frontLedStartPixel"].isUnbound() ||
+    (doc["frontLedStartPixel"].is<int>() && FrontLedPolicy::validStart(doc["frontLedStartPixel"].as<int>()));
+}
+
 bool AppConfig::applyJson(const JsonDocument& doc) {
+  if (!validFrontLedVolume(doc)) return false;
   FrontLedPolicy::Hardware ledHardware;
   if (!readFrontLedHardware(doc, ledHardware)) return false;
   IrLayoutAllocator codeAllocator;
@@ -612,6 +631,10 @@ bool AppConfig::applyJson(const JsonDocument& doc) {
   frontLedDataPin = ledHardware.dataPin; frontLedRedPin = ledHardware.redPin;
   frontLedGreenPin = ledHardware.greenPin; frontLedBluePin = ledHardware.bluePin;
   frontLedInverted = ledHardware.inverted; frontLedOrder = FrontLedPolicy::name(ledHardware.order);
+  if (doc["frontLedVolumeEnabled"].is<bool>()) frontLedVolumeEnabled = doc["frontLedVolumeEnabled"];
+  if (doc["frontLedReverse"].is<bool>()) frontLedReverse = doc["frontLedReverse"];
+  if (doc["frontLedStartPixel"].is<int>()) frontLedStartPixel = doc["frontLedStartPixel"].as<int>();
+  if (ledHardware.type == FrontLedPolicy::Type::NeoPixel) frontLedStartPixel = min(int(frontLedStartPixel), ledHardware.count);
 
   return true;
 }

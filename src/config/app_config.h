@@ -132,11 +132,15 @@ public:
   int frontLedRedPin = FRONT_RGB_R_PIN, frontLedGreenPin = FRONT_RGB_G_PIN, frontLedBluePin = FRONT_RGB_B_PIN;
   bool frontLedInverted = FRONT_RGB_INVERTED;
   String frontLedOrder = "GRB";
+  bool frontLedVolumeEnabled = false;
+  uint8_t frontLedStartPixel = 1;
+  bool frontLedReverse = false;
   FrontLedPolicy::Hardware frontLedHardware() const;
 
 private:
   AppConfig() = default;
   bool readFrontLedHardware(const JsonDocument& doc, FrontLedPolicy::Hardware& hardware) const;
+  bool validFrontLedVolume(const JsonDocument& doc) const;
   IrRemotePolicy::Banks irRemoteCodes{};
   void captureIrRemoteCodes(size_t profile);
   void restoreIrRemoteCodes(size_t profile);
