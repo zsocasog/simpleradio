@@ -52,6 +52,8 @@ static void configureLocalTime() {
   configured = true;
 }
 
+static void startRadioServices();
+
 void setup() {
 #if SIMPLE_RADIO_RUNTIME_DIAGNOSTICS
   RuntimeProbe::begin();
@@ -80,42 +82,48 @@ void setup() {
   display.showBootProgress(30);
   wifi.begin();
   
-  if (wifi.mode() == WifiRunMode::STA_OK) {
-    Serial.println("[setup] STA ready");
-    display.showBootProgress(55);
-    configureLocalTime();
-    Serial.println("[setup] time configured");
-    display.showBootProgress(62);
-    StationManager::instance().begin();
-    Serial.println("[setup] stations loaded");
-    display.showBootProgress(70);
-    StateStorage::instance().load();
-    Serial.println("[setup] state loaded");
-    display.showBootProgress(76);
-    webServerBegin();
-    Serial.println("[setup] web started");
-    display.showBootProgress(84);
-    MqttController::instance().begin();
-    Serial.println("[setup] mqtt started");
-    display.showBootProgress(89);
-    InputController::instance().begin();
-    Serial.println("[setup] input started");
-    display.showBootProgress(94);
-    audioPlayer.begin();
-    Serial.println("[setup] audio started");
-    display.showBootProgress(98);
-    broadcastState();
-    Serial.println("[setup] initial state broadcast");
-  }
+  if (wifi.mode() == WifiRunMode::STA_OK) startRadioServices();
 
   display.showBootProgress(100);
   display.finishBoot();
 }
 
+static void startRadioServices() {
+  Display& display = Display::instance();
+  Serial.println("[setup] STA ready");
+  display.showBootProgress(55);
+  configureLocalTime();
+  Serial.println("[setup] time configured");
+  display.showBootProgress(62);
+  StationManager::instance().begin();
+  Serial.println("[setup] stations loaded");
+  display.showBootProgress(70);
+  StateStorage::instance().load();
+  Serial.println("[setup] state loaded");
+  display.showBootProgress(76);
+  webServerBegin();
+  Serial.println("[setup] web started");
+  display.showBootProgress(84);
+  MqttController::instance().begin();
+  Serial.println("[setup] mqtt started");
+  display.showBootProgress(89);
+  InputController::instance().begin();
+  Serial.println("[setup] input started");
+  display.showBootProgress(94);
+  audioPlayer.begin();
+  Serial.println("[setup] audio started");
+  display.showBootProgress(98);
+  broadcastState();
+  Serial.println("[setup] initial state broadcast");
+}
+
 void loop() {
  SR_PERF_SPAN(MainLoop);
- if (WifiManager::instance().mode() == WifiRunMode::STA_OK) {
-    bool wifiChanged = WifiManager::instance().loop();
+ WifiManager& wifi = WifiManager::instance();
+ const bool configuring = wifi.mode() == WifiRunMode::AP_CONFIG;
+ const bool wifiChanged = wifi.loop();
+ if (wifi.mode() == WifiRunMode::STA_OK) {
+    if (configuring) startRadioServices();
     audioPlayer.loop();
     webServerLoop();
     ArtworkCache::instance().loop();

@@ -211,6 +211,7 @@ body[data-view=player] .station-playing:not([hidden]) .station-activity-bar { an
 .system-local-tabs button { color: var(--muted); border: 0; border-radius: 0; background: transparent; padding: 12px 4px; white-space: nowrap; }
 .system-local-tabs button.active { color: var(--accent); border-bottom: 2px solid var(--accent); }
 .system-section { min-height: 300px; }
+#systemRefreshButton { min-inline-size: 9.5em; }
 .system-section .status-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0; }
 .status-card { border: 0; border-radius: 0; background: transparent; padding: 10px 22px; align-content: start; gap: 6px; }
 .status-card + .status-card { border-left: 1px solid var(--line-soft); }
@@ -316,7 +317,7 @@ body[data-view=player] .station-playing:not([hidden]) .station-activity-bar { an
 .ir-mappings .mapped-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); }
 .mapped-pill { background: transparent; border: 0; border-bottom: 1px solid var(--line-soft); border-radius: 0; cursor: pointer; }
 .app-footer { margin: 32px auto 20px; }
-.visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+.visually-hidden, #irGuide:not(.active) { position: absolute; width: 1px; height: 1px; padding: 0; margin: 0; border: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 .schedule-row { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr); gap: 20px; border-bottom: 1px solid var(--line-soft); align-items: center; }
 .schedule-row .setting-row { border: 0; grid-template-columns: minmax(70px, 1fr) minmax(90px, 1fr); gap: 12px; }
 .schedule-row .setting-row + .setting-row { grid-template-columns: 1fr; }
@@ -344,7 +345,8 @@ body[data-view=player] .station-playing:not([hidden]) .station-activity-bar { an
 .system-section .status-card strong { color: var(--text); }
 #statusWifi { font-size: 15px; color: var(--muted); }
 #statusWifiCard .meter-mini { display: none; }
-.system-section > .quiet-button { border: 0; color: var(--muted); }
+.system-service-shortcuts { display: flex; flex-wrap: wrap; gap: 4px 20px; margin-bottom: 12px; }
+.system-service-shortcuts button { min-height: 44px; padding: 4px; border: 0; color: var(--accent); }
 @media (min-width: 1500px) {
   body[data-view=player] .main { max-width: 1540px; }
   .now-grid { grid-template-columns: minmax(0, 1fr) 400px; gap: 40px; padding-top: 32px; }
@@ -476,7 +478,67 @@ body[data-view=player] .station-playing:not([hidden]) .station-activity-bar { an
 .update-kinds button[aria-checked=true] { border-color: var(--accent); color: var(--accent); background: rgba(var(--accent-rgb), .07); }
 .system-local-tabs { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); max-width: 560px; gap: 0; overflow: visible; }
 .system-local-tabs button { min-width: 0; }
-.appearance-settings { margin-bottom: 0; border-bottom: 0; }
+.appearance-settings { margin: 20px 0 0; border-bottom: 0; }
+.display-shortcuts { display: none; }
+#displayView .settings-section h2 { scroll-margin-top: 105px; }
+body[data-view=player].main-transport-visible #headerTransport { display: none; }
+body[data-view=player].main-transport-visible #playState { display: inline-flex; }
+body[data-view=player].main-transport-visible :is(#connectionInfo, #headerTrack, .header-volume) { display: none; }
+.brand > div { min-width: 0; }
+.brand #headerTrack { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.brand #headerTrack:empty,
+.brand:has(:where(#headerTrack:not(:empty))) .brand-name { display: none; }
+body[data-view=player].main-transport-visible .brand .brand-name { display: block; }
+.header-volume { position: relative; }
+.header-volume > button { border-color: transparent; color: var(--accent); }
+.header-volume-panel { position: absolute; z-index: 5; right: 0; top: calc(100% + 12px); width: min(310px, calc(100vw - 42px)); padding: 8px; border: 1px solid var(--line); border-radius: 12px; background: var(--chrome); box-shadow: 0 8px 24px #0006; }
+.header-volume-panel .volume-rail { --wave-inset: 82px; height: 52px; margin: 0; }
+.player-controls .volume-space { height: 52px; margin-top: 22px; }
+.player-controls .transport .play-main { border-radius: 14px; }
+@media (min-width: 1101px) {
+  .now-grid { grid-template-columns: minmax(0, 1fr) minmax(300px, 32%); }
+  .now-copy { justify-content: center; padding: 0; }
+  .now-copy .player-controls { align-self: flex-start; margin: 24px 0 0; padding: 0; }
+  .player-controls .volume-rail { margin-left: calc(82px - var(--wave-inset)); }
+}
+#stationsView .page-head { align-items: center; }
+#stationsView .page-head h1 { margin-bottom: 3px; }
+#stationManagerCount { color: var(--muted); }
+.station-list-menu > summary { border-radius: 7px; }
+.station-list-menu .menu-action { display: flex; align-items: center; gap: 10px; text-align: left; padding: 10px; line-height: 1.3; }
+.station-list-menu .ui-icon { flex-shrink: 0; }
+.search-box { display: grid; gap: 7px; }
+.saved-search { width: min(100%, 360px); }
+.saved-search .ui-icon { position: absolute; left: 12px; top: 50%; transform: translateY(-50%); width: 18px; color: var(--muted); pointer-events: none; }
+.saved-search input { padding-left: 38px; }
+.search-box input:placeholder-shown + button { visibility: hidden; }
+#stationLogoOptions > label { margin: 12px 0; display: grid; gap: 6px; }
+#stationLogoOptions { margin: 0; }
+#stationLogoOptions > summary { justify-content: flex-start; }
+#stationLogoOptions > summary::after { content: none; }
+.ir-profile-help:empty, #irEditLayout[hidden] { display: none; }
+.ir-guide { display: flex; gap: 12px; align-items: center; justify-content: space-between; padding: 14px 18px; margin-bottom: 18px; border-left: 3px solid var(--accent); background: var(--surface); border-radius: 0 7px 7px 0; }
+.ir-guide-message { display: grid; gap: 4px; }
+.ir-guide button { flex-shrink: 0; }
+.ir-guide strong { color: var(--accent); font-size: 19px; }
+.ir-guide small, #irMotifLabel { color: var(--muted); font-size: 14px; }
+#irView:has(.ir-guide.active) .learn-panel .panel-head > div { display: none; }
+#irView:has(.is-editing) .ir-guide { display: none; }
+#irButtonMotifs { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
+#irButtonMotifs button { display: grid; place-items: center; min-width: 42px; min-height: 42px; padding: 8px; }
+#irButtonMotifs button[aria-pressed=true] { border-color: var(--accent); color: var(--accent); background: rgba(var(--accent-rgb), .08); }
+.ir-editor-status:empty { display: none; }
+.remote-btn .ui-icon { width: 21px; height: 21px; }
+@media (max-width: 740px) {
+  #stationsView .page-head { display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; margin-bottom: 12px; }
+  #stationsView .page-actions { width: 100%; justify-content: space-between; }
+  #stationsView .saved-stations-panel .panel-head { margin: 0; padding-bottom: 12px; }
+  #stationsView .station-list.manager { margin-top: 0; padding-top: 0; }
+  .display-shortcuts { display: flex; gap: 8px; margin-bottom: 16px; }
+  .display-shortcuts button { min-height: 40px; padding: 6px 12px; }
+  #irView:has(.ir-guide.active) .ir-profile-toolbar #irEditLayout { display: none; }
+  .ir-guide.active { position: sticky; top: 80px; z-index: 3; }
+}
 .led-fields { border-left: 0; padding: 0; min-width: 0; }
 .led-dialog-meta { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 22px; }
 #ledSettingsDialog .setting-range { width: 100%; }
@@ -566,6 +628,11 @@ body[data-view=player] .station-playing:not([hidden]) .station-activity-bar { an
   .volume-step:last-child { right: calc(var(--wave-inset) - 34px); }
   .mute-button { left: calc(var(--wave-inset) - 68px); width: 28px; min-width: 28px; }
   #volValue { left: calc(100% - var(--wave-inset) + 40px); width: 48px; font-size: 13px; }
+}
+@media (max-width: 480px) {
+  .topbar { gap: 8px; padding-inline: 12px; }
+  body:not(.main-transport-visible) .topbar .brand-mark,
+  body:not([data-view=player]) .topbar .brand-mark { display: none; }
 }
 @media (max-width: 360px) {
   .player-controls { --skip-size: 44px; --play-size: 56px; --control-icon-size: 24px; --transport-gap: 12px; --transport-inset: 5px; }

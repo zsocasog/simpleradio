@@ -35,7 +35,12 @@ test('layouts are independent copies; custom Unicode labels survive serializatio
   assert.notEqual(P.get('rcnec21').name, custom.name);
   assert.deepEqual(P.get('custom', JSON.stringify(custom)), custom);
   assert.equal(P.get('unknown').name, 'IR-RCNEC-BK');
-  assert.equal(P.get('custom', '{broken').name, 'IR-RCNEC-BK');
+  for (const payload of ['', '{broken']) {
+    const empty = P.get('custom', payload);
+    assert.deepEqual(P.normalize(empty).buttons, []);
+    assert.deepEqual(P.codeMap(empty, {1: '999'}), {});
+    assert.notEqual(empty.buttons, P.get('custom').buttons);
+  }
 });
 
 test('invalid grid sizes, collisions, duplicate functions and unbounded labels are rejected', () => {

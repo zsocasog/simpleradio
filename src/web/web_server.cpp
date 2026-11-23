@@ -1,4 +1,5 @@
 #include "web_server.h"
+#include "../wifi/wifi_manager.h"
 #include <LittleFS.h>
 #include <ArduinoJson.h>
 #include <Update.h>
@@ -2165,6 +2166,16 @@ void webServerBegin() {
   WebUiCompatibility::refresh();
   ws.onEvent(onWsEvent);
   server.addHandler(&ws);
+  server.on("/setup/ready.gif", HTTP_GET, [](AsyncWebServerRequest* request) {
+    if (!request->hasParam("id") || !WifiManager::instance().matchesSetupHandoff(request->getParam("id")->value())) {
+      request->send(404); return;
+    }
+    static const uint8_t pixel[] = {71,73,70,56,57,97,1,0,1,0,128,0,0,0,0,0,255,255,255,44,0,0,0,0,1,0,1,0,0,2,2,68,1,0,59};
+    request->send(200, "image/gif", pixel, sizeof(pixel));
+  });
+  for (const char* path : {"/wifi.json", "/wifi.json.tmp", "/wifi.json.bak"}) {
+    server.on(path, HTTP_ANY, [](AsyncWebServerRequest* request) { request->send(404); });
+  }
   server.on("/config.json", HTTP_GET, [](AsyncWebServerRequest* request) { queueStoredFileRead(request, "/config.json"); });
   server.on("/state.json", HTTP_GET, [](AsyncWebServerRequest* request) { queueStoredFileRead(request, "/state.json"); });
   server.on("/stations.json", HTTP_GET, [](AsyncWebServerRequest* request) { queueStoredFileRead(request, "/stations.json"); });

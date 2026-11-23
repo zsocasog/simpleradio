@@ -4,17 +4,18 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>SimpleRadio</title>
-  <link rel="icon" type="image/svg+xml" sizes="any" href="favicon.svg?v=1.3.14&amp;ui=8282ce88a4ba">
-  <link rel="stylesheet" href="style.css?v=1.3.14&amp;ui=8282ce88a4ba">
-  <link rel="stylesheet" href="ui.css?v=1.3.14&amp;ui=8282ce88a4ba">
+  <link rel="icon" type="image/svg+xml" sizes="any" href="favicon.svg?v=1.3.14&amp;ui=900d1b5d10bd">
+  <link rel="stylesheet" href="style.css?v=1.3.14&amp;ui=900d1b5d10bd">
+  <link rel="stylesheet" href="ui.css?v=1.3.14&amp;ui=900d1b5d10bd">
 </head>
 <body>
   <div class="app-shell">
     <header class="topbar">
-      <button class="brand brand-button" type="button" onclick="showView('player')" aria-label="Lejátszó megnyitása">
+      <button class="brand brand-button" type="button" onclick="showView('player')" aria-label="Lejátszó megnyitása" aria-describedby="headerTrack connectionInfo">
         <span id="brandMark" class="brand-mark">SR</span>
         <div>
-          <strong>SimpleRadio</strong>
+          <strong class="brand-name">SimpleRadio</strong>
+          <strong id="headerTrack" data-user-content></strong>
           <small id="connectionInfo">Kapcsolódás...</small>
         </div>
       </button>
@@ -69,7 +70,7 @@
           <aside class="panel queue-panel">
             <header class="panel-head">
               <div>
-                <h2>Csatornalista</h2>
+                <h2>Állomások</h2>
                 <small id="stationCount">0 mentve</small>
               </div>
               <button class="ghost-btn" type="button" onclick="showView('stations')">Kezelés</button>
@@ -81,27 +82,22 @@
 
       <section id="stationsView" class="view hidden">
         <header class="page-head">
-          <h1>Állomások</h1>
+          <div><h1>Állomások</h1><small id="stationManagerCount">0 mentve</small></div>
           <div class="button-row page-actions">
-            <button class="ghost-btn" type="button" onclick="openStationSearch()">Online kereső</button>
-            <button class="primary" type="button" onclick="clearStationForm()">Új állomás</button>
+            <button id="stationAddButton" class="primary" type="button" onclick="clearStationForm(false); openStationSearch()"><span data-i18n="ui.add">Hozzáadás</span></button>
           </div>
         </header>
 
         <section class="stations-layout">
           <article class="panel saved-stations-panel">
             <header class="panel-head">
-              <div>
-                <h2>Mentett állomások</h2>
-                <small id="stationManagerCount">0 állomás</small>
-              </div>
-              <label class="saved-search search-box">
-                Keresés
+              <div class="saved-search search-box">
+                <label class="visually-hidden" for="savedStationSearch" data-i18n="ui.savedSearch">Keresés a mentett állomásokban</label>
                 <span>
                   <input id="savedStationSearch" name="station-filter" type="search" placeholder="Mentett állomás..." autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false" oninput="filterSavedStations()">
                   <button type="button" onclick="clearSavedStationSearch()" title="Törlés" aria-label="Mentett állomások keresés törlése">×</button>
                 </span>
-              </label>
+              </div>
             </header>
             <div id="stationManager" class="station-list manager"></div>
           </article>
@@ -148,13 +144,13 @@
                       <option value="AU">AU - Ausztrália</option>
                     </select>
                   </label>
-                  <label class="search-box">
-                    Keresés
+                  <div class="search-box">
+                    <label for="searchName">Keresés</label>
                     <span>
                       <input id="searchName" name="radio-browser-search" type="search" placeholder="Rádió neve..." autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false" oninput="queueOnlineSearch()">
                       <button type="button" onclick="clearStationSearch()" title="Törlés" aria-label="Keresés törlése">×</button>
                     </span>
-                  </label>
+                  </div>
                 </div>
                 <div id="searchResults" class="result-list"></div>
               </div>
@@ -169,6 +165,7 @@
                 <input id="editId" type="hidden">
                 <label>Név<input id="editName" type="text" autocomplete="off" autocorrect="off" spellcheck="false" required></label>
                 <label>Stream URL<input id="editUrl" type="url" autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false" required></label>
+                <details id="stationLogoOptions" class="disclosure"><summary><span data-i18n="ui.optionalLogo">Logó hozzáadása (opcionális)</span></summary>
                 <label>Logó útvonal vagy URL<input id="editLogo" type="text" autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false" placeholder="/logos/radio.png"></label>
                 <label class="logo-picker-field">Feltöltött logók
                   <span class="logo-picker-row">
@@ -178,6 +175,7 @@
                     <button class="ghost-btn" type="button" onclick="loadLogoChoices()">Frissítés</button>
                   </span>
                 </label>
+                </details>
                 <div class="button-row">
                   <button class="primary" type="submit">Mentés</button>
                   <button class="ghost-btn" type="button" onclick="cancelStationEdit()" data-i18n="action.cancel">Mégse</button>
@@ -255,6 +253,7 @@
                   </select>
                 </label>
                 <canvas id="volumeCurvePreview" class="curve-preview settings-preview" width="360" height="148"></canvas>
+                <small class="form-note" data-i18n="ui.curveAxes">Vízszintesen a beállított hangerő, függőlegesen a kimeneti szint látható.</small>
               </section>
             </div>
           </div>
@@ -437,16 +436,20 @@
       <section id="irView" class="view hidden">
         <header class="page-head">
           <h1 data-i18n="ir.pageTitle">Távirányító</h1>
-          <div id="irLearnStatus" class="learn-pill" data-i18n="ir.ready">Készenlét</div>
         </header>
 
         <div id="irHardwareNotice" class="hardware-notice page-notice hidden"></div>
 
         <div class="ir-profile-toolbar">
           <label class="ir-profile-select"><span data-i18n="remote.type">Távirányító típusa</span><select id="irProfile"></select></label>
-          <button id="irEditLayout" type="button" class="ghost-btn" data-i18n="remote.edit">Saját elrendezés</button>
+          <button id="irEditLayout" type="button" class="ghost-btn">Sablon másolása</button>
         </div>
         <p id="irProfileStatus" class="ir-profile-help"></p>
+        <p id="irEmptyHint" class="ir-profile-help" data-i18n="remote.blankHelp" hidden>Az első gombhoz válassz egy üres helyet a rácson.</p>
+        <div id="irGuide" class="ir-guide">
+          <div class="ir-guide-message" role="status" aria-live="polite" aria-atomic="true"><strong id="irGuideTitle"></strong><span id="irGuideHelp"></span><small id="irGuideState"></small></div>
+          <button class="ghost-btn" type="button" onclick="cancelIrLearning()" data-i18n="action.cancel" hidden>Mégse</button>
+        </div>
         <section id="irWorkbench" class="ir-workbench">
           <article class="remote-unit">
             <div class="remote-top">
@@ -479,7 +482,6 @@
               <strong id="irPrimaryCode" data-i18n="ir.notLearned">Nincs kód</strong>
             </div>
             <div class="button-row">
-              <button class="ghost-btn" type="button" onclick="cancelIrLearning()" data-i18n="action.cancel">Mégse</button>
               <button class="danger" type="button" onclick="clearSelectedIr()" data-i18n="ir.clearCode">Kód törlése</button>
             </div>
             <div id="irMappedList" class="mapped-grid"></div>
@@ -495,6 +497,9 @@
               <legend data-i18n="remote.selectedButton">Kiválasztott gomb</legend>
               <label><span data-i18n="remote.label">Felirat</span><input id="irButtonLabel" maxlength="16" data-user-content oninput="SRRemoteUI.updateButton('label', this.value)"></label>
               <label><span data-i18n="remote.function">Funkció</span><select id="irButtonAction" onchange="SRRemoteUI.updateButton('action', this.value)"></select></label>
+              <div class="ir-editor-wide"><span id="irMotifLabel" data-i18n="remote.motifs">Választható gombjelek</span>
+                <div id="irButtonMotifs" role="group" aria-labelledby="irMotifLabel"></div>
+              </div>
               <label><span data-i18n="remote.row">Sor</span><input id="irButtonRow" type="number" min="1" max="12" onchange="SRRemoteUI.updateButton('row', this.value)"></label>
               <label><span data-i18n="remote.column">Oszlop</span><input id="irButtonColumn" type="number" min="1" max="5" onchange="SRRemoteUI.updateButton('column', this.value)"></label>
               <label><span data-i18n="remote.shape">Alak</span><select id="irButtonShape" onchange="SRRemoteUI.updateButton('shape', this.value)"><option value="pill" data-i18n="remote.pill">Ovális</option><option value="round" data-i18n="remote.round">Kerek</option></select></label>
@@ -518,7 +523,7 @@
           <header class="panel-head">
             <h2>Állapot</h2>
             <div class="button-row compact">
-              <button class="ghost-btn" type="button" onclick="refreshSystemStatus()">Frissítés</button>
+              <button id="systemRefreshButton" class="ghost-btn" type="button" onclick="refreshSystemStatus(this)" aria-live="polite" aria-atomic="true" data-i18n="ui.refreshStatus">Állapot frissítése</button>
               <button class="danger" id="rebootButton" type="button" onclick="requestSystemReboot()">Újraindítás</button>
             </div>
           </header>
@@ -588,7 +593,7 @@
         <article class="panel ota-panel">
           <header class="panel-head">
             <div>
-              <h2>OTA frissítés</h2>
+              <h2>Frissítés telepítése</h2>
               <small>Firmware és LittleFS/data feltöltés WiFi-n keresztül</small>
             </div>
             <span class="version-pills">
@@ -604,7 +609,7 @@
             <span class="toggle-copy"><strong>Megértettem, frissíteni szeretnék</strong></span>
             <span class="toggle-switch"><input id="otaConfirm" type="checkbox"><span></span></span>
           </label>
-          <label>OTA jelszó<input id="otaPassword" name="ota-device-secret" type="password" autocomplete="one-time-code" autocapitalize="none" spellcheck="false" data-form-type="other" data-1p-ignore data-lpignore="true" data-bwignore placeholder="simpleradio"></label>
+          <label>Frissítési jelszó<input id="otaPassword" name="ota-device-secret" type="password" autocomplete="one-time-code" autocapitalize="none" spellcheck="false" data-form-type="other" data-1p-ignore data-lpignore="true" data-bwignore placeholder="simpleradio"></label>
           <div class="ota-grid">
             <div id="otaFirmwareDrop" class="upload-drop ota-drop" tabindex="0">
               <strong>Firmware feltöltése</strong>
@@ -698,13 +703,13 @@
       <span id="footerVersion">v-</span>
     </footer>
   </div>
-  <script src="i18n-catalog.js?v=1.3.14&amp;ui=8282ce88a4ba"></script>
-  <script src="i18n.js?v=1.3.14&amp;ui=8282ce88a4ba"></script>
-  <script src="ir-profiles.js?v=1.3.14&amp;ui=8282ce88a4ba"></script>
-  <script src="ir-editor.js?v=1.3.14&amp;ui=8282ce88a4ba"></script>
-  <script src="station-playlist.js?v=1.3.14&amp;ui=8282ce88a4ba"></script>
-  <script src="led-settings.js?v=1.3.14&amp;ui=8282ce88a4ba"></script>
-  <script src="ui.js?v=1.3.14&amp;ui=8282ce88a4ba"></script>
-  <script src="app.js?v=1.3.14&amp;ui=8282ce88a4ba"></script>
+  <script src="i18n-catalog.js?v=1.3.14&amp;ui=900d1b5d10bd"></script>
+  <script src="i18n.js?v=1.3.14&amp;ui=900d1b5d10bd"></script>
+  <script src="ir-profiles.js?v=1.3.14&amp;ui=900d1b5d10bd"></script>
+  <script src="ir-editor.js?v=1.3.14&amp;ui=900d1b5d10bd"></script>
+  <script src="station-playlist.js?v=1.3.14&amp;ui=900d1b5d10bd"></script>
+  <script src="led-settings.js?v=1.3.14&amp;ui=900d1b5d10bd"></script>
+  <script src="ui.js?v=1.3.14&amp;ui=900d1b5d10bd"></script>
+  <script src="app.js?v=1.3.14&amp;ui=900d1b5d10bd"></script>
 </body>
 </html>

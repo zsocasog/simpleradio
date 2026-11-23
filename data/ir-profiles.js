@@ -65,7 +65,10 @@
   };
   const clone = value => JSON.parse(JSON.stringify(value));
   function get(id, custom = "") {
-    if (id === "custom" && custom) { try { return normalize(typeof custom === "string" ? JSON.parse(custom) : custom); } catch (_) {} }
+    if (id === "custom") {
+      if (custom) { try { return normalize(typeof custom === "string" ? JSON.parse(custom) : custom); } catch (_) {} }
+      return { schemaVersion: 1, name: "Custom", columns: 3, rows: 3, buttons: [] };
+    }
     return clone(templates[id] || templates.rcnec21);
   }
   function codeMap(layout, codes) {

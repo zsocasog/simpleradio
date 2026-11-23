@@ -11,6 +11,7 @@ import mimetypes
 import socket
 import struct
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
@@ -21,6 +22,10 @@ VERSIONS = read_versions(ROOT.parent / 'src/config/version.h')
 WEB_BUILD = json.loads((ROOT / 'build-info.json').read_text(encoding='utf-8'))
 LOCK = threading.Lock()
 REQUESTS = []
+SETUP_NETWORKS = [
+    dict(ssid='Otthon', rssi=-42, open=False), dict(ssid='Stúdió', rssi=-58, open=False),
+    dict(ssid='Vendéghálózat', rssi=-69, open=True), dict(ssid='Műhely', rssi=-78, open=False)]
+SETUP = dict(state='idle', ready_at=0, outcome='idle', finished=False)
 CONFIG = dict(configurationRevision=1, displayInvert=False, brightness=230, displayIdleEnabled=True,
     displayIdleBlank=False, displayIdleSeconds=120, displayIdleBrightness=13,
     displayClockEnabled=True, displayClockStyle='digital', displayFooterMode='spectrum',
@@ -78,6 +83,21 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers();self.wfile.write(body)
     def do_GET(self):
         url=urlsplit(self.path);path=url.path
+        if path == '/scan':
+            if 'details' not in parse_qs(url.query): return self.reply([n['ssid'] for n in SETUP_NETWORKS])
+            if 'fresh' in parse_qs(url.query): return self.reply([], code=202)
+            return self.reply(SETUP_NETWORKS)
+        if path == '/setup/status':
+            with LOCK:
+                if SETUP['state']=='connecting' and time.monotonic()>=SETUP['ready_at']:
+                    SETUP['state']=SETUP['outcome']
+                body={'state':SETUP['state']}
+                if body['state']=='connected': body.update(ip='127.0.0.1', id='d3a01234')
+            return self.reply(body)
+        if path == '/setup/ready.gif':
+            if not SETUP['finished'] or time.monotonic()<SETUP['ready_at'] or parse_qs(url.query).get('id')!=['d3a01234']:
+                return self.reply({}, code=404)
+            return self.reply(base64.b64decode('R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAkQBADs='),'image/gif')
         if path=='/ws': return self.websocket()
         routes={'/api/config':CONFIG,'/api/hardware':HARDWARE,'/api/stations':{'stations':STATIONS,'revision':STATION_REVISION},
             '/api/logos':{'logos':[]},'/api/system/status':status(),'/api/state':STATE,'/__preview/requests':REQUESTS}
@@ -86,7 +106,7 @@ class Handler(BaseHTTPRequestHandler):
         file=(ROOT / (path.lstrip('/') or 'index.html')).resolve()
         if ROOT.resolve() not in file.parents or not file.is_file(): return self.reply({'error':'Not found'},code=404)
         content=file.read_bytes()
-        if file.name=='index.html':
+        if file.name in ('index.html','wifi.html'):
             language=parse_qs(url.query).get('lang',['hu'])[0]
             if language not in ('hu','en','template'):language='hu'
             content=content.replace(b'src="i18n.js?',('src="i18n/'+language+'.js?').encode())
@@ -95,6 +115,23 @@ class Handler(BaseHTTPRequestHandler):
         global STATION_REVISION
         path=urlsplit(self.path).path
         body=self.rfile.read(int(self.headers.get('Content-Length',0)))
+        if path=='/save':
+            submitted=parse_qs(body.decode(),keep_blank_values=True)
+            network=next((n for n in SETUP_NETWORKS if n['ssid']==submitted.get('ssid',[''])[0]),None)
+            if not network: return self.reply({}, code=400)
+            with LOCK:
+                if SETUP['state']=='connecting': return self.reply({},code=409)
+                valid=network['open'] or submitted.get('pass')==['simpleradio-demo']
+                SETUP.update(state='connecting', ready_at=time.monotonic()+1.4,
+                             outcome='connected' if valid else 'join_failed', finished=False)
+            return self.reply({'state':'connecting'},code=202)
+        if path=='/setup/finish':
+            with LOCK:
+                if SETUP['state']!='connected' or parse_qs(body.decode()).get('ip')!=['127.0.0.1']:
+                    return self.reply({},code=409)
+                SETUP['finished']=True
+                SETUP['ready_at']=time.monotonic()+2
+            return self.reply(b'',code=204)
         if path=='/api/stations/import':
             try: data=json.loads(body)
             except (ValueError,UnicodeError): return self.reply(b'invalid','text/plain',400)

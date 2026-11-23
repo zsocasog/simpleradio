@@ -38,6 +38,7 @@ let configRefreshRevision = 0;
 let configRefreshTimer = null;
 let configRefreshBusy = false;
 let systemStatusTimer;
+let systemRefreshFeedbackTimer;
 let currentConfig = {};
 let hardwareCapabilities = {
   schemaVersion: 0,
@@ -322,7 +323,7 @@ function rememberButtonLabel(button) {
   return button.dataset.idleLabel;
 }
 
-function setButtonFeedback(button, state, label) {
+function setButtonFeedback(button, state, label, { disableWhileBusy = true } = {}) {
   if (!button) return;
   if (window.SRUI?.feedback(button, state, label)) return;
   const idleLabel = rememberButtonLabel(button);
@@ -335,7 +336,7 @@ function setButtonFeedback(button, state, label) {
   };
 
   button.textContent = labels[state] || idleLabel;
-  button.disabled = state === "busy";
+  button.disabled = state === "busy" && disableWhileBusy;
   button.setAttribute("aria-busy", state === "busy" ? "true" : "false");
   button.classList.toggle("is-saving", state === "busy");
   button.classList.toggle("is-saved", state === "success");
@@ -511,16 +512,25 @@ function setStatusCard(id, state) {
   node.classList.toggle("bad", state === "bad");
 }
 
-async function refreshSystemStatus() {
+async function refreshSystemStatus(button) {
+  if (button) {
+    if (button.getAttribute("aria-busy") === "true") return;
+    clearTimeout(systemRefreshFeedbackTimer);
+    setButtonFeedback(button, "busy", t("ui.refreshingStatus", "Frissítés…"), { disableWhileBusy: false });
+  }
   try {
     const response = await fetch("/api/system/status", { cache: "no-store" });
     if (!response.ok) throw new Error(`System status failed: ${response.status}`);
     renderSystemStatus(await response.json());
+    setButtonFeedback(button, "success", t("ui.statusRefreshed", "Állapot frissítve"));
   } catch (err) {
     console.warn("System status failed", err);
     setText("statusWifi", t("status.unavailable", "Nem elérhető"));
     setText("statusWifiDetail", t("status.fetchFailed", "A státusz lekérdezése nem sikerült."));
     setStatusCard("statusWifiCard", "bad");
+    setButtonFeedback(button, "error", t("ui.statusRefreshFailed", "Sikertelen lekérés"));
+  } finally {
+    if (button) systemRefreshFeedbackTimer = setTimeout(() => setButtonFeedback(button, "idle"), 3000);
   }
 }
 
@@ -1068,7 +1078,7 @@ function renderStations(force = false) {
   if (quick) quick.innerHTML = "";
   if (manager) manager.innerHTML = "";
   setText("stationCount", t("stations.savedCount", "{count} mentve", { count: stations.length }));
-  setText("stationManagerCount", t("stations.stationCount", "{count} állomás", { count: stations.length }));
+  setText("stationManagerCount", t("stations.savedCount", "{count} mentve", { count: stations.length }));
 
   const normalizedFilter = savedStationFilter.trim().toLocaleLowerCase("hu-HU");
   const visibleStations = normalizedFilter
@@ -1387,7 +1397,7 @@ function uploadOtaFile(kind, file) {
 
   const password = $("otaPassword")?.value || "";
   if (!password) {
-    setOtaStatus(t("ota.passwordMissing", "Add meg az OTA jelszót."), "error");
+    setOtaStatus(t("ota.passwordMissing", "Add meg a frissítési jelszót."), "error");
     return;
   }
 
@@ -1800,6 +1810,7 @@ async function saveOnlineStation(result, button) {
 }
 
 function editStation(station) {
+  $("stationLogoOptions").open = !!station.logo;
   setValue("editId", station.id);
   setValue("editName", station.name || "");
   setValue("editUrl", station.url || "");
@@ -1810,6 +1821,7 @@ function editStation(station) {
 }
 
 function clearStationForm(openEditor = true) {
+  $("stationLogoOptions").open = false;
   ["editId", "editName", "editUrl", "editLogo"].forEach(id => setValue(id, ""));
   renderLogoChoices();
   if (openEditor) openStationEditor();
@@ -2327,7 +2339,15 @@ function updateIrPanel() {
 
   setText("irPanelTitle", active ? irActionLabel(active) : t("ir.recorder", "Gombok tanítása"));
   setText("irPanelHelp", active ? t("ir.recordHelpActive", "Nyomd meg most a fizikai távirányító megfelelő gombját.") : t("ir.recordHelpIdle", "Válassz egy gombot, majd tanítsd be."));
-  setText("irLearnStatus", learning ? t("ir.learning", "Tanítás: {action}", { action: active ? irActionLabel(active) : learning }) : t("ir.ready", "Készenlét"));
+  const buttonLabel = learning ? window.SRRemoteUI?.buttonLabel(learning) : "";
+  const waiting = learning ? t("ui.waitingSignal", "Várakozás a jelre…") : "";
+  const guideHelp = learning ? (buttonLabel ? t("remote.pressKey", "Nyomd meg a távirányítón ezt a gombot: {key}.", { key: buttonLabel }) : t("ir.recordHelpActive", "Nyomd meg most a fizikai távirányító megfelelő gombját.")) :
+    active && code !== "0" ? t("ui.keyLearned", "A gomb elmentve. Válassz másikat a folytatáshoz.") : "";
+  const guide = $("irGuide");
+  guide.classList.toggle("active", !!guideHelp);
+  for (const [name, value] of [["irGuideTitle", guideHelp && active ? irActionLabel(active) : ""], ["irGuideHelp", guideHelp], ["irGuideState", waiting]]) {
+    if ($(name).textContent !== value) setText(name, value);
+  }
   setText("irPrimaryCode", code !== "0" ? code : t("ir.notLearned", "Nincs kód"));
   renderRemote();
   renderIrMappedList();

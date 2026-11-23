@@ -13,6 +13,7 @@ public:
     bool loop();
     bool isConnected() const;
     WifiRunMode mode() const;
+    bool matchesSetupHandoff(const String& id) const;
 
 private:
     WifiManager() = default;

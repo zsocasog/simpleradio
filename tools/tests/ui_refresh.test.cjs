@@ -143,6 +143,40 @@ test('file selection is deferred; only the explicit upload action starts an upda
   U.otaBusy = true; U.upload(); assert.equal(uploads.length, 1);
 });
 
+test('manual status refresh retains focusability, coalesces clicks and reports success only after a valid response', async () => {
+  const app = read('data/app.js');
+  const attributes = new Map(), timers = new Map();
+  const button = { textContent: 'Állapot frissítése', dataset: {}, classList: { toggle() {} },
+    getAttribute: key => attributes.get(key), setAttribute: (key, value) => attributes.set(key, value) };
+  let requests = 0, finishRequest;
+  const context = vm.createContext({
+    window: { SRRemoteProfiles: { ACTIONS: [] } }, console: { warn() {} },
+    fetch: () => { requests++; return new Promise(resolve => { finishRequest = resolve; }); },
+    setTimeout: fn => { timers.set(fn, fn); return fn; }, clearTimeout: id => timers.delete(id)
+  });
+  vm.runInContext(app.slice(0, app.lastIndexOf('\napplyLanguage();')), context);
+  context.renderSystemStatus = context.setText = context.setStatusCard = () => {};
+  const ok = { ok: true, json: async () => ({}) };
+  const automatic = context.refreshSystemStatus();
+  finishRequest(ok); await automatic;
+  assert.equal(timers.size, 0);
+  const manual = context.refreshSystemStatus(button);
+  assert.equal(button.disabled, false);
+  assert.equal(attributes.get('aria-busy'), 'true');
+  await context.refreshSystemStatus(button);
+  assert.equal(requests, 2);
+  finishRequest(ok); await manual;
+  assert.equal(button.textContent, 'Állapot frissítve');
+  assert.equal(attributes.get('aria-busy'), 'false');
+  const retry = context.refreshSystemStatus(button);
+  assert.equal(timers.size, 0);
+  finishRequest({ ok: false, status: 503 }); await retry;
+  assert.equal(button.textContent, 'Sikertelen lekérés');
+  assert.equal(timers.size, 1);
+  for (const reset of timers.values()) reset();
+  assert.equal(button.textContent, 'Állapot frissítése');
+});
+
 function volumeUi() {
   const { context, U } = ui();
   const nodes = { volume: { value: '35', setAttribute(k, v) { this[k] = v; } }, volValue: { textContent: '' } };
@@ -190,7 +224,7 @@ test('repeated playback status frames preserve mounted transport icons', () => {
   context.playing = true;
   U.transport(); U.transport(); U.transport();
   assert.deepEqual(writes, { playButton: 1, playButtonSmall: 1 });
-  assert.match(nodes.playButton.content, /#player-pause/);
+  assert.match(nodes.playButton.content, /#player-stop/);
   context.playing = false; U.transport();
   assert.deepEqual(writes, { playButton: 2, playButtonSmall: 2 });
   assert.match(nodes.playButton.content, /#player-play/);

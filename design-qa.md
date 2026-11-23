@@ -1,3 +1,59 @@
+# SimpleRadio WebUI review — 2026-11-23
+
+final result: passed
+
+The WiFi setup was also exercised at 1280 × 800, 820 × 780 and 390 × 844.
+The custom network list supported pointer and keyboard selection. Choosing an
+open network hid the password field. A failed connection kept the form usable.
+The preview then reported its loopback address and the browser opened the
+player on that address. Real DHCP and phone reconnection need a physical radio.
+
+At 360 × 640, scrolling the player exposed the compact transport. Opening
+Sound from 641 pixels down started at the top. Mute restored the previous 40%
+volume, and remote learning could be cancelled within the first phone viewport.
+Captures are under `webui-audit-2026-11-23/wifi-es-minilejatszo`.
+
+The local radio simulator served the production assets on `logo_test`. The
+desktop player was checked at 1280 × 720 and the mobile station list and remote
+learning state at 390 × 844. Paired design and browser captures are in the
+workspace's `webui-audit-2026-11-23/megvalositas` folder.
+
+- The desktop player has one visible transport while its main controls are on
+  screen. Station names and logos come from the saved stations, including the
+  initials tile when a station has no logo.
+- Four sample stations fit in the initial mobile list. The overflow opens
+  reorder mode and CSV tools, and Add opens the search and manual entry drawer.
+- During learning the physical button label and the waiting state are visible
+  together above the remote. The custom editor starts with nine empty cells.
+  Power and play symbols and their independently selected actions survived
+  saving, changing profiles and reloading. Cancelling a new draft restored the
+  factory profile. The empty editor was also checked in English.
+- The display preview sits next to the theme setting. On mobile the brightness
+  shortcut focuses its section. The status refresh button and software update
+  tab have distinct labels.
+- A status refresh on System made a GET request to `/api/system/status`. Opening
+  Software update showed both install targets without starting an upload. MQTT,
+  Last.fm and LED settings opened directly from Overview with Enter. Escape
+  returned focus to the invoking button in each case. The English labels and
+  the shortcut layout at 390 px were also checked.
+- A manual status refresh now shows “Állapot frissítve” for three seconds.
+  Enter retained keyboard focus through the request and the return to the idle
+  label. The automatic request on tab entry stayed silent. The installer title
+  and password label were checked in Hungarian and English.
+- The listening walkthrough covered station changes, mute and restore, EQ,
+  display and theme, encoder settings, remote learning, services, the installer
+  and the WiFi setup error state. The 21 current captures and the illustrated
+  report are in the workspace's `webui-audit-2026-11-23/hasznalati-proba`.
+  At 390 × 844 the Sound heading was partially under the sticky header after
+  leaving Brightness. The player transport was partly obscured at the bottom
+  of its station list. The IR learning cancel button was below the viewport.
+- Chromium exposed the remote learning guide as a polite, atomic status region
+  both before selecting a button and while waiting for VOL+. Actual screen
+  reader speech remains to be checked.
+
+The review used simulated playback and IR state. Physical IR reception still
+requires a radio. The browser logged an artwork-cache warning with preview data.
+
 # SimpleRadio UI review — 2026-10-28
 
 final result: passed

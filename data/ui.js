@@ -47,7 +47,11 @@
     U.ordering = !U.ordering; closeMenus();
     id("stationOrderButton").setAttribute("aria-pressed", String(U.ordering));
     id("stationOrderButton").innerHTML = U.icon(U.ordering ? "check" : "arrows-sort") + '<span>' + esc(U.ordering ? tr("ui.orderDone", "Rendezés kész") : tr("ui.reorder", "Sorrend módosítása")) + "</span>";
+    const nextFocus = U.ordering ? id("stationOrderDone") : id("stationListOptions");
+    visible(id("stationOrderDone"), U.ordering); visible(id("stationAddButton"), !U.ordering);
+    visible(id("stationListOptions").parentElement, !U.ordering);
     renderStations(true);
+    nextFocus.focus();
   };
   U.stationRow = (row, station, compact, index) => {
     row.setAttribute("data-user-content", "");
@@ -92,14 +96,27 @@
     const label = (n, name, text) => { n.className = "menu-action"; n.innerHTML = U.icon(name) + "<span>" + esc(text) + "</span>"; const run = n.onclick; n.onclick = e => { menu.open = false; run(e); }; };
     label(edit, "pencil", tr("ui.edit", "Szerkesztés"));
     label(del, "trash", tr("ui.delete", "Törlés")); del.classList.add("danger");
-    pop.append(edit, button(tr("ui.move", "Áthelyezés"), "arrows-sort", () => { U.toggleOrdering(); id("stationOrderButton").focus(); }, "menu-action"), del);
+    pop.append(edit, button(tr("ui.move", "Áthelyezés"), "arrows-sort", U.toggleOrdering, "menu-action"), del);
     menu.append(summary, pop); actions.append(menu);
     menu.addEventListener("toggle", () => { if (menu.open) closeMenus(menu); });
   };
   function buildStations() {
     const actions = document.querySelector("#stationsView .page-actions");
-    const order = button(tr("ui.reorder", "Sorrend módosítása"), "arrows-sort", U.toggleOrdering);
-    order.id = "stationOrderButton"; order.setAttribute("aria-pressed", "false"); actions.prepend(order);
+    id("stationAddButton").insertAdjacentHTML("afterbegin", U.icon("plus"));
+    const menu = make("details", "station-menu station-list-menu");
+    const summary = make("summary", "ui-icon-button"); summary.id = "stationListOptions";
+    summary.setAttribute("aria-label", tr("ui.listActions", "Listaműveletek")); summary.title = summary.getAttribute("aria-label");
+    summary.innerHTML = U.icon("dots");
+    const items = make("div", "station-menu-items");
+    const order = button(tr("ui.reorder", "Sorrend módosítása"), "arrows-sort", U.toggleOrdering, "menu-action");
+    order.id = "stationOrderButton"; order.setAttribute("aria-pressed", "false"); items.append(order);
+    const done = button(tr("ui.orderDone", "Rendezés kész"), "check", U.toggleOrdering, "primary");
+    done.id = "stationOrderDone"; visible(done, false);
+    menu.append(summary, items); actions.append(done, menu);
+    menu.addEventListener("toggle", () => { if (menu.open) closeMenus(menu); });
+    const filter = id("savedStationSearch");
+    filter.placeholder = tr("ui.savedSearch", "Keresés a mentett állomásokban");
+    filter.insertAdjacentHTML("beforebegin", U.icon("search"));
     U.stationDialog = dialog("stationToolsDialog", tr("ui.addStation", "Állomás hozzáadása"));
     const body = U.stationDialog.querySelector(".dialog-body");
     const tabs = make("div", "drawer-tabs");
@@ -110,9 +127,9 @@
     const tools = document.querySelector(".station-tools");
     body.appendChild(tools); U.stationPanels = { search: id("stationSearchDrawer"), editor: id("stationEditorDrawer"), logos: tools.querySelector("article.panel") };
     U.stationDialog.addEventListener("close", () => { document.body.classList.remove("has-dialog"); });
-    buildPlaylist(actions);
+    buildPlaylist(items, menu);
   }
-  function buildPlaylist(actions) {
+  function buildPlaylist(actions, menu) {
     const csv = window.SRPlaylist, msg = (key, vars) => tr("playlist." + key, key, vars);
     const panel = dialog("stationPlaylistDialog", msg("title")); panel.dataset.dismissOnBackdrop = "false";
     U.playlistDialog = panel;
@@ -138,10 +155,11 @@
     const exportSection = make("section", "playlist-export"); exportSection.append(make("h3", "", msg("exportTitle")), make("p", "muted", msg("exportHelp")), exportButton);
     body.append(exportSection, make("h3", "", msg("importTitle")), fileLabel, make("p", "muted", msg("formatHelp")), modes, warning, summary, errors, preview, controls, status);
     const trigger = button(msg("tools"), "list", async () => {
+      menu.open = false; id("stationListOptions").focus();
       openDialog(panel); setStatus(msg("loading"));
       try { await refresh(); setStatus(revision ? "" : msg("firmware"), !revision); } catch (_) { setStatus(msg("loadError"), true); }
       render();
-    }, "ghost-btn"); trigger.id = "stationPlaylistButton"; actions.append(trigger);
+    }, "menu-action"); trigger.id = "stationPlaylistButton"; actions.append(trigger);
     const mode = () => modes.querySelector("input:checked")?.value || "append";
     function setStatus(value, error = false) { status.textContent = value; status.classList.toggle("is-error", error); }
     function setBusy(value) {
@@ -239,7 +257,7 @@
     const root = id("systemView"); root.querySelector(".page-head [data-config-save]")?.remove();
     const tabs = make("nav", "system-local-tabs"); tabs.setAttribute("role", "tablist"); tabs.setAttribute("aria-label", tr("ui.systemSections", "Rendszer nézetei"));
     const sections = {};
-    const labels = { overview: ["ui.overview", "Áttekintés"], connections: ["ui.connections", "Kapcsolatok"], update: ["ui.update", "Frissítés"] };
+    const labels = { overview: ["ui.overview", "Áttekintés"], connections: ["ui.connections", "Kapcsolatok"], update: ["ui.update", "Szoftverfrissítés"] };
     for (const [name, [key, text]] of Object.entries(labels)) {
       const b = button(tr(key, text), "", () => U.systemTab(name)); b.id = "systemLocal-" + name;
       b.setAttribute("role", "tab"); b.setAttribute("aria-controls", "systemSection-" + name);
@@ -254,7 +272,7 @@
     root.querySelector(".page-head").after(tabs); Object.values(sections).forEach(n => root.appendChild(n));
     U.sections = sections;
     const oldReboot = id("rebootButton");
-    const refreshStatus = root.querySelector('[onclick="refreshSystemStatus()"]');
+    const refreshStatus = id("systemRefreshButton");
     if (refreshStatus) root.querySelector(".page-head").appendChild(refreshStatus);
     const status = document.querySelector(".system-status-panel");
     sections.overview.appendChild(status); status.querySelector(".panel-head").remove();
@@ -273,8 +291,12 @@
       if (id(name)) technical.appendChild(id(name));
     }
     const versions = make("dl", "version-grid"); versions.innerHTML = '<div><dt>Firmware</dt><dd id="overviewFirmware">—</dd></div><div><dt>' + esc(tr("ui.webInterface", "Webfelület")) + '</dt><dd id="overviewWebui">—</dd></div><div><dt>' + esc(tr("ui.device", "Eszköz")) + '</dt><dd id="overviewChip">—</dd></div><div><dt>' + esc(tr("ui.uptime", "Futásidő")) + '</dt><dd id="overviewUptime">—</dd></div>'; status.after(versions);
-    const integrations = make("div", "integration-list");
-    addMarkup(integrations, '<h2>' + esc(tr("ui.integrations", "Integrációk")) + '</h2>');
+    const serviceButton = (kind, label) => {
+      const settings = button(label, "chevron-right", () => kind === "led" ? U.openLed() : U.openConnection(kind));
+      settings.setAttribute("aria-haspopup", "dialog");
+      settings.setAttribute("aria-controls", kind === "led" ? "ledSettingsDialog" : "connectionDialog");
+      return settings;
+    };
     const service = (kind, title, infoId) => {
       const row = make("div", "integration-row");
       row.dataset.integration = kind;
@@ -282,12 +304,16 @@
       name.innerHTML = U.icon(kind === "led" ? "bulb" : kind === "mqtt" ? "broadcast" : "brand-lastfm") + '<span>' + esc(title) + '</span>';
       row.appendChild(name);
       const statusText = make("span", "muted"); statusText.id = infoId;
-      const settings = button(tr(kind === "lastfm" ? "ui.modify" : "ui.settings", kind === "lastfm" ? "Módosítás" : "Beállítások"), "chevron-right", () => kind === "led" ? U.openLed() : U.openConnection(kind));
-      settings.setAttribute("aria-haspopup", "dialog"); settings.setAttribute("aria-controls", kind === "led" ? "ledSettingsDialog" : "connectionDialog");
+      const settings = serviceButton(kind, tr(kind === "lastfm" ? "ui.modify" : "ui.settings", kind === "lastfm" ? "Módosítás" : "Beállítások"));
       row.append(statusText, settings); return row;
     };
     const ledTitle = tr("led.title", "LED világítás");
-    integrations.append(service("mqtt", "MQTT", "overviewMqtt"), service("lastfm", "Last.fm", "overviewLastfm"), service("led", ledTitle, "overviewLed")); sections.overview.appendChild(integrations);
+    const shortcuts = make("div", "system-service-shortcuts");
+    shortcuts.setAttribute("role", "group");
+    shortcuts.setAttribute("aria-label", tr("ui.services", "Kapcsolatok és szolgáltatások"));
+    shortcuts.append(serviceButton("mqtt", tr("ui.mqttSettings", "MQTT beállításai")),
+      serviceButton("lastfm", tr("ui.lastfmSettings", "Last.fm API-kulcs")), serviceButton("led", ledTitle));
+    sections.overview.appendChild(shortcuts);
     const overviewTools = make("div", "overview-tools");
     const github = about.querySelector(".status-about-link")?.cloneNode(true);
     if (github) {
@@ -302,7 +328,10 @@
       overviewTools.appendChild(oldReboot);
     }
     const led = id("frontLedPanel"); const retry = id("streamRetryEnabled").closest(".settings-section");
-    id("controlsView").querySelector(".settings-column:last-child").appendChild(retry);
+    const startup = id("autoStart").closest(".settings-section");
+    startup.querySelector("h2").textContent = tr("ui.playbackBehavior", "Lejátszás működése");
+    startup.querySelector("header small").remove();
+    startup.appendChild(retry.querySelector(".settings-fields")); retry.remove();
     U.ledDialog = dialog("ledSettingsDialog", ledTitle);
     U.ledDialog.dataset.dismissOnBackdrop = "false";
     const ledStatus = button(tr("ui.allSaved", "Minden módosítás mentve"), "", () => { if (U.lastSaveState === "error") saveConfigNow(); }, "config-save-status");
@@ -364,7 +393,7 @@
   U.openConnection = async kind => {
     if (!configLoaded) { try { await loadConfig(); } catch (_) { return; } }
     if (!configLoaded) return;
-    showView("system"); U.systemTab("connections"); U.connectionKind = kind;
+    showView("system"); U.connectionKind = kind;
     Object.entries(U.connectionPanels).forEach(([key, n]) => visible(n, key === kind));
     id("connectionDialogTitle").textContent = kind === "mqtt" ? tr("ui.mqttSettings", "MQTT beállításai") : tr("ui.lastfmSettings", "Last.fm API-kulcs");
     captureConnectionDraft(); openDialog(U.connectionDialog);
@@ -523,7 +552,6 @@
     brightnessSection.querySelector("header").after(modes);
     const appearance = make("section", "settings-section appearance-settings");
     appearance.append(make("h2", "", tr("ui.appearance", "Megjelenés")), make("small", "theme-help", tr("ui.sharedTheme", "Az LCD és a webfelület közös színei.")), id("themeAccent").closest("label"), id("themeCustomColorField"), id("displayInvert").closest("label"));
-    brightnessSection.after(appearance);
     for (const [time, level, key, fallback] of [["dayStartTime", "dayBrightness", "ui.day", "Nappali"], ["nightStartTime", "nightBrightness", "ui.night", "Éjszakai"]]) {
       const clockRow = id(time).closest("label"), levelRow = id(level).closest("label");
       const row = make("div", "schedule-row"); clockRow.before(row); row.append(clockRow, levelRow);
@@ -543,6 +571,18 @@
       '<svg id="layoutPreviewFooter" class="preview-footer" viewBox="0 242 480 78" aria-hidden="true"></svg></div>' +
       '<span id="layoutPreviewMode" class="visually-hidden"></span>';
     artworkSection.querySelector("header").after(preview);
+    preview.after(appearance);
+    const displayColumns = id("displayView").querySelectorAll(".settings-column");
+    displayColumns[0].prepend(artworkSection); displayColumns[1].prepend(brightnessSection);
+    const shortcuts = make("nav", "display-shortcuts");
+    shortcuts.setAttribute("aria-label", id("displayTab").textContent);
+    for (const section of [artworkSection, brightnessSection]) {
+      const heading = section.querySelector("h2"); heading.tabIndex = -1;
+      shortcuts.appendChild(button(heading.textContent, "", () => {
+        heading.focus({ preventScroll: true }); heading.scrollIntoView({ block: "start" });
+      }));
+    }
+    id("displayView").querySelector(".page-head").after(shortcuts);
     // Reuse displayed artwork; the static preview needs no audio samples or artwork search.
     preview.setAttribute("data-user-content", "");
     id("displayView").addEventListener("input", () => U.updateLayoutPreview());
@@ -568,6 +608,50 @@
     const controls = make("div", "player-controls");
     const transport = copy.querySelector(".transport"), rail = copy.querySelector(".volume-rail");
     transport.before(controls); controls.append(transport, rail);
+    const header = document.querySelector(".topbar");
+    const volumePanel = make("div", "header-volume-panel");
+    volumePanel.id = "headerVolumePanel";
+    const launcher = button(tr("player.volume", "Hangerő"), "volume", () => toggleVolume(volumePanel.hidden), "ui-icon-button");
+    launcher.id = "headerVolumeButton";
+    launcher.setAttribute("aria-controls", volumePanel.id);
+    launcher.setAttribute("aria-expanded", "false");
+    const volumeMenu = make("div", "header-volume");
+    volumeMenu.append(launcher, volumePanel);
+    header.querySelector(".top-actions").appendChild(volumeMenu);
+    volumePanel.hidden = true;
+    const railSpace = make("div", "volume-space");
+    function toggleVolume(open) {
+      if (open === !volumePanel.hidden) return;
+      if (open) {
+        rail.replaceWith(railSpace); volumePanel.appendChild(rail);
+      } else {
+        railSpace.replaceWith(rail);
+      }
+      volumePanel.hidden = !open;
+      launcher.setAttribute("aria-expanded", String(open));
+      if (open) id("volume").focus({ preventScroll: true });
+    }
+    U.closeVolume = () => toggleVolume(false);
+    volumeMenu.addEventListener("keydown", e => {
+      if (e.key === "Escape") { toggleVolume(false); launcher.focus(); }
+    });
+    document.addEventListener("pointerdown", e => { if (!volumePanel.hidden && !volumeMenu.contains(e.target)) toggleVolume(false); });
+    document.addEventListener("focusin", e => { if (!volumePanel.hidden && !volumeMenu.contains(e.target)) toggleVolume(false); });
+    let observer;
+    function watchTransport() {
+      observer?.disconnect();
+      observer = new IntersectionObserver(([entry]) => {
+        const visible = entry.isIntersecting && entry.intersectionRatio >= .99;
+        document.body.classList.toggle("main-transport-visible", visible);
+        if (visible && !volumePanel.hidden) toggleVolume(false);
+      }, { rootMargin: "-" + header.offsetHeight + "px 0px 0px", threshold: [0, .99, 1] });
+      observer.observe(transport);
+    }
+    if ("IntersectionObserver" in window) {
+      watchTransport();
+      if ("ResizeObserver" in window) new ResizeObserver(watchTransport).observe(header);
+      else window.addEventListener("resize", watchTransport);
+    }
     id("headerTransport").setAttribute("aria-label", tr("ui.playbackControls", "Lejátszásvezérlés"));
     const station = make("small", "player-station-name"); station.id = "playerStationName"; station.setAttribute("data-user-content", ""); copy.prepend(station);
     const artist = make("p", "player-artist"); artist.id = "playerArtist"; artist.setAttribute("data-user-content", ""); id("current-station").after(artist);
@@ -618,6 +702,8 @@
     if (U.shownVolume === level) return; U.shownVolume = level;
     const label = muted ? tr("ui.unmute", "Némítás feloldása") : tr("ui.mute", "Némítás");
     U.muteButton.innerHTML = U.icon(muted ? "volume-off" : "volume");
+    const launcher = id("headerVolumeButton");
+    if (launcher) launcher.innerHTML = U.icon(muted ? "volume-off" : "volume");
     U.muteButton.setAttribute("aria-label", label); U.muteButton.title = label;
     U.muteButton.setAttribute("aria-pressed", String(muted));
     document.querySelector(".volume-rail").classList.toggle("is-muted", muted);
@@ -680,11 +766,11 @@
       Object.entries(U.draft).forEach(([name, value]) => { const n = id(name); if (n.type === "checkbox") n.checked = value; else n.value = value; });
     }
     const source = config.hasSavedLastFmApiKey ? tr("ui.webKeyActive", "Weben mentett kulcs aktív") : config.hasLastFmApiKey ? tr("ui.firmwareKeyActive", "Firmware-kulcs aktív") : tr("ui.notConfigured", "Nincs megadva");
-    ["connectionLastfm", "overviewLastfm"].forEach(name => { id(name).textContent = source; });
+    id("connectionLastfm").textContent = source;
     const ledType = config.frontLedType || hardwareCapabilities.frontRgbLed?.type || "none";
     const ledName = ledType === "pwm" ? "RGB" : ledType === "neopixel" ? "WS2812 · " + (config.frontLedCount || 1) : tr("led.none", "Nincs LED");
     const ledState = config.frontLedEnabled ? tr("led.enabled", "Bekapcsolva") : tr("status.disabled", "Kikapcsolva");
-    ["overviewLed", "connectionLed"].forEach(name => { id(name).textContent = ledType === "none" ? ledName : ledName + " · " + ledState; });
+    id("connectionLed").textContent = ledType === "none" ? ledName : ledName + " · " + ledState;
     visible(id("deleteLastFmApiKey"), !!config.hasSavedLastFmApiKey);
     visible(id("lastFmKeyDeleteHelp"), !!config.hasSavedLastFmApiKey);
     (U.secondFields || []).forEach(([source, target]) => { if (document.activeElement !== id(target)) id(target).value = String(Number(id(source).value) / 1000); });
@@ -692,7 +778,7 @@
     const learned = activeMappings.filter(item => String(config[irKey(item.action)] || "0") !== "0").length;
     disclosureLabel(id("irMappingSummary"), tr("ui.mappingCount", "Összes hozzárendelés ({count}/{total})", { count: learned, total: activeMappings.length }));
     const learning = !!config.irActionLearning; const active = selectedIrAction || config.irActionLearning;
-    if (learning) id("irPrimaryCode").textContent = tr("ui.waitingSignal", "Várakozás a jelre…");
+    visible(id("irPrimaryCode").closest(".learn-display"), !learning);
     visible(document.querySelector('[onclick="cancelIrLearning()"]'), learning);
     visible(document.querySelector('[onclick="clearSelectedIr()"]'), !!active && String(config[irKey(active)] || "0") !== "0");
     if (active && !learning && String(config[irKey(active)] || "0") !== "0") id("irPanelHelp").textContent = tr("ui.keyLearned", "A gomb elmentve. Válassz másikat a folytatáshoz.");
@@ -780,7 +866,7 @@
     id("overviewWifiState").textContent = status.wifi?.connected ? tr("status.connected", "Csatlakozva") : tr("status.disconnected", "Nincs kapcsolat");
     id("overviewFirmware").textContent = system.version || "—"; id("overviewWebui").textContent = webui.version || "—";
     id("overviewChip").textContent = system.chipModel || "—"; id("overviewUptime").textContent = formatDuration(system.uptimeMs);
-    ["overviewMqtt", "connectionMqtt"].forEach(name => { id(name).textContent = id("statusMqtt").textContent; });
+    id("connectionMqtt").textContent = id("statusMqtt").textContent;
   };
   U.transport = () => {
     if (!U.ready) return;
@@ -788,13 +874,14 @@
     document.querySelectorAll("#stations .station-playing").forEach(n => { n.hidden = !active; });
     if (U.transportPlaying === playing) return;
     U.transportPlaying = playing;
-    const main = id("playButton"); main.innerHTML = U.icon(playing ? "player-pause" : "player-play");
-    const small = id("playButtonSmall"); small.innerHTML = U.icon(playing ? "player-pause" : "player-play");
+    const main = id("playButton"); main.innerHTML = U.icon(playing ? "player-stop" : "player-play");
+    const small = id("playButtonSmall"); small.innerHTML = U.icon(playing ? "player-stop" : "player-play");
   };
   U.state = state => {
     U.lastPlayer = state; if (!U.ready) return;
     const connection = state.playing ? streamConnectionMessage(state) : "";
     const hasSong = state.playing && !connection && (state.title || state.artist);
+    id("headerTrack").textContent = hasSong ? state.title || state.artist : "";
     id("playerStationName").textContent = hasSong ? state.station || "" : "";
     visible(id("playerStationName"), !!hasSong);
     id("current-station").textContent = hasSong ? state.title || state.station || tr("state.noStation", "Nincs állomás") : state.station || tr("state.chooseStation", "Állomás kiválasztása");
@@ -806,6 +893,10 @@
   };
   U.view = view => {
     if (!U.ready) return; closeMenus();
+    if (document.body.dataset.view !== view) {
+      U.closeVolume();
+      window.scrollTo({ top: 0, behavior: "instant" });
+    }
     document.body.dataset.view = view;
     const active = ["player", "stations", "sound"].includes(view) ? view : "more";
     Object.entries(U.mobileButtons || {}).forEach(([key, n]) => { n.classList.toggle("active", key === active); if (key === active) n.setAttribute("aria-current", "page"); else n.removeAttribute("aria-current"); });
@@ -818,7 +909,13 @@
     buildStations(); buildSystem(); buildSettings(); buildPlayer(); buildRemote(); buildMobileNavigation();
     document.querySelectorAll(".disclosure > summary").forEach(n => { if (!n.querySelector(".ui-icon")) disclosureLabel(n, n.textContent); });
     document.addEventListener("pointerdown", e => { if (!e.target.closest(".station-menu")) closeMenus(); });
-    document.addEventListener("keydown", e => { if (e.key === "Escape") closeMenus(); });
+    document.addEventListener("keydown", e => {
+      if (e.key === "Escape") {
+        const open = e.target.closest(".station-menu[open]");
+        if (open) open.querySelector("summary").focus();
+        closeMenus();
+      }
+    });
     document.querySelectorAll(".transport").forEach(group => group.querySelectorAll("button").forEach((n, i) => iconButton(n, ["player-skip-back", "player-play", "player-skip-forward"][i])));
     document.querySelectorAll(".volume-step").forEach((n, i) => iconButton(n, i ? "plus" : "minus"));
     U.ready = true; document.body.classList.add("ui-ready"); document.body.dataset.view = "player"; applyLanguage(); renderStations(true);
