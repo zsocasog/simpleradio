@@ -47,7 +47,7 @@ változtatásnak. Az új kis LCD-képek a már elkészült képek olvasói.
 
 A nyelv továbbra is fordításkor választható a `UI_LANGUAGE` beállítással. A magyar,
 angol és az új nyelvekhez szánt sablon az új nézeteket is teljesen lefedi.
-Részletek: `data/i18n/README.md`.
+Részletek a [nyelvi útmutatóban](languages.md).
 
 ## Helyi ellenőrzés
 

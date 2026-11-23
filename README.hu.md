@@ -2,68 +2,57 @@
 
 [English](README.md)
 
-> Jelenlegi verzió: **1.3.14** · ESP32-S3 N16R8 · magyar és angol felület
+A SimpleRadio egy otthon is megépíthető, ESP32-S3 alapú internetrádió. A lejátszást a készüléken vagy a helyi hálózaton, böngészőből is vezérelheted.
 
-<a href="https://ko-fi.com/zsoltsogorka" target="_blank" rel="noopener noreferrer"><img src="https://ko-fi.com/img/githubbutton_sm.svg" alt="Támogatás Ko-fi-n"></a>
-
-**Tartalom:** [Funkciók](#főbb-funkciók) · [Hardver](#hardver-és-beállítás) · [Feltöltés](#feltöltés-és-frissítés) · [Képernyőképek](#képernyőképek)
-
-![SimpleRadio LCD lejátszó](.screenshots/lcd/player1.jpg)
+![A SimpleRadio LCD-je lejátszás közben](.screenshots/lcd/player1.jpg)
 
 ## Főbb funkciók
 
-- Internet-rádió I2S hangkimenettel; MP3, AAC/AAC+, FLAC, OGG/Vorbis és Opus támogatás.
-- LCD-lejátszó állomáslogóval vagy albumborítóval, előadóval és számcímmel.
-- Gyors, kis logós állomásválasztó; VU, 24 sávos FFT-spektrum és készenléti órák.
-- Mobilon is használható webfelület: lejátszás, állomáskeresés, EQ, balansz és kijelzőbeállítások.
-- yoRadio-kompatibilis CSV import/export: teljes listacsere vagy hozzáadás, azonos URL-ek kihagyásával; az állomások továbbra is JSON-ban tárolódnak.
-- Közös LCD/webes témák; élő csúszka-előnézet, mentés az állítás végén.
-- Egy vagy két enkóder, opcionális IR-távirányító és RGB LED.
-- [Weben állítható RGB LED](docs/front-led.hu.md): hagyományos RGB vagy 1–64 WS2812 RGB pixel, külön készenléti fényerővel.
-- Távirányító-sablonok és saját elrendezésszerkesztő, típusonként mentett betanított kódokkal.
-- MQTT discovery és [Home Assistant-kártya](home-assistant/README.md).
+- **LCD-lejátszó** állomáslogóval, albumborítóval és műsorinformációval. A kijelzőn VU-mérő, spektrum vagy óra is megjeleníthető.
+- **Webes lejátszó és állomáskezelő** mobilra és asztali gépre, állomáskereséssel, yoRadio-kompatibilis CSV-importtal és -exporttal, valamint hang- és kijelzőbeállításokkal.
+- **Vezérlés és integráció** forgóenkóderrel, opcionális infrás távirányítóval és RGB-világítással, valamint automatikus MQTT-felismeréssel a Home Assistantban.
 
-![A webes lejátszó előnézete](.screenshots/player.jpg)
+![A SimpleRadio webes lejátszója](.screenshots/player.jpg)
 
-## Hardver és beállítás
+## Hardver és telepítés
 
-- Tesztelt hardver: **ESP32-S3 N16R8**, **ILI9488 480×320 SPI LCD**, I2S DAC/erősítő, például MAX98357A.
-- További kijelzőprofilok: ST7796 480×320 és ILI9341 320×240.
-- Pinek, hardver és fordításkori nyelv: [`hardware_config.h`](src/config/hardware_config.h).
-- Saját nyelv: [útmutató és sablonok](data/i18n/README.md).
-- Előre megadott WiFi-, Last.fm-, MQTT- és OTA-adatok: helyi `secrets.ini`, a [mintafájl](secrets.example.ini) alapján. Valódi kulcsokat és jelszavakat ne publikálj.
-- A Last.fm API-kulcs a webes **Rendszer** oldalon is megadható; a weben mentett kulcs elsőbbséget kap.
+A referencia-összeállítás egy **ESP32-S3 N16R8** modulra, egy **ILI9488 480×320-as SPI LCD-re** és egy **I²S DAC-ra vagy erősítőre** épül (például MAX98357A). ST7796 (480×320) és ILI9341 (320×240) kijelzőhöz is van profil.
 
-![Kijelzőbeállítások és LCD-előnézet](.screenshots/display.jpg)
+1. A [hardware_config.h](src/config/hardware_config.h) fájlban állítsd be a bekötésednek megfelelő lábkiosztást és kijelzőprofilt. A [secrets.example.ini](secrets.example.ini) mintát másold át egy helyi `secrets.ini` fájlba.
+2. PlatformIO-ban töltsd fel a firmware-t a `pio run -t upload`, a webfelületet pedig a `pio run -t uploadfs` paranccsal. Első telepítéskor mindkettő szükséges.
+3. Ha még nincs beállítva a Wi-Fi, csatlakozz a rádió **ESP32-WebRadio** hálózatához. A későbbi frissítéseket a webfelület **Rendszer → Frissítés** oldalán indíthatod.
 
-## Feltöltés és frissítés
+![Kijelzőbeállítások LCD-előnézettel](.screenshots/display.jpg)
 
-- Fejlesztőkörnyezet: VS Code + PlatformIO/PioArduino; a függőségeket a projekt kezeli.
-- Első telepítés: firmware — `pio run -t upload`; webfelület/data — `pio run -t uploadfs`. **Mindkettő szükséges.**
-- Mentett WiFi nélkül az **ESP32-WebRadio** hozzáférési ponton állítható be a hálózat.
-- Későbbi OTA-feltöltés: a webes **Rendszer → Frissítés** oldalon.
-- Firmware-módosításhoz firmware-, `data/` módosításhoz data-feltöltés kell; ha mindkettő változik, mindkettőt töltsd fel.
-- A data OTA megőrzi a beállításokat és az állomáslistát; a logócache újraépül.
-- Soros napló: `pio device monitor -b 115200`.
-- Központi firmware-/WebUI-verziók: [`version.h`](src/config/version.h); a webes verzióadatok fordításkor automatikusan frissülnek.
+## Útmutatók
 
-## Hivatkozások
-
-- [Webfelület és LCD működése](docs/ui-refresh.md)
-- [GNU GPL v3 licenc](LICENSE) · [Külső függőségek és licencek](THIRD_PARTY_NOTICES.md)
+- [Nyelvek és fordítási sablonok](docs/languages.md) · A magyar és az angol nyelv fordításkor választható. Az LCD-hez és a webfelülethez saját fordítást is készíthetsz.
+- [Home Assistant beállítása](docs/home-assistant.md) · [Előlapi RGB-világítás](docs/front-led.hu.md)
 
 ## Képernyőképek
 
-- Webes képek: a jelenlegi felület helyi előnézete mintaadatokkal; az LCD-képek valódi fotók.
+A friss galériához érdemes lefotózni az LCD-t lejátszás közben állomáslogóval és albumborítóval, illetve megnyitott állomáslistával. A webfelületről az asztali és mobil lejátszónézet, valamint a kijelzőbeállítások oldala mutatná be a legtöbbet az LCD-előnézettel együtt.
 
-| LCD-lejátszó logóval | Állomásválasztó |
+<details>
+<summary>További LCD-fotók és webes képernyőképek</summary>
+
+| LCD-lejátszó képpel | LCD-állomásválasztó |
 | --- | --- |
-| ![LCD lejátszó logóval](.screenshots/lcd/player2.jpg) | ![LCD állomásválasztó](.screenshots/lcd/station_picker.jpg) |
-| Hangerő | Webes állomáslista |
-| ![LCD hangerőnézet](.screenshots/lcd/volume.jpg) | ![Állomások oldal](.screenshots/stations.jpg) |
+| ![LCD-lejátszó képpel](.screenshots/lcd/player2.jpg) | ![LCD-állomásválasztó](.screenshots/lcd/station_picker.jpg) |
+| Hangerő | Állomások |
+| ![LCD-hangerőnézet](.screenshots/lcd/volume.jpg) | ![Webes állomáslista](.screenshots/stations.jpg) |
 | Hang | Vezérlés |
-| ![Hang oldal](.screenshots/sound.jpg) | ![Vezérlés oldal](.screenshots/controls.jpg) |
-| Távirányító | Rendszer – Áttekintés |
-| ![Távirányító oldal](.screenshots/ir.jpg) | ![Rendszer áttekintés](.screenshots/system.jpg) |
-| Rendszer – Kapcsolatok | Rendszer – Frissítés |
-| ![Kapcsolatok](.screenshots/system-connections.jpg) | ![Frissítés](.screenshots/system-update.jpg) |
+| ![Hangbeállítások](.screenshots/sound.jpg) | ![Vezérlés](.screenshots/controls.jpg) |
+| Távirányító | Rendszeráttekintés |
+| ![Távirányító-beállítások](.screenshots/ir.jpg) | ![Rendszeráttekintés](.screenshots/system.jpg) |
+| Kapcsolatok | Frissítés |
+| ![Kapcsolati beállítások](.screenshots/system-connections.jpg) | ![Frissítési oldal](.screenshots/system-update.jpg) |
+
+</details>
+
+## Licenc és támogatás
+
+[GNU GPL v3](LICENSE) · [Külső függőségek és licencek](THIRD_PARTY_NOTICES.md)
+
+Ha hasznosnak találtad a SimpleRadio projektet, meghívhatsz egy kávéra! <a href="https://ko-fi.com/zsoltsogorka" target="_blank" rel="noopener noreferrer"><img src="https://ko-fi.com/img/githubbutton_sm.svg" alt="Támogatás Ko-fi-n"></a><br>
+Köszönöm!

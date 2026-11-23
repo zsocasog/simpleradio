@@ -2,68 +2,57 @@
 
 [Magyar](README.hu.md)
 
-> Current version: **1.3.14** · ESP32-S3 N16R8 · English and Hungarian UI
+SimpleRadio is an ESP32-S3 internet radio you can build yourself. Listen to your favorite stations and control playback from the radio or a browser on your local network.
 
-<a href="https://ko-fi.com/zsoltsogorka" target="_blank" rel="noopener noreferrer"><img src="https://ko-fi.com/img/githubbutton_sm.svg" alt="Support me on Ko-fi"></a>
-
-**Contents:** [Features](#features) · [Hardware](#hardware-and-configuration) · [Installation](#installation-and-updates) · [Screenshots](#screenshots)
-
-![SimpleRadio LCD player](.screenshots/lcd/player1.jpg)
+![SimpleRadio playing a station on its LCD](.screenshots/lcd/player1.jpg)
 
 ## Features
 
-- Internet radio with I2S audio; MP3, AAC/AAC+, FLAC, OGG/Vorbis and Opus support.
-- LCD player with station logos or album covers, artist and track title.
-- Fast station picker with small logos; VU meters, 24-band FFT spectrum and idle clocks.
-- Mobile-friendly web UI: playback, station search, EQ, balance and display settings.
-- yoRadio-compatible CSV import/export: replace the list or append while skipping duplicate URLs; stations remain stored as JSON.
-- Shared LCD/web themes; live slider previews, saved when adjustment ends.
-- One or two rotary encoders, optional IR remote and RGB LED.
-- Web-configurable RGB lighting: standard RGB LED or 1–64 WS2812 RGB pixels, with separate standby brightness.
-- IR remote templates and a custom layout editor, with separately saved learned codes.
-- MQTT discovery and a [Home Assistant card](home-assistant/README.md).
+- **LCD player** with station logos, album artwork and track information. Choose a VU meter, spectrum or clock view.
+- **Web player and station manager** for phones and desktops, with station search, yoRadio-compatible CSV import/export, and audio and display settings.
+- **Physical controls and integration** with rotary encoders, an optional IR remote and RGB lighting, plus MQTT discovery for Home Assistant.
 
-![Web player preview](.screenshots/en/player.jpg)
+![SimpleRadio web player](.screenshots/en/player.jpg)
 
-## Hardware and configuration
+## Hardware and setup
 
-- Tested hardware: **ESP32-S3 N16R8**, **ILI9488 480×320 SPI LCD**, I2S DAC/amplifier such as MAX98357A.
-- Additional display profiles: ST7796 480×320 and ILI9341 320×240.
-- Pins, hardware and build-time language: [`hardware_config.h`](src/config/hardware_config.h).
-- Custom languages: [guide and templates](data/i18n/README.md).
-- WiFi, Last.fm, MQTT and OTA defaults: local `secrets.ini`, based on the [example](secrets.example.ini). Keep real keys and passwords private.
-- The Last.fm API key can also be set on the web **System** page; a web-saved key takes priority.
+The reference build uses an **ESP32-S3 N16R8**, an **ILI9488 480×320 SPI LCD** and an **I²S DAC or amplifier** such as the MAX98357A. Display profiles are also available for the ST7796 (480×320) and ILI9341 (320×240).
 
-![Display settings and LCD preview](.screenshots/en/display.jpg)
+1. Match the pins and display profile to your wiring in [hardware_config.h](src/config/hardware_config.h). Copy [secrets.example.ini](secrets.example.ini) to a local `secrets.ini`.
+2. In PlatformIO, upload the firmware with `pio run -t upload` and the web interface with `pio run -t uploadfs`. The first install needs both.
+3. If Wi-Fi is not configured, join the radio’s **ESP32-WebRadio** setup network. For later updates, use **System → Update** in the web interface.
 
-## Installation and updates
+![Display settings with LCD preview](.screenshots/en/display.jpg)
 
-- Development environment: VS Code + PlatformIO/PioArduino; the project manages dependencies.
-- First installation: firmware — `pio run -t upload`; WebUI/data — `pio run -t uploadfs`. **Both are required.**
-- Without saved WiFi, connect to the **ESP32-WebRadio** access point to configure the network.
-- Subsequent OTA uploads: the web **System → Update** page.
-- Firmware changes need a firmware upload; `data/` changes need a data upload; upload both when both change.
-- Data OTA preserves settings and stations; the logo cache is rebuilt.
-- Serial log: `pio device monitor -b 115200`.
-- Central firmware/WebUI versions: [`version.h`](src/config/version.h); web version metadata is generated during builds.
+## Guides
 
-## Links
-
-- [Web UI and LCD behaviour](docs/ui-refresh.md)
-- [GNU GPL v3 license](LICENSE) · [Third-party dependencies and licenses](THIRD_PARTY_NOTICES.md)
+- [Languages and translation templates](docs/languages.md) · Choose English or Hungarian at build time, or create a translation for the LCD and the web interface.
+- [Home Assistant setup](docs/home-assistant.md) · [Front-panel RGB lighting (Hungarian)](docs/front-led.hu.md)
 
 ## Screenshots
 
-- Web screenshots: the current UI's local preview with sample data; LCD images are actual photographs.
+For the next photo set, capture the LCD during playback with a station logo and with album artwork, and while browsing the station list. For the web interface, capture the player at desktop and phone widths, and the display settings with the LCD preview visible.
 
-| LCD player with artwork | Station picker |
+<details>
+<summary>More LCD photos and web screenshots</summary>
+
+| LCD player with artwork | LCD station picker |
 | --- | --- |
 | ![LCD player with artwork](.screenshots/lcd/player2.jpg) | ![LCD station picker](.screenshots/lcd/station_picker.jpg) |
-| Volume | Web station list |
-| ![LCD volume screen](.screenshots/lcd/volume.jpg) | ![Stations page](.screenshots/en/stations.jpg) |
+| Volume | Stations |
+| ![LCD volume screen](.screenshots/lcd/volume.jpg) | ![Web station list](.screenshots/en/stations.jpg) |
 | Sound | Controls |
-| ![Sound page](.screenshots/en/sound.jpg) | ![Controls page](.screenshots/en/controls.jpg) |
-| Remote control | System – Overview |
-| ![Remote control page](.screenshots/en/ir.jpg) | ![System overview](.screenshots/en/system.jpg) |
-| System – Connections | System – Update |
-| ![Connections](.screenshots/en/system-connections.jpg) | ![Update](.screenshots/en/system-update.jpg) |
+| ![Sound settings](.screenshots/en/sound.jpg) | ![Controls](.screenshots/en/controls.jpg) |
+| Remote control | System overview |
+| ![Remote control settings](.screenshots/en/ir.jpg) | ![System overview](.screenshots/en/system.jpg) |
+| Connections | Update |
+| ![Connection settings](.screenshots/en/system-connections.jpg) | ![Update page](.screenshots/en/system-update.jpg) |
+
+</details>
+
+## License and support
+
+[GNU GPL v3](LICENSE) · [Third-party notices](THIRD_PARTY_NOTICES.md)
+
+If you found SimpleRadio useful, you can buy me a coffee! <a href="https://ko-fi.com/zsoltsogorka" target="_blank" rel="noopener noreferrer"><img src="https://ko-fi.com/img/githubbutton_sm.svg" alt="Support me on Ko-fi"></a><br>
+Thank you!
