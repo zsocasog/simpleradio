@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<title>Remote editor redraw regression</title>
+<pre id="result">Running…</pre>
+<iframe title="Local radio preview"></iframe>
+<script>
+  // Run at /__preview/tests/remote-editor on tools/ui_preview.py.
+  const frame = document.querySelector("iframe");
+  const result = document.getElementById("result");
+  function check(condition, message) { if (!condition) throw Error(message); }
+  frame.onload = async () => {
+    const doc = frame.contentDocument;
+    const byId = id => doc.getElementById(id);
+    const edit = byId("irEditLayout");
+    let observer;
+    try {
+      const deadline = performance.now() + 5000;
+      while (byId("irProfile").disabled || !byId("irRemote").childElementCount) {
+        check(performance.now() < deadline, "The fixture did not load its remote profile");
+        await new Promise(resolve => setTimeout(resolve, 25));
+      }
+      byId("irTab").click();
+      edit.click();
+      const grid = byId("irRemote");
+      const buttons = Array.from(grid.children);
+      check(buttons.length === 21, "Start with the 21-button fixture");
+      const selected = grid.querySelector('[aria-pressed="true"]');
+      selected.focus();
+      observer = new MutationObserver(() => {});
+      observer.observe(grid, { attributes: true, childList: true, subtree: true, characterData: true });
+      function checkEdit(change) {
+        const records = observer.takeRecords();
+        check(records.length > 0, change + " did not update the preview");
+        check(records.every(record => selected.contains(record.target)), change + " mutated another button or the grid");
+        check(buttons.every((button, i) => grid.children[i] === button), change + " replaced a button");
+        check(doc.activeElement === selected, change + " lost focus");
+      }
+      byId("irButtonMotifs").querySelector('[data-motif="▶"]').click();
+      checkEdit("Changing the symbol");
+      const icon = selected.querySelector("svg");
+      check(icon && byId("irButtonLabel").value === "▶", "The selected button should display the play symbol");
+      const color = frame.contentWindow.getComputedStyle(selected).backgroundColor;
+      const tone = byId("irButtonTone");
+      tone.value = "light";
+      tone.dispatchEvent(new Event("change", { bubbles: true }));
+      checkEdit("Changing the tone");
+      check(selected.querySelector("svg") === icon, "Changing the tone replaced the symbol");
+      check(frame.contentWindow.getComputedStyle(selected).backgroundColor !== color, "Selection masked the tone");
+      const second = buttons[1];
+      second.click();
+      check(second.getAttribute("aria-pressed") === "true" && selected.getAttribute("aria-pressed") === "false", "Selection did not move");
+      check(observer.takeRecords().every(record => selected.contains(record.target) || second.contains(record.target)), "Selection touched a third button");
+      result.textContent = "PASS · 21 buttons preserved · symbol and tone updates affected only the edited button · focus retained";
+    } catch (error) {
+      result.textContent = "FAIL · " + error.message;
+    } finally {
+      observer?.disconnect();
+      frame.contentWindow.SRRemoteUI?.cancel();
+    }
+  };
+  frame.src = "/";
+</script>
+</html>

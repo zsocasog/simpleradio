@@ -13,6 +13,7 @@
     ["🔇", "volume-off", "symbolMute", "Némítás"]
   ];
   function motifFor(label) { return motifs.find(motif => motif[0] === label); }
+  const cellStates = new WeakMap();
   let draft = null, draftCodes = {}, selected = 0, saving = false, dirty = false, pending = null, signature = "", initialized = false, profileError = "";
   function profile() { return P.get(currentConfig.irRemoteProfile || "rcnec21", currentConfig.irRemoteCustom); }
   function layout() { return draft || profile(); }
@@ -83,36 +84,48 @@
     document.querySelector("#irWorkbench > .learn-panel").classList.toggle("hidden", !!draft);
     id("irWorkbench").classList.toggle("is-editing", !!draft);
     id("irWorkbench").style.setProperty("--remote-width", Math.max(270, l.columns * 60 + 40) + "px");
-    const codes = Object.fromEntries(l.buttons.map(b => [b.id, String(currentConfig[irKey(b.action)] || "0")]));
-    const next = JSON.stringify([l, !!draft, selected, selectedIrAction, available, codes]);
+    const codes = draft ? draftCodes : Object.fromEntries(l.buttons.map(b => [b.id, String(currentConfig[irKey(b.action)] || "0")]));
+    const next = JSON.stringify([l, !!draft, custom, selected, selectedIrAction, available, codes, saving]);
     if (next === signature) return; signature = next;
     const remote = id("irRemote");
-    const focusedCell = remote.contains(document.activeElement) ? document.activeElement.dataset.cell : null;
-    remote.replaceChildren();
-    remote.style.setProperty("--ir-columns", l.columns);
-    remote.style.setProperty("--ir-rows", l.rows);
-    remote.dataset.columns = l.columns;
+    const focused = remote.contains(document.activeElement) ? document.activeElement : null;
+    if (remote.dataset.columns !== String(l.columns)) {
+      remote.style.setProperty("--ir-columns", l.columns);
+      remote.dataset.columns = l.columns;
+    }
+    if (remote.style.getPropertyValue("--ir-rows") !== String(l.rows)) remote.style.setProperty("--ir-rows", l.rows);
     for (let row = 0; row < l.rows; ++row) for (let column = 0; column < l.columns; ++column) {
       const b = l.buttons.find(item => item.row === row && item.column === column);
-      const n = document.createElement(b || draft ? "button" : "span");
-      n.dataset.cell = row + ":" + column;
+      const index = row * l.columns + column;
+      const old = remote.children[index];
+      const prev = cellStates.get(old);
+      const cell = row + ":" + column;
+      const active = !!b && (draft ? selected === b.id : selectedIrAction === b.action);
+      const learned = !!b && !!codes[b.id] && codes[b.id] !== "0";
+      const disabled = draft ? saving : !available || !b?.action;
+      const state = JSON.stringify([b, active, learned, disabled, custom]);
+      const reuse = prev && old.dataset.cell === cell && prev.id === b?.id && prev.editing === !!draft;
+      if (reuse && prev.state === state) continue;
+      const n = reuse ? old : document.createElement(b || draft ? "button" : "span");
+      if (!reuse) n.dataset.cell = cell;
       if (!b) {
         n.className = draft ? "remote-empty" : "remote-spacer";
-        if (draft) { n.type = "button"; n.textContent = "+"; n.setAttribute("aria-label", tr("addHere", "Új gomb ide") + ` (${row + 1}, ${column + 1})`); n.onclick = () => add(row, column); }
+        if (draft) { n.type = "button"; n.textContent = "+"; n.disabled = saving; n.setAttribute("aria-label", tr("addHere", "Új gomb ide") + ` (${row + 1}, ${column + 1})`); n.onclick = () => add(row, column); }
       } else {
-        const active = draft ? selected === b.id : selectedIrAction === b.action;
-        const learned = draft ? draftCodes[b.id] && draftCodes[b.id] !== "0" : codes[b.id] !== "0";
         n.type = "button"; n.dataset.buttonId = b.id;
         n.setAttribute("data-user-content", "");
-        n.className = `remote-btn tone-${b.tone} shape-${b.shape}${active ? " active" : ""}${learned ? " learned" : ""}${b.action ? "" : " unassigned"}`;
+        n.className = `remote-btn tone-${b.tone} shape-${b.shape}${learned ? " learned" : ""}${b.action ? "" : " unassigned"}`;
+        if (active) n.classList.add(draft ? "is-selected" : "active");
         const motif = (draft || custom) && motifFor(b.label);
-        if (motif) n.innerHTML = window.SRUI.icon(motif[1]);
-        else n.textContent = b.label || "·";
+        if (!reuse || prev.label !== b.label || prev.custom !== custom) {
+          if (motif) n.innerHTML = window.SRUI.icon(motif[1]);
+          else n.textContent = b.label || "·";
+        }
         const action = P.ACTIONS.find(item => item.action === b.action);
         const help = action ? irActionLabel(action) : tr("unassigned", "Nincs hozzárendelve");
         const caption = motif ? tr(motif[2], motif[3]) : b.label.replace(/\n/g, " ");
         n.title = help; n.setAttribute("aria-label", `${caption} · ${help}`);
-        n.setAttribute("aria-pressed", String(active)); n.disabled = draft ? saving : (!available || !b.action);
+        n.setAttribute("aria-pressed", String(active)); n.disabled = disabled;
         n.onclick = () => {
           if (draft) { selected = b.id; render(); form(); }
           else startIrLearning(b.action);
@@ -122,9 +135,12 @@
           n.ondragstart = event => event.dataTransfer.setData("text/plain", String(b.id));
         }
       }
-      remote.appendChild(n);
-      if (focusedCell === n.dataset.cell && !n.disabled) n.focus({ preventScroll: true });
+      cellStates.set(n, { id: b?.id, label: b?.label, custom, editing: !!draft, state });
+      if (!old) remote.appendChild(n);
+      else if (!reuse) old.replaceWith(n);
     }
+    while (remote.children.length > l.rows * l.columns) remote.lastElementChild.remove();
+    if (focused && !focused.isConnected) remote.querySelector(`button[data-cell="${focused.dataset.cell}"]:enabled`)?.focus({ preventScroll: true });
   }
   function edit(blank = false) {
     if (draft || configSaving) return;
@@ -151,7 +167,10 @@
     id("irButtonColumn").value = b ? b.column + 1 : ""; id("irButtonColumn").max = draft.columns;
   }
   function syncMotifs(label) {
-    for (const node of id("irButtonMotifs").children) node.setAttribute("aria-pressed", String(node.dataset.motif === label));
+    for (const node of id("irButtonMotifs").children) {
+      const pressed = String(node.dataset.motif === label);
+      if (node.getAttribute("aria-pressed") !== pressed) node.setAttribute("aria-pressed", pressed);
+    }
   }
   function updateLayout(key, value) {
     if (!draft || saving) return;

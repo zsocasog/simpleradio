@@ -43,8 +43,8 @@
   function closeMenus(except) {
     document.querySelectorAll(".station-menu[open]").forEach(n => { if (n !== except) n.open = false; });
   }
-  U.toggleOrdering = () => {
-    U.ordering = !U.ordering; closeMenus();
+  function setOrdering(ordering) {
+    U.ordering = ordering; closeMenus();
     id("stationOrderButton").setAttribute("aria-pressed", String(U.ordering));
     id("stationOrderButton").innerHTML = U.icon(U.ordering ? "check" : "arrows-sort") + '<span>' + esc(U.ordering ? tr("ui.orderDone", "Rendezés kész") : tr("ui.reorder", "Sorrend módosítása")) + "</span>";
     const nextFocus = U.ordering ? id("stationOrderDone") : id("stationListOptions");
@@ -52,7 +52,7 @@
     visible(id("stationListOptions").parentElement, !U.ordering);
     renderStations(true);
     nextFocus.focus();
-  };
+  }
   U.stationRow = (row, station, compact, index) => {
     row.setAttribute("data-user-content", "");
     row.classList.add("clean-station"); row.title = station.name || "";
@@ -96,7 +96,9 @@
     const label = (n, name, text) => { n.className = "menu-action"; n.innerHTML = U.icon(name) + "<span>" + esc(text) + "</span>"; const run = n.onclick; n.onclick = e => { menu.open = false; run(e); }; };
     label(edit, "pencil", tr("ui.edit", "Szerkesztés"));
     label(del, "trash", tr("ui.delete", "Törlés")); del.classList.add("danger");
-    pop.append(edit, button(tr("ui.move", "Áthelyezés"), "arrows-sort", U.toggleOrdering, "menu-action"), del);
+    pop.append(edit);
+    if (!U.ordering) pop.append(button(tr("ui.move", "Áthelyezés"), "arrows-sort", () => setOrdering(true), "menu-action"));
+    pop.append(del);
     menu.append(summary, pop); actions.append(menu);
     menu.addEventListener("toggle", () => { if (menu.open) closeMenus(menu); });
   };
@@ -108,9 +110,9 @@
     summary.setAttribute("aria-label", tr("ui.listActions", "Listaműveletek")); summary.title = summary.getAttribute("aria-label");
     summary.innerHTML = U.icon("dots");
     const items = make("div", "station-menu-items");
-    const order = button(tr("ui.reorder", "Sorrend módosítása"), "arrows-sort", U.toggleOrdering, "menu-action");
+    const order = button(tr("ui.reorder", "Sorrend módosítása"), "arrows-sort", () => setOrdering(true), "menu-action");
     order.id = "stationOrderButton"; order.setAttribute("aria-pressed", "false"); items.append(order);
-    const done = button(tr("ui.orderDone", "Rendezés kész"), "check", U.toggleOrdering, "primary");
+    const done = button(tr("ui.orderDone", "Rendezés kész"), "check", () => setOrdering(false), "primary");
     done.id = "stationOrderDone"; visible(done, false);
     menu.append(summary, items); actions.append(done, menu);
     menu.addEventListener("toggle", () => { if (menu.open) closeMenus(menu); });

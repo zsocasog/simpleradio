@@ -83,6 +83,9 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers();self.wfile.write(body)
     def do_GET(self):
         url=urlsplit(self.path);path=url.path
+        if path == '/__preview/tests/remote-editor':
+            test = Path(__file__).parent / 'tests' / 'fixtures' / 'remote_editor_redraw.html'
+            return self.reply(test.read_bytes(), 'text/html; charset=utf-8')
         if path == '/scan':
             if 'details' not in parse_qs(url.query): return self.reply([n['ssid'] for n in SETUP_NETWORKS])
             if 'fresh' in parse_qs(url.query): return self.reply([], code=202)

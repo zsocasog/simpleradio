@@ -287,11 +287,15 @@ body[data-view=player] .station-playing:not([hidden]) .station-activity-bar { an
 .remote-btn.tone-power { background: #8b2527; color: #fff; }
 .remote-btn.tone-light { background: #e4e8e4; color: #16201b; border-color: #b7c2bc; }
 .remote-btn.tone-accent { color: var(--accent); background: rgba(var(--accent-rgb), .12); border-color: rgba(var(--accent-rgb), .45); }
-.remote-btn.unassigned { opacity: .65; }
+.ir-workbench:not(.is-editing) .remote-btn.unassigned { opacity: .65; }
 .remote-empty { border: 1px dashed var(--line); border-radius: 9px; color: var(--muted); background: transparent; }
 .remote-empty:hover { color: var(--accent); border-color: var(--accent); background: rgba(var(--accent-rgb), .07); }
 .ir-workbench.is-editing .remote-unit { align-self: start; position: sticky; top: 110px; }
 .ir-workbench.is-editing .remote-btn { cursor: grab; }
+.remote-btn.is-selected { box-shadow: 0 0 0 1px var(--surface-2), 0 0 0 3px var(--text); }
+@media (forced-colors: active) {
+  .remote-btn.is-selected { border-style: dashed; }
+}
 .ir-layout-editor { display: grid; gap: 20px; min-width: 0; }
 .ir-editor-fields { margin: 0; padding: 0; border: 0; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; min-width: 0; }
 .ir-editor-fields legend { margin-bottom: 14px; font-weight: 650; color: var(--accent); }
@@ -494,7 +498,6 @@ body[data-view=player].main-transport-visible .brand .brand-name { display: bloc
 .header-volume-panel { position: absolute; z-index: 5; right: 0; top: calc(100% + 12px); width: min(310px, calc(100vw - 42px)); padding: 8px; border: 1px solid var(--line); border-radius: 12px; background: var(--chrome); box-shadow: 0 8px 24px #0006; }
 .header-volume-panel .volume-rail { --wave-inset: 82px; height: 52px; margin: 0; }
 .player-controls .volume-space { height: 52px; margin-top: 22px; }
-.player-controls .transport .play-main { border-radius: 14px; }
 @media (min-width: 1101px) {
   .now-grid { grid-template-columns: minmax(0, 1fr) minmax(300px, 32%); }
   .now-copy { justify-content: center; padding: 0; }
