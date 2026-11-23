@@ -1,7 +1,7 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
   <style>
-    :root { color: #a76512; }
-    @media (prefers-color-scheme: dark) { :root { color: #f5ce74; } }
+    :root { color: var(--icon-light, #a76512); }
+    @media (prefers-color-scheme: dark) { :root { color: var(--icon-dark, #f5ce74); } }
   </style>
   <defs>
     <mask id="speaker">

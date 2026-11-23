@@ -70,19 +70,6 @@ const t = (key, fallback, vars) =>
   );
 const WS_HEARTBEAT_MS = 3000;
 const WS_STALE_MS = 9000;
-const themePresets = {
-  green: { accent: "#a9f7bf", strong: "#69e58d", accentRgb: "169, 247, 191", strongRgb: "105, 229, 141" },
-  amber: { accent: "#f5ce74", strong: "#dca84f", accentRgb: "245, 206, 116", strongRgb: "220, 168, 79" },
-  blue: { accent: "#84b2ff", strong: "#5d8df0", accentRgb: "132, 178, 255", strongRgb: "93, 141, 240" },
-  cyan: { accent: "#70e1eb", strong: "#42c8d8", accentRgb: "112, 225, 235", strongRgb: "66, 200, 216" },
-  red: { accent: "#f20202", strong: "#b80000", accentRgb: "242, 2, 2", strongRgb: "184, 0, 0" }
-};
-
-function normalizeThemeAccent(theme) {
-  if (theme === "ruby") return "red";
-  return theme === "custom" || themePresets[theme] ? theme : "green";
-}
-
 const irActions = window.SRRemoteProfiles.ACTIONS;
 function activeIrActions() { return window.SRRemoteUI ? window.SRRemoteUI.actions() : irActions; }
 
@@ -304,6 +291,7 @@ function applyThemeAccent(theme) {
   const preset = normalized === "custom" ? themePresetFromColor(customColor) : (themePresets[normalized] || themePresets.green);
   const root = document.documentElement;
   root.style.setProperty("--accent", preset.accent);
+  setThemeIconColor(preset.accent);
   root.style.setProperty("--accent-strong", preset.strong);
   root.style.setProperty("--lcd-accent", normalized === "custom" ? customColor : preset.strong);
   root.style.setProperty("--accent-rgb", preset.accentRgb);

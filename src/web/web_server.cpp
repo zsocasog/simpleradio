@@ -2928,6 +2928,7 @@ void webServerBegin() {
     static constexpr AssetRoute assets[] = {
       {"/index.html", "text/html"}, {"/wifi.html", "text/html"},
       {"/app.js", "application/javascript"}, {"/ui.js", "application/javascript"},
+      {"/theme.js", "application/javascript"},
       {"/station-playlist.js", "application/javascript"},
       {"/led-settings.js", "application/javascript"},
       {"/wifi.js", "application/javascript"}, {"/ir-profiles.js", "application/javascript"},

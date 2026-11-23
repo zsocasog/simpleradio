@@ -10,6 +10,7 @@
 
 #include "../display/display.h"
 #include "../display/display_presenter.h"
+#include "../config/app_config.h"
 #include "../config/logging.h"
 #include "../i18n/i18n.h"
 #include "../state/player_state.h"
@@ -178,6 +179,9 @@ void WifiManager::startConfigPortal() {
 
   wifiServer.on("/setup/status", HTTP_GET, [](AsyncWebServerRequest* r) {
     JsonDocument doc;
+    const AppConfig& config = AppConfig::instance();
+    doc["themeAccent"] = config.themeAccent;
+    if (config.themeAccent == "custom") doc["themeCustomColor"] = config.themeCustomColor;
     switch (portalPhase.load()) {
       case PortalPhase::Connected:
         doc["state"] = "connected";
@@ -206,7 +210,7 @@ void WifiManager::startConfigPortal() {
     r->send(204);
   }).setFilter(ON_AP_FILTER);
 
-  for (const char* asset : {"/wifi.css", "/wifi.js", "/i18n-catalog.js", "/i18n.js", "/favicon.svg", "/icons.svg"}) {
+  for (const char* asset : {"/wifi.css", "/wifi.js", "/theme.js", "/i18n-catalog.js", "/i18n.js", "/favicon.svg", "/icons.svg"}) {
     wifiServer.serveStatic(asset, LittleFS, asset).setFilter(ON_AP_FILTER);
   }
   wifiServer.begin();

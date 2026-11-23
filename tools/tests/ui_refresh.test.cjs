@@ -6,6 +6,45 @@ const test = require('node:test');
 const root = path.resolve(__dirname, '../..');
 const read = file => fs.readFileSync(path.join(root, file), 'utf8');
 
+test('favicon preserves legible accent colors and adapts extreme custom colors to the tab', () => {
+  const theme = vm.createContext({});
+  vm.runInContext(read('data/theme.js'), theme);
+  assert.equal(theme.iconColorForTab('#bd855e', true), '#bd855e');
+  assert.equal(theme.iconColorForTab('#ffffff', true), '#ffffff');
+  assert.equal(theme.iconColorForTab('#000000', false), '#000000');
+  assert.notEqual(theme.iconColorForTab('#ffffff', false), '#ffffff');
+  assert.notEqual(theme.iconColorForTab('#000000', true), '#000000');
+  assert.equal(theme.normalizeThemeAccent('ruby'), 'red');
+});
+
+test('a slow favicon load uses the latest preview color and reuses the original SVG on subsequent changes', async () => {
+  const link = { href: '/favicon.svg?v=test' }, mark = {}, properties = {};
+  const requests = [];
+  let complete;
+  const theme = vm.createContext({
+    document: { querySelector: selector => selector === 'link[rel="icon"]' ? link : mark },
+    fetch: url => { requests.push(url); return new Promise(resolve => { complete = resolve; }); },
+    DOMParser: class {
+      parseFromString() { return { documentElement: { localName: 'svg', style: {
+        setProperty(key, value) { properties[key] = value; }
+      } } }; }
+    },
+    XMLSerializer: class { serializeToString() { return JSON.stringify(properties); } }
+  });
+  vm.runInContext(read('data/theme.js'), theme);
+  await theme.setThemeIconColor('invalid');
+  assert.equal(requests.length, 0);
+  const first = theme.setThemeIconColor('#84b2ff'), latest = theme.setThemeIconColor('#bc85ee');
+  complete({ ok: true, text: async () => read('data/favicon.svg') });
+  await Promise.all([first, latest]);
+  assert.equal(properties['--icon-dark'], '#bc85ee');
+  assert.equal(mark.src, link.href);
+  await theme.setThemeIconColor('#70e1eb');
+  assert.equal(properties['--icon-dark'], '#70e1eb');
+  assert.equal(mark.src, link.href);
+  assert.deepEqual(requests, ['/favicon.svg?v=test']);
+});
+
 function language(lang) {
   const context = { window: {}, document: { readyState: 'loading', addEventListener() {} } };
   vm.createContext(context);

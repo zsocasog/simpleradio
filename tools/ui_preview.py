@@ -91,7 +91,8 @@ class Handler(BaseHTTPRequestHandler):
             with LOCK:
                 if SETUP['state']=='connecting' and time.monotonic()>=SETUP['ready_at']:
                     SETUP['state']=SETUP['outcome']
-                body={'state':SETUP['state']}
+                body={'state':SETUP['state'], 'themeAccent':CONFIG['themeAccent']}
+                if CONFIG['themeAccent']=='custom': body['themeCustomColor']=CONFIG['themeCustomColor']
                 if body['state']=='connected': body.update(ip='127.0.0.1', id='d3a01234')
             return self.reply(body)
         if path == '/setup/ready.gif':

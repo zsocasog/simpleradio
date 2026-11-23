@@ -219,6 +219,10 @@
       const res = await request("/setup/status");
       if (res.ok) {
         const result = await res.json();
+        if (result.themeAccent && typeof setThemeIconColor === "function") {
+          const theme = normalizeThemeAccent(result.themeAccent);
+          setThemeIconColor(theme === "custom" ? result.themeCustomColor : themePresets[theme].accent);
+        }
         if (result.state === "connected") { if (!await openRadio(result)) await connect(true); return; }
         if (result.state === "connecting") { await connect(true); return; }
       }

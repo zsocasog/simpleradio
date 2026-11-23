@@ -32,7 +32,7 @@ test('the reader/OTA handshake publishes before checking and waits before unmoun
 
 test('all shipped STA web assets are queued before the static fallback; recovery and dynamic JSON retain their own routes',()=>{
  const routes=body(web,'void webServerBegin()');
- for(const path of ['/index.html','/wifi.html','/app.js','/ui.js','/wifi.js','/ir-profiles.js','/ir-editor.js',
+ for(const path of ['/index.html','/wifi.html','/app.js','/ui.js','/theme.js','/wifi.js','/ir-profiles.js','/ir-editor.js',
  '/i18n-catalog.js','/i18n.js','/style.css','/ui.css','/wifi.css','/icons.svg','/favicon.svg','/build-info.json']){
   assert.ok(routes.includes('{"'+path+'",'),path);
  }
