@@ -22,6 +22,8 @@ A referencia-összeállítás egy **ESP32-S3 N16R8** modulra, egy **ILI9488 480�
 2. PlatformIO-ban töltsd fel a firmware-t a `pio run -t upload`, a webfelületet pedig a `pio run -t uploadfs` paranccsal. Első telepítéskor mindkettő szükséges.
 3. Ha még nincs beállítva a Wi-Fi, csatlakozz a rádió **ESP32-WebRadio** hálózatához. A későbbi frissítéseket a webfelület **Rendszer → Frissítés** oldalán indíthatod.
 
+A webfelületen indított LittleFS-frissítés megőrzi a beállításokat, az állomáslistát és a mentett állomáslogókat.
+
 ![Kijelzőbeállítások LCD-előnézettel](.screenshots/display.jpg)
 
 ## Útmutatók

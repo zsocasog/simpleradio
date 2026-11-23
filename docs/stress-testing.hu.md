@@ -132,3 +132,8 @@ A kényszerű áramtalanítást vagy megszakított hálózatot semmilyen `finall
 3. A korábbi Git-verziók összevetése azonos állomáslistát, webes adatcsomagot és cache-állapotot igényel. Egy régi kódvizsgálat vagy eltérő napi internetes keresés nem teljesítményteszt.
 4. Egyszerre egy szűk változtatás következzen, majd ugyanez a mérés. Csak akkor gyorsítás, ha a válaszidő javulása mellett a hangutánpótlás, vezérlés, memória és visszaállítás sem romlik.
 5. Végül hosszabb, több seed-del végzett sorozat és valódi böngészős/hardveres próba szükséges. Egyetlen rövid, hibamentes futás nem jelent teljes stabilitási garanciát.
+
+## Kapcsolódó helyi ellenőrzések
+
+- Webfelület előnézete mintaadatokkal: `python tools/ui_preview.py --port 8765`. Nyisd meg a `http://127.0.0.1:8765/` címet, az angol nézethez pedig add hozzá a `?lang=en` paramétert.
+- Spektrummozgás ellenőrzése: `node tools/spectrum_rhythm_audit.cjs`. A készülék részletes spektrum- és albumborító-naplója a [diagnostics.h](../src/config/diagnostics.h) fájlban kapcsolható.

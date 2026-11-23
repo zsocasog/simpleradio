@@ -22,6 +22,8 @@ The reference build uses an **ESP32-S3 N16R8**, an **ILI9488 480×320 SPI LCD** 
 2. In PlatformIO, upload the firmware with `pio run -t upload` and the web interface with `pio run -t uploadfs`. The first install needs both.
 3. If Wi-Fi is not configured, join the radio’s **ESP32-WebRadio** setup network. For later updates, use **System → Update** in the web interface.
 
+LittleFS updates through the web interface preserve settings, stations and saved station logos.
+
 ![Display settings with LCD preview](.screenshots/en/display.jpg)
 
 ## Guides
