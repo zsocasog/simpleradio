@@ -2,7 +2,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs'), path = require('node:path'), vm = require('node:vm');
 const test = require('node:test');
 const root = path.resolve(__dirname, '../..');
-const cpp = fs.readFileSync(path.join(root, 'src/artwork/artwork_cache.cpp'), 'utf8');
+const cpp = fs.readFileSync(path.join(root, 'src/artwork/artwork_cache.cpp'), 'utf8').replace(/\r\n/g, '\n');
 function body(marker) {
   const at = cpp.indexOf(marker); assert.ok(at >= 0, marker);
   const start = cpp.indexOf('{', at); let depth = 0;

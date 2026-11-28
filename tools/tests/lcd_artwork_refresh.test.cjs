@@ -58,6 +58,8 @@ function harness() {
     displayModelsDifferForPlaybackInteraction: (a, b) => a.stationId !== b.stationId,
     clearVuBars() {}, resetVuAutoScale() {}, tickNow() {}, applyConfigNow() {}, notifyActivityNow() {},
     drawPlayerSurface() {}, drawInfoRegion() {}, drawFooterRegion() {},
+    playerSlide: { running: false, invalidateCaptions() {} }, playerLayout: { active: () => false, snap() {} },
+    growthForFooter: () => 0, renderFooterConfigFrame() {},
     drawArt: m => draws.push({ path: m.logoPath, key: c.artRenderKeyFor(m) }),
     LittleFS: { exists: image => files.has(image) },
     LcdThumbnailRam: {acquire: image => ram.has(image) ? {modified:()=>ram.get(image)} : false},
@@ -129,6 +131,34 @@ test('a RAM album replaces the fallback and is rendered only once', () => {
   h.prepare(); h.complete(); h.service();
   assert.equal(h.draws.length, 1); assert.equal(h.draws[0].key, 'memory:/api/artwork/album?id=track1');
   h.complete(); h.service(); assert.equal(h.draws.length, 1);
+});
+
+test('latest artwork waits for the moving frame while the title continues to update', () => {
+  const h = harness(), captured = [];
+  h.c.playerSlide.running = true;
+  h.c.playerSlide.captureText = m => captured.push(m.title);
+  h.c.playerLayout.active = () => true;
+  h.c.selectedModel = model({ logoPath: '/api/artwork/album?id=new', title: 'New track', isAlbumArtwork: true });
+  h.prepare(); h.complete(); h.service();
+  assert.deepEqual(captured, ['New track']);
+  assert.equal(h.c.deferredArtworkRefresh, true);
+  assert.deepEqual(h.draws, []);
+  h.c.selectedModel = model({ logoPath: '/api/artwork/album?id=latest', title: 'New track', isAlbumArtwork: true });
+  h.prepare(); h.complete(); h.service();
+  h.c.playerSlide.running = false;
+  h.c.refreshArtworkNow(); h.c.refreshArtworkNow();
+  assert.equal(h.c.deferredArtworkRefresh, false);
+  assert.deepEqual(h.draws.map(d => d.path), ['/api/artwork/album?id=latest']);
+});
+
+test('changing station during a zoom immediately paints the new station', () => {
+  const h = harness();
+  h.c.playerSlide.running = true;
+  const next = model({ stationId: 8, station: 'Another station', logoPath: '/logos/next.png' });
+  h.c.selectedModel = next; h.prepare(); h.complete(); h.service();
+  assert.equal(h.c.playerSlide.running, false);
+  assert.equal(h.c.deferredArtworkRefresh, false);
+  assert.deepEqual(h.draws.map(d => d.path), [next.logoPath]);
 });
 
 test('a file-backed album uses its prepared fill thumbnail, not the station variant', () => {

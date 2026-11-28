@@ -42,6 +42,7 @@ class Canvas {
   }
   drawFastHLine(x, y, w, color) { for (let i = 0; i < w; ++i) this.pixel(x + i, y, color); }
   writeFastHLine(x, y, w) { this.drawFastHLine(x, y, w, this.color); }
+  fillRect(x, y, w, h, color) { this.color = color; this.writeFillRect(x, y, w, h); }
   writeFillRect(x, y, w, h) {
     if (w < 0) { x += w + 1; w = -w; } if (h < 0) { y += h + 1; h = -h; }
     for (let row = 0; row < h; ++row) this.drawFastHLine(x, y + row, w, this.color);

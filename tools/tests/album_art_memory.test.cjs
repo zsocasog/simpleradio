@@ -78,11 +78,11 @@ test("async web response pins immutable source until its final copy, then frees 
 });
 
 test("memory LCD rendering uses the same rounded aperture and stable render keys", () => {
-  const draw = display.slice(display.indexOf("static void drawArt(const DisplayModel&"), display.indexOf("String Display::artRenderKeyFor"));
+  const draw = display.slice(display.indexOf("static void drawArtContents(const DisplayModel&"), display.indexOf("String Display::artRenderKeyFor"));
   assert.match(draw, /const auto frame = AlbumArtStore::instance\(\).acquire\(m.logoPath\);/);
   assert.match(draw, /for \(int y = 0; y < ART_SIZE; y \+= 4\)/);
-  assert.match(draw, /writeArtRows\(frame->pixels \+ static_cast<size_t>\(y\) \* ART_SIZE, y, min\(4, ART_SIZE - y\)\)/);
-  assert.ok(draw.indexOf("ArtworkCache::instance().artworkExists") > draw.indexOf("writeArtRows(frame->pixels"));
+  assert.match(draw, /writeArtRows\(box, frame->pixels \+ static_cast<size_t>\(y\) \* ART_SIZE, y, min\(4, ART_SIZE - y\)\)/);
+  assert.ok(draw.indexOf("ArtworkCache::instance().artworkExists") > draw.indexOf("writeArtRows(box, frame->pixels"));
   assert.match(display, /return key.startsWith\("memory:"\)/);
   assert.match(display, /bool logoMissing = [^;]*ArtworkCache::instance\(\).artworkExists\(m.logoPath\)/);
   assert.match(read("src/display/display_presenter.cpp"), /if \(memoryAlbum\) \{\s*m.logoPath = memoryAlbum->path;\s*m.isAlbumArtwork = true;/);

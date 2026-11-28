@@ -25,6 +25,12 @@ public:
   bool isVolumeScreenActive() const;
   void taskLoop();
 
+  struct LayoutTiming {
+    uint32_t sequence = 0, frames = 0, prepareMs = 0, motionMs = 0, maxGapMs = 0, maxDrawMs = 0;
+    uint32_t firstMs = 0, coldFrames = 0;
+  };
+  static LayoutTiming lastLayoutTiming();
+
 private:
   Display() = default;
 
@@ -45,6 +51,7 @@ private:
   void renderAudioMeterFrame(bool force = false);
   void renderDateTimeFooterFrame(bool force = false);
   void renderFooterConfigFrame();
+  bool renderPlayerLayout(uint8_t footerKey);
   void renderVolumePopupFrame(bool forceFull = false);
   void dismissVolumePopupNow();
   void resetStationPickerMarqueeNow(int selectedStationId);

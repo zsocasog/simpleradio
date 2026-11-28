@@ -54,7 +54,7 @@ test('repeated enumeration closes its single directory handle on every response'
  assert.ok(r.replies.every(x=>x.status===200));
 });
 test('frequent outgoing state/status/station/logo JSON pools stay out of internal RAM',()=>{
- for(const marker of ['static String systemStatusJson()','static String hardwareCapabilitiesJson()',
+ for(const marker of ['static String systemStatusJson(','static String hardwareCapabilitiesJson()',
   'server.on("/api/stations"','static AsyncWebServerResponse* prepareLogoListResponse(']){
   const part=web.slice(web.indexOf(marker),web.indexOf(marker)+250);
   assert.match(part,/ArtworkJson::Allocator jsonAllocator;\s*JsonDocument doc\(&jsonAllocator\)/);

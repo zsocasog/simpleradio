@@ -20,6 +20,8 @@
 #include "lcd_font_data.h"
 #include "lcd_clock_font_data.h"
 #include "station_picker_policy.h"
+#include "player_layout_motion.h"
+#include <algorithm>
 #include <atomic>
 #include <utility>
 #include <math.h>
@@ -94,11 +96,12 @@ static constexpr int PLAYER_H = SCREEN_H;
 static constexpr int ART_X = sx(22);
 static constexpr int ART_Y = sy(52);
 static constexpr int ART_SIZE = ss(176);
+static constexpr int EXPANDED_ART_SIZE = ss(204);
+static constexpr int ART_GROWTH = EXPANDED_ART_SIZE - ART_SIZE;
+static constexpr int ART_FRAME = ss(3);
 static constexpr int ART_CORNER_RADIUS = ss(5);
 static constexpr int INFO_X = sx(214);
 static constexpr int INFO_W = SCREEN_W - INFO_X - sx(22);
-static constexpr int TITLE_CENTER_Y = sy(98);
-static constexpr int ARTIST_CENTER_Y = sy(202);
 static constexpr int ART_REGION_X = ART_X - ss(6);
 static constexpr int ART_REGION_Y = ART_Y - ss(6);
 static constexpr int ART_REGION_W = ART_SIZE + ss(12);
@@ -107,6 +110,12 @@ static constexpr int INFO_REGION_X = INFO_X - sx(8);
 static constexpr int INFO_REGION_Y = sy(36);
 static constexpr int INFO_REGION_W = SCREEN_W - INFO_REGION_X - sx(14);
 static constexpr int INFO_REGION_H = sy(198);
+static PlayerLayout::Motion playerLayout(ART_GROWTH);
+
+static constexpr int infoShiftY(int growth) {
+  constexpr int shift = ART_Y + EXPANDED_ART_SIZE / 2 - (INFO_REGION_Y + INFO_REGION_H / 2);
+  return (growth * shift + ART_GROWTH / 2) / ART_GROWTH;
+}
 // Use the room below BOTH protected content regions, with breathing room
 // above the tallest bar and an 8-pixel (scaled) margin at the bottom.
 static constexpr int PLAYER_CONTENT_BOTTOM =
@@ -378,7 +387,8 @@ static int32_t uiTextWidth(const String& text) {
   return uiTextWidth(text, *currentUiFont);
 }
 
-static void drawUiText(const String& text, int32_t x, int32_t y, const LcdFont& font, uint16_t color, uint16_t bg, textdatum_t datum = top_left) {
+static int32_t drawUiText(const String& text, int32_t x, int32_t y, const LcdFont& font, uint16_t color, uint16_t bg,
+                       textdatum_t datum = top_left, lgfx::LovyanGFX& surface = lcd) {
   int32_t width = uiTextWidth(text, font);
   int32_t height = fontLineHeight(font);
 
@@ -419,7 +429,7 @@ static void drawUiText(const String& text, int32_t x, int32_t y, const LcdFont& 
   const char* cursor = text.c_str();
   const uint8_t* bitmap = fontBitmap(font);
 
-  lcd.startWrite();
+  surface.startWrite();
   while (*cursor) {
     uint32_t code = nextUtf8Codepoint(cursor);
     GlyphInfo glyph;
@@ -432,12 +442,13 @@ static void drawUiText(const String& text, int32_t x, int32_t y, const LcdFont& 
         uint8_t alpha4 = (pixelIndex & 1) ? (packed & 0x0F) : (packed >> 4);
         if (!alpha4) continue;
         uint16_t blended = blend565(color, bg, alpha4 * 17);
-        lcd.writePixel(penX + glyph.xOffset + col, y + glyph.yOffset + row, blended);
+        surface.writePixel(penX + glyph.xOffset + col, y + glyph.yOffset + row, blended);
       }
     }
     penX += glyph.xAdvance;
   }
-  lcd.endWrite();
+  surface.endWrite();
+  return width;
 }
 
 static void drawUiTextClipped(const String& text,
@@ -569,7 +580,7 @@ static constexpr BaseType_t DISPLAY_TASK_CORE = 1;
 static void displayTaskEntry(void*) {
   for (;;) {
     Display::instance().taskLoop();
-    vTaskDelay(pdMS_TO_TICKS(8));
+    vTaskDelay(playerLayout.active() ? 1 : pdMS_TO_TICKS(8));
   }
 }
 
@@ -739,7 +750,8 @@ static void drawWrappedText(String text, int32_t x, int32_t y, int32_t maxWidth,
   drawWrappedText(text, x, y, maxWidth, size, color, maxLines, cBg);
 }
 
-static void drawCenteredWrappedText(String text, int32_t centerX, int32_t centerY, int32_t maxWidth, uint8_t size, uint16_t color, uint8_t maxLines, uint16_t bg) {
+static void drawCenteredWrappedText(String text, int32_t centerX, int32_t centerY, int32_t maxWidth, uint8_t size,
+                                    uint16_t color, uint8_t maxLines, uint16_t bg, lgfx::LovyanGFX& surface) {
   text = lcdSafeText(text);
   setUiFont(size);
 
@@ -781,7 +793,7 @@ static void drawCenteredWrappedText(String text, int32_t centerX, int32_t center
 
   int32_t startY = centerY - (static_cast<int32_t>(lineCount) * lineHeight - 5) / 2;
   for (uint8_t i = 0; i < lineCount; ++i) {
-    drawUiText(lines[i], centerX, startY + i * lineHeight, *currentUiFont, color, bg, top_center);
+    drawUiText(lines[i], centerX, startY + i * lineHeight, *currentUiFont, color, bg, top_center, surface);
   }
 }
 
@@ -967,8 +979,12 @@ static void drawPlayerSurfaceRegion(int32_t x, int32_t y, int32_t w, int32_t h) 
   if (x1 <= x0 || y1 <= y0) return;
 
   lcd.startWrite();
-  for (int32_t yy = y0; yy < y1; ++yy) {
-    lcd.drawFastHLine(x0, yy, x1 - x0, playerSurfaceColorAtY(yy));
+  for (int32_t yy = y0; yy < y1;) {
+    const uint16_t color = playerSurfaceColorAtY(yy);
+    int32_t end = yy + 1;
+    while (end < y1 && playerSurfaceColorAtY(end) == color) ++end;
+    lcd.fillRect(x0, yy, x1 - x0, end - yy, color);
+    yy = end;
   }
 
   lcd.endWrite();
@@ -982,26 +998,22 @@ static uint16_t logoMatLine() {
   return blend565(cAccent, cLine, 88);
 }
 
-static void drawArtFrame(uint16_t fill, uint16_t line) {
-  const int thickness = max(1, ss(3));
-  lcd.fillRoundRect(ART_X - thickness,
-                    ART_Y - thickness,
-                    ART_SIZE + thickness * 2,
-                    ART_SIZE + thickness * 2,
-                    ART_CORNER_RADIUS + thickness,
-                    fill);
-  for (int pad = thickness; pad > 0; --pad) {
-    lcd.drawRoundRect(ART_X - pad,
-                      ART_Y - pad,
-                      ART_SIZE + pad * 2,
-                      ART_SIZE + pad * 2,
-                      max(1, ART_CORNER_RADIUS + pad),
-                      line);
+struct ArtSurface {
+  lgfx::LovyanGFX& out;
+  int x, y, side;
+};
+
+static void drawArtFrame(const ArtSurface& box, uint16_t fill, uint16_t line) {
+  box.out.fillRoundRect(box.x - ART_FRAME, box.y - ART_FRAME, box.side + 2 * ART_FRAME,
+                        box.side + 2 * ART_FRAME, ART_CORNER_RADIUS + ART_FRAME, fill);
+  for (int pad = ART_FRAME; pad > 0; --pad) {
+    box.out.drawRoundRect(box.x - pad, box.y - pad, box.side + 2 * pad, box.side + 2 * pad,
+                          ART_CORNER_RADIUS + pad, line);
   }
 }
 
-static int artRowInset(int y) {
-  const int edge = min(y, ART_SIZE - 1 - y);
+static int artRowInset(int y, int side) {
+  const int edge = min(y, side - 1 - y);
   if (edge >= ART_CORNER_RADIUS || ART_CORNER_RADIUS <= 0) return 0;
   const float dy = ART_CORNER_RADIUS - edge - 0.5f;
   return max(0, static_cast<int>(ceilf(ART_CORNER_RADIUS -
@@ -1010,32 +1022,42 @@ static int artRowInset(int y) {
 
 // The raw RGB565 fast path must obey the same rounded aperture as decoded
 // images. Only the corner rows need clipping; the center stays a block write.
-static void writeArtRows(const uint16_t* pixels, int y, int rowCount) {
-  if (y >= ART_CORNER_RADIUS && y + rowCount <= ART_SIZE - ART_CORNER_RADIUS) {
-    lcd.setAddrWindow(ART_X, ART_Y + y, ART_SIZE, rowCount);
-    lcd.writePixels(pixels, ART_SIZE * rowCount, false);
+static void writeArtRows(const ArtSurface& box, const uint16_t* pixels, int y, int rowCount) {
+  if (box.side == ART_SIZE && y >= ART_CORNER_RADIUS && y + rowCount <= ART_SIZE - ART_CORNER_RADIUS) {
+    box.out.setAddrWindow(box.x, box.y + y, ART_SIZE, rowCount);
+    box.out.writePixels(pixels, ART_SIZE * rowCount, false);
     return;
   }
-  for (int row = 0; row < rowCount; ++row) {
-    const int inset = artRowInset(y + row);
-    const int width = ART_SIZE - 2 * inset;
-    lcd.setAddrWindow(ART_X + inset, ART_Y + y + row, width, 1);
-    lcd.writePixels(pixels + row * ART_SIZE + inset, width, false);
+
+  // Thumbnail rows keep their original stride, even at the larger display size.
+  uint16_t scaled[EXPANDED_ART_SIZE];
+  const int begin = (y * box.side + ART_SIZE - 1) / ART_SIZE;
+  const int end = ((y + rowCount) * box.side + ART_SIZE - 1) / ART_SIZE;
+  for (int destY = begin; destY < end; ++destY) {
+    const int inset = artRowInset(destY, box.side);
+    const int width = box.side - 2 * inset;
+    const uint16_t* row = pixels + (destY * ART_SIZE / box.side - y) * ART_SIZE;
+    if (box.side != ART_SIZE) {
+      for (int x = inset; x < box.side - inset; ++x) scaled[x] = row[x * ART_SIZE / box.side];
+      row = scaled;
+    }
+    box.out.setAddrWindow(box.x + inset, box.y + destY, width, 1);
+    box.out.writePixels(row + inset, width, false);
   }
 }
 
-static void maskArtCorners() {
-  lcd.startWrite();
-  for (int y = 0; y < ART_SIZE; ++y) {
-    const int inset = artRowInset(y);
+static void maskArtCorners(const ArtSurface& box) {
+  box.out.startWrite();
+  for (int y = 0; y < box.side; ++y) {
+    const int inset = artRowInset(y, box.side);
     if (!inset) continue;
-    lcd.drawFastHLine(ART_X, ART_Y + y, inset, cBg);
-    lcd.drawFastHLine(ART_X + ART_SIZE - inset, ART_Y + y, inset, cBg);
+    box.out.drawFastHLine(box.x, box.y + y, inset, cBg);
+    box.out.drawFastHLine(box.x + box.side - inset, box.y + y, inset, cBg);
   }
-  lcd.endWrite();
+  box.out.endWrite();
 }
 
-static bool drawLcdThumbnail(const String& path) {
+static bool drawLcdThumbnail(const ArtSurface& box, const String& path) {
   LcdThumbnailRam::File file(LittleFS.mountpoint(), path.c_str());
   if (!file) return false;
 
@@ -1055,7 +1077,7 @@ static bool drawLcdThumbnail(const String& path) {
   static constexpr int THUMB_ROWS_PER_CHUNK = 4;
   static uint16_t rows[ART_SIZE * THUMB_ROWS_PER_CHUNK];
   bool ok = true;
-  lcd.startWrite();
+  box.out.startWrite();
   for (int y = 0; y < ART_SIZE; y += THUMB_ROWS_PER_CHUNK) {
     int rowCount = min(THUMB_ROWS_PER_CHUNK, ART_SIZE - y);
     size_t bytes = static_cast<size_t>(ART_SIZE) * rowCount * sizeof(uint16_t);
@@ -1063,24 +1085,24 @@ static bool drawLcdThumbnail(const String& path) {
       ok = false;
       break;
     }
-    writeArtRows(rows, y, rowCount);
+    writeArtRows(box, rows, y, rowCount);
   }
-  lcd.endWrite();
+  box.out.endWrite();
   file.close();
 
   if (!ok) return false;
   return true;
 }
 
-static void drawArtPlaceholder(const DisplayModel& m) {
+static void drawArtPlaceholder(const ArtSurface& box, const DisplayModel& m) {
   uint16_t placeholderBg = blend565(cAccent, cBg, 28);
   uint16_t placeholderLine = blend565(cAccent, cLine, 96);
-  drawArtFrame(placeholderBg, placeholderLine);
+  drawArtFrame(box, placeholderBg, placeholderLine);
 
   String label = m.station.length() ? m.station : I18n::SIMPLE_RADIO;
   label = lcdSafeText(label);
   label.trim();
-  const int32_t textWidth = ART_SIZE - sx(24);
+  const int32_t textWidth = box.side - sx(24);
   uint8_t fontSize = 3;
   String remaining = label;
 
@@ -1106,26 +1128,25 @@ static void drawArtPlaceholder(const DisplayModel& m) {
     --fontSize;
   }
 
-  drawCenteredWrappedText(label, ART_X + ART_SIZE / 2, ART_Y + ART_SIZE / 2, textWidth, fontSize, cAccent, 3, placeholderBg);
+  drawCenteredWrappedText(label, box.x + box.side / 2, box.y + box.side / 2, textWidth, fontSize, cAccent, 3, placeholderBg, box.out);
 }
 
-static void drawArt(const DisplayModel& m) {
-  drawPlayerSurfaceRegion(ART_REGION_X, ART_REGION_Y, ART_REGION_W, ART_REGION_H);
+static void drawArtContents(const DisplayModel& m, const ArtSurface& box) {
 
   if (AlbumArtStore::isPath(m.logoPath)) {
     const auto frame = AlbumArtStore::instance().acquire(m.logoPath);
     if (!frame || frame->side != ART_SIZE) {
-      drawArtPlaceholder(m);
+      drawArtPlaceholder(box, m);
       return;
     }
-    drawArtFrame(cBg, logoMatLine());
-    lcd.startWrite();
+    drawArtFrame(box, cBg, logoMatLine());
+    box.out.startWrite();
     // Match the file-backed renderer's short transfers and rounded aperture,
     // without its per-chunk filesystem reads or any image decoding on the UI.
     for (int y = 0; y < ART_SIZE; y += 4) {
-      writeArtRows(frame->pixels + static_cast<size_t>(y) * ART_SIZE, y, min(4, ART_SIZE - y));
+      writeArtRows(box, frame->pixels + static_cast<size_t>(y) * ART_SIZE, y, min(4, ART_SIZE - y));
     }
-    lcd.endWrite();
+    box.out.endWrite();
     return;
   }
 
@@ -1133,7 +1154,7 @@ static void drawArt(const DisplayModel& m) {
     if (m.logoPath.length()) {
       Serial.printf("[display] logo missing: %s\n", m.logoPath.c_str());
     }
-    drawArtPlaceholder(m);
+    drawArtPlaceholder(box, m);
     return;
   }
 
@@ -1141,19 +1162,19 @@ static void drawArt(const DisplayModel& m) {
   path.toLowerCase();
 
   uint16_t matLine = logoMatLine();
-  drawArtFrame(cBg, matLine);
+  drawArtFrame(box, cBg, matLine);
 
   String thumbPath = ArtworkCache::instance().lcdThumbnailPath(m.logoPath, m.isAlbumArtwork);
   if (thumbPath.length()) {
-    if (drawLcdThumbnail(thumbPath)) {
+    if (drawLcdThumbnail(box, thumbPath)) {
       return;
     }
     if (m.playing) {
-      drawArtPlaceholder(m);
+      drawArtPlaceholder(box, m);
       return;
     }
     ArtworkCache::instance().ensureLcdThumbnail(m.logoPath, m.isAlbumArtwork);
-    if (drawLcdThumbnail(thumbPath)) {
+    if (drawLcdThumbnail(box, thumbPath)) {
       return;
     }
   }
@@ -1161,7 +1182,7 @@ static void drawArt(const DisplayModel& m) {
   ImageSize size;
   if (!readImageSize(m.logoPath, size)) {
     Serial.printf("[display] unsupported logo file: %s\n", m.logoPath.c_str());
-    drawArtPlaceholder(m);
+    drawArtPlaceholder(box, m);
     return;
   }
 
@@ -1185,34 +1206,35 @@ static void drawArt(const DisplayModel& m) {
       drawn = art.drawBmpFile(LittleFS, m.logoPath.c_str(), 0, 0, ART_SIZE, ART_SIZE, 0, 0, scale, scale, middle_center);
     }
     if (drawn) {
-      lcd.startWrite();
-      writeArtRows(static_cast<const uint16_t*>(art.getBuffer()), 0, ART_SIZE);
-      lcd.endWrite();
+      box.out.startWrite();
+      writeArtRows(box, static_cast<const uint16_t*>(art.getBuffer()), 0, ART_SIZE);
+      box.out.endWrite();
     }
     art.deleteSprite();
   }
+  const float destScale = scale * box.side / ART_SIZE;
 
   if (path.endsWith(".jpg") || path.endsWith(".jpeg")) {
     if (!drawn) {
-      drawn = lcd.drawJpgFile(LittleFS, m.logoPath.c_str(), ART_X, ART_Y, ART_SIZE, ART_SIZE, 0, 0, scale, scale, middle_center);
+      drawn = box.out.drawJpgFile(LittleFS, m.logoPath.c_str(), box.x, box.y, box.side, box.side, 0, 0, destScale, destScale, middle_center);
     }
   } else if (path.endsWith(".png")) {
     if (!drawn) {
-      drawn = lcd.drawPngFile(LittleFS, m.logoPath.c_str(), ART_X, ART_Y, ART_SIZE, ART_SIZE, 0, 0, scale, scale, middle_center);
-      lcd.releasePngMemory();
+      drawn = box.out.drawPngFile(LittleFS, m.logoPath.c_str(), box.x, box.y, box.side, box.side, 0, 0, destScale, destScale, middle_center);
+      box.out.releasePngMemory();
     }
   } else if (path.endsWith(".bmp")) {
     if (!drawn) {
-      drawn = lcd.drawBmpFile(LittleFS, m.logoPath.c_str(), ART_X, ART_Y, ART_SIZE, ART_SIZE, 0, 0, scale, scale, middle_center);
+      drawn = box.out.drawBmpFile(LittleFS, m.logoPath.c_str(), box.x, box.y, box.side, box.side, 0, 0, destScale, destScale, middle_center);
     }
   }
 
   if (drawn) {
-    maskArtCorners();
+    maskArtCorners(box);
     Serial.printf("[display] logo drawn: %s %ux%u scale=%.2f\n", m.logoPath.c_str(), size.width, size.height, scale);
   } else {
     Serial.printf("[display] logo draw failed: %s %ux%u scale=%.2f\n", m.logoPath.c_str(), size.width, size.height, scale);
-    drawArtPlaceholder(m);
+    drawArtPlaceholder(box, m);
   }
 }
 
@@ -1237,14 +1259,6 @@ String Display::artRenderKeyFor(const DisplayModel& m) const {
   }
 
   return String("source:") + m.logoPath;
-}
-
-void Display::drawArtIfNeeded(const DisplayModel& m, bool force) {
-  String beforeKey = artRenderKeyFor(m);
-  if (!force && beforeKey == lastRenderedArtKey) return;
-
-  drawArt(m);
-  lastRenderedArtKey = artRenderKeyFor(m);
 }
 
 static bool readyArtKey(const String& key) {
@@ -1792,9 +1806,17 @@ static void displayTitleArtist(const DisplayModel& m, String& title, String& art
   }
 }
 
-static void drawInfoRegion(const DisplayModel& m) {
-  drawPlayerSurfaceRegion(INFO_REGION_X, INFO_REGION_Y, INFO_REGION_W, INFO_REGION_H);
+struct TextBand { int top, height, width; };
+using LayoutRect = PlayerLayout::Rect;
+static constexpr int CAPTION_PAD = sx(4);
+static LayoutRect paintedCaption{};
 
+static LayoutRect captionRect(int growth, const TextBand& band, int availableWidth) {
+  return {INFO_X + growth - CAPTION_PAD, INFO_REGION_Y + infoShiftY(growth) + band.top,
+          min(availableWidth, band.width) + 2 * CAPTION_PAD, band.height};
+}
+
+static TextBand drawInfoContents(const DisplayModel& m, lgfx::LovyanGFX& surface, int x, int top, int width) {
   String title;
   String artist;
   displayTitleArtist(m, title, artist);
@@ -1802,7 +1824,7 @@ static void drawInfoRegion(const DisplayModel& m) {
   const LcdFont* heading = &titleFont();
   const LcdFont* byline = &artistFont();
   String titleLines[3], artistLines[2];
-  auto wrap = [](String text, const LcdFont& font, String* lines, int limit) {
+  auto wrap = [width](String text, const LcdFont& font, String* lines, int limit) {
     text = lcdSafeText(text); text.trim();
     int count = 0;
     while (text.length() && count < limit) {
@@ -1811,13 +1833,13 @@ static void drawInfoRegion(const DisplayModel& m) {
         int space = rest.indexOf(' ');
         String word = space < 0 ? rest : rest.substring(0, space);
         String next = line.length() ? line + " " + word : word;
-        if (uiTextWidth(next, font) > INFO_W) break;
+        if (uiTextWidth(next, font) > width) break;
         line = next;
         rest = space < 0 ? "" : rest.substring(space + 1);
         rest.trim();
       }
       if (!line.length() || (count == limit - 1 && rest.length())) {
-        line = fitTextForFont(text, INFO_W, font); rest = "";
+        line = fitTextForFont(text, width, font); rest = "";
       }
       lines[count++] = line; text = rest;
     }
@@ -1833,16 +1855,380 @@ static void drawInfoRegion(const DisplayModel& m) {
     heading = COMPACT_LCD ? &kLcdFontMedium : &kLcdFontArtist;
     byline = pass == 0 && !COMPACT_LCD ? &kLcdFontMedium : &kLcdFontSmall;
   }
-  int y = INFO_REGION_Y + max(0, (INFO_REGION_H - blockHeight) / 2);
+  const int firstLine = max(0, (INFO_REGION_H - blockHeight) / 2);
+  int y = top + firstLine;
+  int widest = 0;
   for (int i = 0; i < titleCount; ++i) {
-    drawUiText(titleLines[i], INFO_X, y, *heading, cText, cBg);
+    const int lineWidth = drawUiText(titleLines[i], x, y, *heading, cText, cBg, top_left, surface);
+    widest = max(widest, lineWidth);
     y += fontLineHeight(*heading) + sy(3);
   }
   if (artistCount) y += sy(5);
   for (int i = 0; i < artistCount; ++i) {
-    drawUiText(artistLines[i], INFO_X, y, *byline, cAccent, cBg);
+    const int lineWidth = drawUiText(artistLines[i], x, y, *byline, cAccent, cBg, top_left, surface);
+    widest = max(widest, lineWidth);
     y += fontLineHeight(*byline) + sy(3);
   }
+  const int bandTop = max(0, firstLine - sy(4));
+  return {bandTop, min(INFO_REGION_H, firstLine + blockHeight + sy(4)) - bandTop, widest};
+}
+
+static void invalidateSlideCaptions();
+
+static void drawInfoRegion(const DisplayModel& m) {
+  invalidateSlideCaptions();
+  const int growth = playerLayout.position;
+  const int top = INFO_REGION_Y + infoShiftY(growth);
+  drawPlayerSurfaceRegion(INFO_REGION_X + growth, top, INFO_REGION_W - growth, INFO_REGION_H);
+  const auto band = drawInfoContents(m, lcd, INFO_X + growth, top, INFO_W - growth);
+  paintedCaption = captionRect(growth, band, INFO_W - growth);
+}
+
+// ILI9488 SPI always transfers three bytes per pixel, even with a 16-bit
+// application palette. Use the panel's exact wire format on both paths.
+#if DISPLAY_DRIVER == DISPLAY_ILI9488
+using SlidePixel = lgfx::bgr888_t;
+#else
+using SlidePixel = lgfx::swap565_t;
+#endif
+static_assert(sizeof(SlidePixel) * 8 == SlidePixel::bits);
+
+static SlidePixel slidePixel(uint16_t color) {
+  SlidePixel pixel;
+  pixel = lgfx::rgb565_t(color);
+  return pixel;
+}
+
+static Display::LayoutTiming completedLayout;
+static portMUX_TYPE layoutTimingMux = portMUX_INITIALIZER_UNLOCKED;
+
+Display::LayoutTiming Display::lastLayoutTiming() {
+  portENTER_CRITICAL(&layoutTimingMux);
+  const LayoutTiming result = completedLayout;
+  portEXIT_CRITICAL(&layoutTimingMux);
+  return result;
+}
+
+// Only the current artwork is kept. Build the small set of wire-ready sizes a
+// few rows at a time between ordinary display updates. The audio task retains
+// priority. The direct renderer remains available on boards with less PSRAM.
+struct PlayerSlide {
+  static constexpr int Steps = PlayerLayout::Steps;
+  static constexpr int ArtStride = ART_SIZE + 2 * ART_FRAME;
+  static constexpr int PictureSide = EXPANDED_ART_SIZE + 2 * ART_FRAME;
+  static constexpr PlayerLayout::ScaleTable<ART_SIZE, ART_GROWTH, ART_FRAME> scale{};
+  static constexpr int PadX = PlayerLayout::growthAt(Steps / 2, ART_GROWTH)
+                            - PlayerLayout::growthAt(Steps / 2 - 1, ART_GROWTH);
+  static constexpr int PadY = (PadX * infoShiftY(ART_GROWTH) + ART_GROWTH - 1) / ART_GROWTH;
+  static constexpr int TextStride = INFO_W + 2 * (CAPTION_PAD + PadX);
+  static constexpr int TextHeight = INFO_REGION_H + 2 * PadY;
+  static constexpr int TextPixels = TextStride * TextHeight;
+  static constexpr int FooterPixels = FOOTER_REGION_W * FOOTER_REGION_H;
+  static constexpr uint32_t BufferCaps = MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT;
+
+  struct Caption {
+    SlidePixel* pixels = nullptr;
+    TextBand band{};
+    int pitch = 0;
+    bool ready = false;
+  };
+  uint8_t* storage = nullptr;
+  SlidePixel* pictures[Steps + 1]{};
+  int readyRows[Steps + 1]{};
+  Caption captions[2]{};
+  SlidePixel* scratch = nullptr;
+  const Caption* scratchCaption = nullptr;
+  int scratchPitch = 0;
+  uint16_t rowColors[TextHeight]{};
+  bool scratchIsFooter = false;
+  bool running = false;
+  Display::LayoutTiming timing{};
+  uint32_t lastPaintMs = 0;
+
+  static constexpr int sideAt(int step) {
+    return ArtStride + PlayerLayout::growthAt(step, ART_GROWTH);
+  }
+
+  static constexpr int pitchAt(int step) {
+    // A single native transfer also erases the edge exposed by shrinking.
+    return sideAt(step < Steps ? step + 1 : Steps);
+  }
+
+  static constexpr size_t planeBytes(int pixels) {
+    // DMA cache lines must not overlap a neighbouring plane, even at its tail.
+    return (static_cast<size_t>(pixels) * sizeof(SlidePixel) + 4 + 63) & ~size_t(63);
+  }
+
+  bool allocate() {
+    if (storage) return true;
+    const size_t textBytes = planeBytes(TextPixels);
+    size_t bytes = 2 * textBytes + planeBytes(TextPixels > FooterPixels ? TextPixels : FooterPixels);
+    for (int s = 0; s <= Steps; ++s) bytes += planeBytes(pitchAt(s) * pitchAt(s));
+    if (heap_caps_get_free_size(BufferCaps) < bytes + 2 * AlbumArtPolicy::PSRAM_HEADROOM) return false;
+    storage = static_cast<uint8_t*>(heap_caps_aligned_alloc(64, bytes, BufferCaps));
+    if (!storage) return false;
+    uint8_t* next = storage;
+    for (int s = 0; s <= Steps; ++s) {
+      pictures[s] = reinterpret_cast<SlidePixel*>(next);
+      next += planeBytes(pitchAt(s) * pitchAt(s));
+    }
+    for (auto& caption : captions) {
+      caption.pixels = reinterpret_cast<SlidePixel*>(next);
+      next += textBytes;
+    }
+    scratch = reinterpret_cast<SlidePixel*>(next);
+    return true;
+  }
+
+  void discard() {
+    heap_caps_free(storage);
+    storage = nullptr;
+    running = scratchIsFooter = false;
+    invalidateCaptions();
+  }
+
+  void invalidateCaptions() {
+    for (auto& caption : captions) caption.ready = false;
+    scratchCaption = nullptr;
+  }
+
+  bool captureArt(const DisplayModel& m) {
+    if (!allocate()) return false;
+    lgfx::LGFX_Sprite canvas;
+    canvas.setColorDepth(SlidePixel::depth);
+    canvas.setBuffer(pictures[0], pitchAt(0), pitchAt(0));
+    for (int y = 0; y < pitchAt(0); ++y)
+      std::fill_n(pictures[0] + y * pitchAt(0), pitchAt(0), slidePixel(playerSurfaceColorAtY(ART_Y - ART_FRAME + y)));
+    drawArtContents(m, {canvas, ART_FRAME, ART_FRAME, ART_SIZE});
+    memset(readyRows, 0, sizeof(readyRows));
+    readyRows[0] = pitchAt(0);
+    scratchIsFooter = false;
+    return true;
+  }
+
+  void buildRows(int step, int count) {
+    const int side = sideAt(step);
+    const int pitch = pitchAt(step);
+    const int first = readyRows[step], end = min(pitch, first + count);
+    if (first == end) return;
+    const auto& map = scale.steps[step];
+    alignas(4) SlidePixel input[ArtStride], output[PictureSide];
+    int previousSource = -1;
+    for (int y = first; y < end; ++y) {
+      int content = 0;
+      if (y < side) {
+        if (previousSource != map.source[y]) {
+          previousSource = map.source[y];
+          memcpy(input, pictures[0] + previousSource * pitchAt(0), sizeof(input));
+          for (int i = 0; i < map.spanCount; ++i) {
+            const auto& run = map.spans[i];
+            memcpy(output + run.dest, input + run.source, run.length * sizeof(SlidePixel));
+          }
+        }
+        content = side;
+      }
+      std::fill_n(output + content, pitch - content, slidePixel(playerSurfaceColorAtY(ART_Y - ART_FRAME + y)));
+      memcpy(pictures[step] + y * pitch, output, pitch * sizeof(SlidePixel));
+    }
+    readyRows[step] = end;
+  }
+
+  void buildDuringTransfer(int shown, int direction) {
+    // DMA reads the packet already submitted. Only write to subsequent planes
+    // and recheck the bus after a short batch so the next packet can start.
+    for (int step = shown + direction; step >= 0 && step <= Steps; step += direction) {
+      while (readyRows[step] < pitchAt(step)) {
+        if (!lcd.dmaBusy()) return;
+        buildRows(step, 8);
+      }
+    }
+  }
+
+  void captureText(const DisplayModel& m, int target) {
+    Caption& caption = captions[target != 0];
+    if (scratchCaption == &caption) scratchCaption = nullptr;
+    lgfx::LGFX_Sprite canvas;
+    canvas.setColorDepth(SlidePixel::depth);
+    canvas.setBuffer(caption.pixels, TextStride, TextHeight);
+    canvas.fillSprite(cBg);
+    caption.band = drawInfoContents(m, canvas, CAPTION_PAD + PadX, PadY, INFO_W - target);
+    caption.pitch = captionRect(target, caption.band, INFO_W - target).w + 2 * PadX;
+    // Pack the ink band once so ordinary captions can go straight to SPI.
+    for (int y = 0; y < caption.band.height + 2 * PadY; ++y) {
+      memmove(caption.pixels + y * caption.pitch, caption.pixels + (caption.band.top + y) * TextStride,
+              caption.pitch * sizeof(SlidePixel));
+    }
+    caption.ready = true;
+  }
+
+  void buildBlankFooter() {
+    if (scratchIsFooter) return;
+    scratchCaption = nullptr;
+    alignas(4) SlidePixel row[FOOTER_REGION_W];
+    uint16_t last = 0;
+    for (int y = 0; y < FOOTER_REGION_H; ++y) {
+      const uint16_t color = playerSurfaceColorAtY(FOOTER_REGION_Y + y);
+      if (!y || last != color) {
+        std::fill_n(row, FOOTER_REGION_W, slidePixel(color));
+        last = color;
+      }
+      memcpy(scratch + y * FOOTER_REGION_W, row, sizeof(row));
+    }
+    scratchIsFooter = true;
+  }
+
+  void warm(const DisplayModel& m) {
+    if (!storage) return;
+    const bool expanded = playerLayout.position != 0;
+    const int target = expanded ? 0 : ART_GROWTH;
+    if (!captions[target != 0].ready) { captureText(m, target); return; }
+    if (!expanded && !scratchIsFooter) { buildBlankFooter(); return; }
+    for (int i = 1; i <= Steps; ++i) {
+      const int s = expanded ? Steps - i : i;
+      if (readyRows[s] < pitchAt(s)) { buildRows(s, 20); return; }
+    }
+  }
+
+  bool prepare(const DisplayModel& m, int target) {
+    if (!storage) return false;
+    if (!captions[target != 0].ready) captureText(m, target);
+    running = true;
+    return true;
+  }
+
+  static LayoutRect artRect(int growth) {
+    return {ART_X - ART_FRAME, ART_Y - ART_FRAME, ArtStride + growth, ArtStride + growth};
+  }
+
+  static LayoutRect picturePacketRect(int step) {
+    return {ART_X - ART_FRAME, ART_Y - ART_FRAME, pitchAt(step), pitchAt(step)};
+  }
+
+  static void send(LayoutRect rect, const SlidePixel* pixels) {
+    lcd.waitDMA();
+    lcd.setAddrWindow(rect.x, rect.y, rect.w, rect.h);
+    lcd.writePixelsDMA(pixels, rect.w * rect.h);
+  }
+
+  void clearFooter() {
+    buildBlankFooter();
+    lcd.startWrite();
+    send({FOOTER_REGION_X, FOOTER_REGION_Y, FOOTER_REGION_W, FOOTER_REGION_H}, scratch);
+    buildDuringTransfer(0, 1);
+    lcd.waitDMA();
+    lcd.endWrite();
+  }
+
+  const SlidePixel* captionPacket(const Caption& caption, LayoutRect rect) {
+    bool flat = rect.w == caption.pitch;
+    for (int y = 0; flat && y < rect.h; ++y) flat = playerSurfaceColorAtY(rect.y + y) == cBg;
+    if (flat) return caption.pixels;
+    scratchIsFooter = false;
+    const bool samePixels = scratchCaption == &caption && scratchPitch == rect.w;
+    const int count = rect.w == caption.pitch ? rect.w : rect.w - PadX;
+    const uint32_t inkBackground = static_cast<uint32_t>(slidePixel(cBg));
+    for (int y = 0; y < rect.h; ++y) {
+      const uint16_t color = playerSurfaceColorAtY(rect.y + y);
+      if (samePixels && rowColors[y] == color) continue;
+      rowColors[y] = color;
+      const SlidePixel* src = caption.pixels + y * caption.pitch;
+      SlidePixel* dest = scratch + y * rect.w;
+      const SlidePixel bg = slidePixel(color);
+      if (color == cBg) {
+        memcpy(dest, src, count * sizeof(SlidePixel));
+      } else {
+        for (int x = 0; x < count; ++x)
+          dest[x] = static_cast<uint32_t>(src[x]) == inkBackground ? bg : src[x];
+      }
+      std::fill_n(dest + count, rect.w - count, bg);
+    }
+    scratchCaption = &caption;
+    scratchPitch = rect.w;
+    return scratch;
+  }
+
+  void paint(int previous) {
+    const uint32_t drawStart = millis();
+    const int growth = playerLayout.position;
+    const int step = playerLayout.step;
+    const Caption& ink = captions[playerLayout.target != 0];
+    const LayoutRect picture = picturePacketRect(step);
+    const LayoutRect caption = captionRect(growth, ink.band, INFO_W - max(growth, playerLayout.target));
+    const LayoutRect padded{caption.x - PadX, caption.y - PadY, caption.w + 2 * PadX, caption.h + 2 * PadY};
+    if (readyRows[step] < pitchAt(step)) ++timing.coldFrames;
+    buildRows(step, PictureSide); // also handles a toggle immediately after a new cover
+    lcd.startWrite();
+    PlayerLayout::clearUncovered(artRect(previous), picture, drawPlayerSurfaceRegion);
+    PlayerLayout::clearUncovered(paintedCaption, padded, drawPlayerSurfaceRegion);
+    send(picture, pictures[step]);
+    const SlidePixel* text = captionPacket(ink, padded);
+    const int direction = playerLayout.target ? 1 : -1;
+    buildDuringTransfer(step, direction);
+    send(padded, text);
+    buildDuringTransfer(step, direction);
+    lcd.waitDMA();
+    lcd.endWrite();
+    paintedCaption = caption;
+
+    const uint32_t now = millis();
+    if (!timing.frames) timing.firstMs = timing.prepareMs + now - lastPaintMs;
+    else timing.maxGapMs = max(timing.maxGapMs, now - lastPaintMs);
+    ++timing.frames;
+    timing.maxDrawMs = max(timing.maxDrawMs, now - drawStart);
+    lastPaintMs = now;
+    if (!playerLayout.active()) {
+      timing.motionMs = now - playerLayout.started;
+      portENTER_CRITICAL(&layoutTimingMux);
+      timing.sequence = completedLayout.sequence + 1;
+      completedLayout = timing;
+      portEXIT_CRITICAL(&layoutTimingMux);
+    }
+  }
+
+  void beginTiming(uint32_t requestMs) {
+    timing = {};
+    lastPaintMs = playerLayout.started;
+    timing.prepareMs = lastPaintMs - requestMs;
+  }
+};
+
+static PlayerSlide playerSlide;
+
+static void invalidateSlideCaptions() { playerSlide.invalidateCaptions(); }
+
+static void drawArt(const DisplayModel& m) {
+  const int growth = playerLayout.position;
+  if (!playerSlide.captureArt(m)) {
+    drawPlayerSurfaceRegion(ART_REGION_X, ART_REGION_Y, ART_REGION_W + growth, ART_REGION_H + growth);
+    drawArtContents(m, {lcd, ART_X, ART_Y, ART_SIZE + growth});
+    return;
+  }
+  const int step = playerLayout.step;
+  playerSlide.buildRows(step, PlayerSlide::PictureSide);
+  lcd.startWrite();
+  PlayerSlide::send(PlayerSlide::picturePacketRect(step), playerSlide.pictures[step]);
+  playerSlide.buildDuringTransfer(step, step == 0 ? 1 : -1);
+  lcd.waitDMA();
+  lcd.endWrite();
+}
+
+static int growthForFooter(uint8_t key) {
+  return key == static_cast<uint8_t>(DisplayFooterMode::Off) ? ART_GROWTH : 0;
+}
+
+void Display::drawArtIfNeeded(const DisplayModel& m, bool force) {
+  // Keep the source immutable through a zoom. Publish the latest cover once
+  // at the endpoint, even when the player model does not change again.
+  if (playerSlide.running && !force) {
+    deferredArtworkRefresh = true;
+    return;
+  }
+  deferredArtworkRefresh = false;
+  String beforeKey = artRenderKeyFor(m);
+  if (!force && beforeKey == lastRenderedArtKey) return;
+
+  drawArt(m);
+  lastRenderedArtKey = artRenderKeyFor(m);
 }
 
 static void drawStationFooter(const DisplayModel& m) {
@@ -1940,7 +2326,6 @@ static void drawFooterRegion(const DisplayModel& m) {
     drawDateTimeFooter(true);
   } else {
     resetDateTimeFooter();
-    drawPlayerSurfaceRegion(FOOTER_REGION_X, FOOTER_REGION_Y, FOOTER_REGION_W, FOOTER_REGION_H);
     resetRenderedVuMeter();
   }
 }
@@ -3783,6 +4168,7 @@ void Display::renderNow(const DisplayModel& m) {
   }
 
   if (!hadRenderedModel ||
+      (playerSlide.running && (previous.stationId != m.stationId || previous.playing != m.playing)) ||
       m.apMode ||
       previous.apMode != m.apMode) {
     renderCurrent();
@@ -3795,6 +4181,9 @@ void Display::renderNow(const DisplayModel& m) {
 }
 
 void Display::renderCurrent() {
+  const uint8_t drawnFooter = footerRenderKey();
+  playerLayout.snap(growthForFooter(drawnFooter));
+  playerSlide.running = false;
   if (idleBlanked || idleClockActive || idleGuardBlanked) return;
 
   const DisplayModel& m = lastModel;
@@ -3820,7 +4209,6 @@ void Display::renderCurrent() {
   deferredArtworkRefresh = false;
 
   drawInfoRegion(m);
-  const uint8_t drawnFooter = footerRenderKey();
   drawFooterRegion(m);
   lastFooterMode = drawnFooter;
 }
@@ -3867,18 +4255,20 @@ void Display::renderPartial(const DisplayModel& previous, bool footerModeChanged
                        (currentFooterMode == DisplayFooterMode::Station && previous.station != m.station) ||
                        (currentFooterMode == DisplayFooterMode::Volume && volumeChanged && !popupActive);
 
-  if (deferredArtworkRefresh) {
-    drawArtIfNeeded(m);
-    deferredArtworkRefresh = false;
-  } else if (artChanged) {
+  if (artChanged || (deferredArtworkRefresh && !playerSlide.running)) {
     drawArtIfNeeded(m);
   }
 
   if (infoChanged) {
-    drawInfoRegion(m);
+    if (playerSlide.running) {
+      playerSlide.invalidateCaptions();
+      playerSlide.captureText(m, playerLayout.target);
+    } else drawInfoRegion(m);
   }
 
-  if (footerChanged) {
+  if (footerModeChanged || playerLayout.active()) {
+    renderFooterConfigFrame();
+  } else if (footerChanged) {
     const uint8_t drawnFooter = footerRenderKey();
     drawFooterRegion(m);
     lastFooterMode = drawnFooter;
@@ -4057,17 +4447,62 @@ void Display::tickNow() {
 
 void Display::renderFooterConfigFrame() {
   const uint8_t desiredFooter = footerRenderKey();
-  if (!hasRenderedModel || desiredFooter == lastFooterMode || bootActive ||
+  if (!hasRenderedModel || bootActive ||
       idleBlanked || idleClockActive || idleGuardBlanked || lastModel.apMode ||
-      stationPickerActive || (volumePopupUntil && millis() < volumePopupUntil)) return;
+      stationPickerActive || (volumePopupUntil && millis() < volumePopupUntil)) {
+    if (playerSlide.running) {
+      playerSlide.running = false;
+      playerLayout.snap(playerLayout.position);
+    }
+    if (playerSlide.storage && (idleBlanked || idleClockActive || lastModel.apMode)) playerSlide.discard();
+    return;
+  }
+  if (renderPlayerLayout(desiredFooter)) return;
+  if (desiredFooter == lastFooterMode) {
+    playerSlide.warm(lastModel);
+    return;
+  }
   clearVuBars();
   resetVuAutoScale();
   drawFooterRegion(lastModel);
   lastFooterMode = desiredFooter; // Acknowledge only the footer actually painted.
 }
 
+bool Display::renderPlayerLayout(uint8_t footerKey) {
+  const int target = growthForFooter(footerKey);
+  if (target != playerLayout.target) {
+    const uint32_t requestMs = millis();
+    setSpectrumDisplayVisibility(false);
+    if (target == playerLayout.position || !playerSlide.prepare(lastModel, target)) {
+      // Reversed before the first frame, or insufficient temporary PSRAM.
+      // The direct renderer works at either size with a single scratch row.
+      renderCurrent();
+      return true;
+    }
+    if (playerLayout.position == 0) {
+      playerSlide.clearFooter();
+    }
+    clearVuBars();
+    resetVuAutoScale();
+    playerLayout.start(target, millis());
+    playerSlide.beginTiming(requestMs);
+  }
+  if (!playerLayout.active()) return false;
+  const int previous = playerLayout.position;
+  if (playerLayout.advance(millis())) {
+    playerSlide.paint(previous);
+    if (!playerLayout.active()) {
+      playerSlide.running = false;
+      drawFooterRegion(lastModel);
+      lastFooterMode = footerKey;
+      if (deferredArtworkRefresh) drawArtIfNeeded(lastModel);
+    }
+  }
+  return true;
+}
+
 void Display::renderDateTimeFooterFrame(bool force) {
-  if (!hasRenderedModel ||
+  if (!hasRenderedModel || playerLayout.active() || playerLayout.position != 0 ||
       idleBlanked ||
       idleClockActive ||
       lastModel.apMode ||
@@ -4082,6 +4517,7 @@ void Display::renderDateTimeFooterFrame(bool force) {
 
 void Display::renderAudioMeterFrame(bool force) {
   const bool visible = hasRenderedModel &&
+      !playerLayout.active() && playerLayout.position == 0 &&
       !idleBlanked && !idleClockActive && !lastModel.apMode &&
       !stationPickerActive && !volumePopupUntil && audioFooterMode();
   // Visibility is not playback. On stop the worker is disabled by AudioPlayer,
@@ -4267,7 +4703,6 @@ void Display::refreshArtworkNow() {
   }
 
   drawArtIfNeeded(lastModel);
-  deferredArtworkRefresh = false;
 }
 
 void Display::renderIdleClock(bool force) {

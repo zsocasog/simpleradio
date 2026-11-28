@@ -544,7 +544,7 @@ static int wifiQualityFromRssi(int rssi) {
 
 static bool settingsSavePending();
 
-static String systemStatusJson() {
+static String systemStatusJson(bool includeLayoutTiming) {
   ArtworkJson::Allocator jsonAllocator;
   JsonDocument doc(&jsonAllocator);
 
@@ -596,6 +596,18 @@ static String systemStatusJson() {
   system["artworkNetworkActive"] = ArtworkHttp::backgroundNetworkActive();
   system["heapLargest"] = ESP.getMaxAllocHeap();
   system["psramFree"] = ESP.getFreePsram();
+  if (includeLayoutTiming) {
+    const auto t = Display::lastLayoutTiming();
+    JsonObject timing = doc["layoutTiming"].to<JsonObject>();
+    timing["sequence"] = t.sequence;
+    timing["frames"] = t.frames;
+    timing["prepareMs"] = t.prepareMs;
+    timing["motionMs"] = t.motionMs;
+    timing["maxGapMs"] = t.maxGapMs;
+    timing["maxDrawMs"] = t.maxDrawMs;
+    timing["firstMs"] = t.firstMs;
+    timing["coldFrames"] = t.coldFrames;
+  }
   JsonObject artwork = doc["artwork"].to<JsonObject>();
   artwork["audioReady"] = ArtworkCache::instance().audioReady();
   artwork["serviceAgeMs"] = ArtworkCache::instance().serviceAgeMs();
@@ -2593,7 +2605,7 @@ void webServerBegin() {
   });
 
   server.on("/api/system/status", HTTP_GET, [](AsyncWebServerRequest* request) {
-    request->send(200, "application/json", systemStatusJson());
+    request->send(200, "application/json", systemStatusJson(request->hasParam("layoutTiming")));
   });
 
 #if SIMPLE_RADIO_RUNTIME_DIAGNOSTICS

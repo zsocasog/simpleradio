@@ -806,6 +806,7 @@
     if (U.layoutPreviewKey === key) return;
     U.layoutPreviewKey = key;
     id("layoutPreviewScreen").classList.toggle("is-inverted", invert);
+    id("layoutPreviewScreen").classList.toggle("footer-off", mode === "off");
     const art = id("layoutPreviewArt"); art.style.backgroundImage = cover.style.backgroundImage;
     art.textContent = cover.style.backgroundImage ? "" : cover.textContent;
     art.classList.toggle("is-album", source === "album" && !!(state.albumArtworkPath || state.hasStreamImage));

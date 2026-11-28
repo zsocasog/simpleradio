@@ -41,7 +41,7 @@ test('the system cache counter cannot recreate FILE mutexes for every cached thu
  const getter=b.slice(0,b.indexOf('void ArtworkCache::refreshCacheStats'));
  assert.match(getter,/cacheBytesSnapshot.load/);assert.doesNotMatch(getter,/LittleFS|directoryBytes|openNextFile/);
  assert.match(b,/ReadOnlyStorage::directoryBytes/);assert.doesNotMatch(b,/LittleFS.open|openNextFile/);
- const web=read('src/web/web_server.cpp'),status=web.slice(web.indexOf('static String systemStatusJson()'),web.indexOf('static String hardwareCapabilitiesJson()'));
+ const web=read('src/web/web_server.cpp'),status=web.slice(web.indexOf('static String systemStatusJson('),web.indexOf('static String hardwareCapabilitiesJson()'));
  assert.doesNotMatch(status,/LittleFS\.(totalBytes|usedBytes|open)/);
  assert.match(status,/artworkCacheStatsAgeMs/);
  const cleanup=web.slice(web.indexOf('static void removeOldStationLogoUploads'),web.indexOf('static String logoBasename'));
