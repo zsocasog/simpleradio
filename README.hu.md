@@ -24,6 +24,8 @@ A referencia-összeállítás egy **ESP32-S3 N16R8** modulra, egy **ILI9488 480�
 
 A webfelületen indított LittleFS-frissítés megőrzi a beállításokat, az állomáslistát és a mentett állomáslogókat.
 
+A Wi-Fi beállításakor adhatsz a rádiónak hálózati nevet. Például a `konyha-radio` névvel a `http://konyha-radio.local/` címen érhető el mDNS-t támogató helyi hálózaton. Üres mezőnél a készülék egyedi nevet kap. A nevet később a **Rendszer → Áttekintés → Hálózati név** alatt módosíthatod. Az IP-cím továbbra is használható.
+
 ![Kijelzőbeállítások LCD-előnézettel](.screenshots/display.jpg)
 
 ## Útmutatók
@@ -47,8 +49,8 @@ A friss galériához érdemes lefotózni az LCD-t lejátszás közben állomásl
 | ![Hangbeállítások](.screenshots/sound.jpg) | ![Vezérlés](.screenshots/controls.jpg) |
 | Távirányító | Rendszeráttekintés |
 | ![Távirányító-beállítások](.screenshots/ir.jpg) | ![Rendszeráttekintés](.screenshots/system.jpg) |
-| Kapcsolatok | Frissítés |
-| ![Kapcsolati beállítások](.screenshots/system-connections.jpg) | ![Frissítési oldal](.screenshots/system-update.jpg) |
+| Integrációk | Frissítés |
+| ![Integrációk beállításai](.screenshots/system-connections.jpg) | ![Frissítési oldal](.screenshots/system-update.jpg) |
 
 </details>
 

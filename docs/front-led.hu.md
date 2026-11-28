@@ -1,7 +1,7 @@
 # Előlapi LED
 
 A **Rendszer → Integrációk → LED világítás → Beállítások** panelen
-választható a LED típusa és bekötése. A Kapcsolatok fülön is elérhető.
+választható a LED típusa és bekötése. Ugyanez a panel az Áttekintés fülről is megnyitható.
 A firmware és a webcsomag frissítése egyaránt szükséges az új beállításokhoz.
 
 - **Nincs LED:** a kijelölt hagyományos RGB-lábak kikapcsolt szintet kapnak; nincs PWM-vezérlés vagy szalagpuffer-foglalás.

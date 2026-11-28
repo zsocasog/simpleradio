@@ -19,6 +19,7 @@ function setup({ scans = [[]], statuses = [{ state: 'idle' }], reachable = true,
   }
   const nodes = new Map(), calls = [], probes = [], visits = [];
   const field = id => { if (!nodes.has(id)) nodes.set(id, element()); return nodes.get(id); };
+  field('setupHostnameField').hidden = true;
   const response = (code, data) => ({ status: code, ok: code < 400, json: async () => data, headers: new Headers() });
   const next = list => list.length > 1 ? list.shift() : list[0];
   const location = { href: 'http://192.168.4.1/', replace: url => visits.push(url) };
@@ -66,6 +67,29 @@ test('an empty or failed scan can be retried and duplicate networks keep their s
 });
 
 const connected = { state: 'connected', id: 'afc01234', ip: '192.168.1.27' };
+test('setup supports named and automatic hosts while older firmware keeps its original save contract', async () => {
+  const defaults = { defaultHostname: 'simpleradio-ab1234', hostname: 'simpleradio-ab1234' };
+  for (const [info, initial, entered, expected] of [
+    [defaults, '', 'Konyha-2', 'konyha-2'],
+    [{ ...defaults, hostname: 'elozo-radio' }, 'elozo-radio', '', ''],
+    [{}, '', '', null]
+  ]) {
+    const page = setup({ scans: [[{ ssid: 'Guest', open: true }]],
+      statuses: [{ state: 'idle', ...info }, { ...connected, hostname: expected || info.defaultHostname }] });
+    await page.ready;
+    assert.equal(page.field('setupHostnameField').hidden, expected === null);
+    const input = page.field('setupHostname');
+    assert.equal(input.value, initial);
+    input.value = entered;
+    page.field('networks').children[0].onclick();
+    page.field('setupForm').onsubmit({ preventDefault() {} });
+    await page.settle();
+    assert.equal(page.calls.find(c => c.url === '/save').body.get('hostname'), expected);
+    assert.equal(page.field('joinedHostname').hidden, expected === null);
+    assert.deepEqual(page.visits, ['http://192.168.1.27/']);
+  }
+});
+
 test('failed credentials leave the form usable and a corrected attempt opens the verified LAN address', async () => {
   const page = setup({ scans: [[{ ssid: 'Home', open: false }]],
     statuses: [{ state: 'idle' }, { state: 'join_failed' }, { state: 'connecting' }, connected] });

@@ -1,6 +1,12 @@
 /* Translate dictionary values only; keep keys and {placeholders}. */
 (function () {
   const dict = {
+    "wifi.hostname": "Network name",
+    "wifi.optionalHostname": "Network name (optional)",
+    "wifi.hostnameHint": "Use this name to open the radio on your local network.",
+    "wifi.hostnameRules": "Use up to 31 letters (A–Z), digits or internal hyphens.",
+    "wifi.hostnameSaved": "Network name saved.",
+    "wifi.hostnamePending": "Name saved. Use the IP address until local name discovery is ready.",
     "wifi.setupIntro": "Which network should the radio use?",
     "wifi.rescan": "Scan again",
     "wifi.choose": "Choose a network",

@@ -561,6 +561,9 @@ static String systemStatusJson(bool includeLayoutTiming) {
   wifi["connected"] = WiFi.isConnected();
   wifi["ssid"] = WiFi.isConnected() ? WiFi.SSID() : "";
   wifi["ip"] = WiFi.isConnected() ? WiFi.localIP().toString() : "";
+  wifi["hostname"] = WifiManager::instance().hostname();
+  wifi["defaultHostname"] = WifiManager::instance().defaultHostname();
+  wifi["mdnsReady"] = WifiManager::instance().discoveryReady();
   wifi["mac"] = WiFi.macAddress();
   wifi["rssi"] = WiFi.isConnected() ? WiFi.RSSI() : 0;
   wifi["quality"] = WiFi.isConnected() ? wifiQualityFromRssi(WiFi.RSSI()) : 0;
@@ -1930,7 +1933,21 @@ struct SettingsSaveJob {
   std::weak_ptr<AsyncWebServerRequest> request;
   uint32_t startedMs = 0;
   bool replied = false;
+  bool renameHost = false;
 };
+
+static int saveNetworkHostname(const JsonDocument& doc, String& response) {
+  WifiManager& wifi = WifiManager::instance();
+  if (!wifi.saveHostname(doc["hostname"].as<String>())) {
+    response = "Failed to save hostname";
+    return 500;
+  }
+  JsonDocument result;
+  result["hostname"] = wifi.hostname();
+  result["mdnsReady"] = wifi.discoveryReady();
+  serializeJson(result, response);
+  return 200;
+}
 static SettingsSaveJob* pendingSettingsSave = nullptr;
 static portMUX_TYPE settingsSaveMux = portMUX_INITIALIZER_UNLOCKED;
 static constexpr uint32_t SETTINGS_SAVE_WAIT_MS = 15000;
@@ -1992,6 +2009,8 @@ static void processSettingsSave() {
     if (timedOut || otaUploadActive || rebootPending) {
       status = 503;
       response = "Settings save temporarily unavailable";
+    } else if (job->renameHost) {
+      status = saveNetworkHostname(job->doc, response);
     } else if (!AppConfig::instance().applyJson(job->doc)) {
       status = 400;
       response = "Invalid settings, remote layout or LED hardware";
@@ -2795,6 +2814,18 @@ void webServerBegin() {
       handleOtaChunk(request, data, len, index, total, U_FLASHFS, true);
     }
   );
+
+  server.on("/api/system/hostname", HTTP_POST, [](AsyncWebServerRequest* request) {
+    if (!request->hasParam("hostname", true) || !WifiManager::validHostname(request->getParam("hostname", true)->value())) {
+      request->send(400, "text/plain", "Invalid hostname"); return;
+    }
+    std::unique_ptr<SettingsSaveJob> job(new (std::nothrow) SettingsSaveJob);
+    if (!job) { request->send(503); return; }
+    job->renameHost = true;
+    job->doc["hostname"] = request->getParam("hostname", true)->value();
+    if (!queueSettingsSave(request, job.get())) { request->send(503); return; }
+    job.release();
+  });
 
   server.on("/api/config/save", HTTP_POST, [](AsyncWebServerRequest* request) {
     requestDisplayActivity();

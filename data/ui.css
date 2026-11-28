@@ -98,10 +98,42 @@ select { text-overflow: ellipsis; }
 .config-save-status.is-saving .ui-icon { animation: icon-spin 1s linear infinite; }
 @keyframes icon-spin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) { .config-save-status.is-saving .ui-icon { animation: none; } }
-.brightness-mode { display: none !important; }
-.brightness-selector { display: inline-flex; justify-self: start; margin-bottom: 16px; border: 1px solid var(--line); border-radius: 7px; overflow: hidden; }
-.brightness-selector button { border: 0; border-radius: 0; padding: 10px 24px; background: transparent; }
-.brightness-selector button[aria-pressed=true] { color: #101412; background: var(--accent); }
+.brightness-head { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px 16px; margin-bottom: 8px; }
+.network-name { padding: 18px 0; border-bottom: 1px solid var(--line-soft); }
+.network-name-summary, .hostname-controls { display: flex; align-items: center; gap: 12px; }
+.network-name-summary { justify-content: space-between; }
+.network-name h3 { margin: 0 0 4px; font-size: 16px; }
+.network-name a { color: var(--accent); overflow-wrap: anywhere; }
+.network-name button { padding-inline: 14px; }
+#hostnameForm { margin-top: 16px; max-width: 460px; }
+#hostnameForm label { display: block; margin-bottom: 6px; }
+.hostname-input { flex: 1; min-width: 0; display: flex; align-items: center; background: var(--chrome); border: 1px solid var(--line); border-radius: 7px; padding-right: 12px; color: var(--muted); }
+.hostname-input input { width: 100%; min-width: 0; border: 0; padding-inline: 10px; }
+.hostname-input:focus-within { border-color: var(--accent); }
+#hostnameStatus { font-size: 14px; color: var(--muted); }
+#hostnameStatus:empty { display: none; }
+.brightness-selector {
+  display: inline-grid; grid-template-columns: repeat(2, 1fr); max-width: 100%;
+  padding: 3px; border: 1px solid var(--line-soft); border-radius: 999px; background: var(--chrome);
+}
+.brightness-selector label { position: relative; cursor: pointer; }
+.brightness-selector label > span {
+  display: flex; align-items: center; justify-content: center; gap: 7px;
+  min-height: 44px; padding: 4px 14px; border: 1px solid transparent; border-radius: 999px;
+  color: var(--muted); font-size: 14px; font-weight: 500; line-height: 1.2;
+}
+.brightness-selector .ui-icon { width: 17px; height: 17px; }
+.brightness-selector input:checked + span {
+  color: var(--text); background: var(--surface-2); border-color: rgba(var(--accent-rgb), .38); font-weight: 650;
+}
+.brightness-selector input:checked + span .ui-icon { color: var(--accent); }
+.brightness-selector input:focus-visible + span { outline: 2px solid var(--text); outline-offset: 1px; }
+@media (hover: hover) {
+  .brightness-selector label:hover input:not(:checked) + span { color: var(--text); background: var(--surface); }
+}
+@media (forced-colors: active) {
+  .brightness-selector input:checked + span { border-color: Highlight; }
+}
 .input-unit { font-size: 13px; color: var(--muted); flex: 0 0 auto; }
 .setting-number { display: flex; align-items: center; gap: 10px; min-width: 0; }
 .setting-number input { min-width: 0; }

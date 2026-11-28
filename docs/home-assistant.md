@@ -2,9 +2,9 @@
 
 ## MQTT setup / MQTT beállítása
 
-Enable MQTT in the radio’s web interface under **System → Connections**. Enter the broker address, port (typically `1883`) and credentials if required. The default root topic is `simpleradio`. With the MQTT integration connected to the same broker, Home Assistant discovers the radio automatically. Check the device under **Settings → Devices & services → MQTT** for its actual entity IDs.
+Enable MQTT in the radio’s web interface under **System → Integrations**. Enter the broker address, port (typically `1883`) and credentials if required. The default root topic is `simpleradio`. With the MQTT integration connected to the same broker, Home Assistant discovers the radio automatically. Check the device under **Settings → Devices & services → MQTT** for its actual entity IDs.
 
-A rádió webfelületén a **Rendszer → Kapcsolatok** alatt kapcsold be az MQTT-t. Add meg a broker címét, portját (általában `1883`) és – ha szükséges – a bejelentkezési adatokat. Az alapértelmezett gyökértéma `simpleradio`. Ha a Home Assistant MQTT-integrációja ugyanahhoz a brokerhez kapcsolódik, automatikusan felismeri a rádiót. A tényleges entitásazonosítókat a **Beállítások → Eszközök és szolgáltatások → MQTT** alatt találod.
+A rádió webfelületén a **Rendszer → Integrációk** alatt kapcsold be az MQTT-t. Add meg a broker címét, portját (általában `1883`) és – ha szükséges – a bejelentkezési adatokat. Az alapértelmezett gyökértéma `simpleradio`. Ha a Home Assistant MQTT-integrációja ugyanahhoz a brokerhez kapcsolódik, automatikusan felismeri a rádiót. A tényleges entitásazonosítókat a **Beállítások → Eszközök és szolgáltatások → MQTT** alatt találod.
 
 ## Dashboard card / Irányítópultkártya
 

@@ -14,6 +14,11 @@ public:
     bool isConnected() const;
     WifiRunMode mode() const;
     bool matchesSetupHandoff(const String& id) const;
+    String hostname() const;
+    bool discoveryReady() const;
+    const char* defaultHostname() const;
+    static bool validHostname(const String& name);
+    bool saveHostname(const String& name);
 
 private:
     WifiManager() = default;

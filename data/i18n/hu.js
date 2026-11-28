@@ -1,6 +1,12 @@
 /* Translate dictionary values only; keep keys and {placeholders}. */
 (function () {
   const dict = {
+    "wifi.hostname": "Hálózati név",
+    "wifi.optionalHostname": "Hálózati név (opcionális)",
+    "wifi.hostnameHint": "Ezen a néven nyithatod meg a rádiót a helyi hálózaton.",
+    "wifi.hostnameRules": "Legfeljebb 31 ékezet nélküli betű, szám vagy belső kötőjel.",
+    "wifi.hostnameSaved": "A hálózati név mentve.",
+    "wifi.hostnamePending": "A név mentve. A helyi névfeloldás indulásáig az IP-címen éred el a rádiót.",
     "wifi.setupIntro": "Melyik hálózaton szeretnéd használni a rádiót?",
     "wifi.rescan": "Újrakeresés",
     "wifi.choose": "Válassz hálózatot",

@@ -42,6 +42,9 @@ label { font-size: 14px; font-weight: 600; }
 .network-open { font-size: 12px; color: var(--muted); }
 .password-field { margin-top: 16px; }
 .password-field label { display: block; margin-bottom: 8px; }
+.host-suffix { padding-right: 14px; color: var(--muted); }
+#setupHostnameHelp { display: block; margin-top: 6px; color: var(--muted); font-size: 13px; }
+#joinedHostname { overflow-wrap: anywhere; }
 .password-input:focus-within { border-color: var(--gold); }
 .password-input input { min-width: 0; flex: 1; height: 46px; padding: 0 14px; color: var(--text); background: none; border: 0; border-radius: inherit; }
 .password-input input:focus { outline: 0; }

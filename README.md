@@ -24,6 +24,8 @@ The reference build uses an **ESP32-S3 N16R8**, an **ILI9488 480×320 SPI LCD** 
 
 LittleFS updates through the web interface preserve settings, stations and saved station logos.
 
+During Wi-Fi setup you can give the radio a network name. For example, `kitchen-radio` opens at `http://kitchen-radio.local/` on a local network with mDNS support. Leave the field blank for a unique device name. You can change it later under **System → Overview → Network name**. The IP address still works.
+
 ![Display settings with LCD preview](.screenshots/en/display.jpg)
 
 ## Guides
@@ -47,8 +49,8 @@ For the next photo set, capture the LCD during playback with a station logo and 
 | ![Sound settings](.screenshots/en/sound.jpg) | ![Controls](.screenshots/en/controls.jpg) |
 | Remote control | System overview |
 | ![Remote control settings](.screenshots/en/ir.jpg) | ![System overview](.screenshots/en/system.jpg) |
-| Connections | Update |
-| ![Connection settings](.screenshots/en/system-connections.jpg) | ![Update page](.screenshots/en/system-update.jpg) |
+| Integrations | Update |
+| ![Integration settings](.screenshots/en/system-connections.jpg) | ![Update page](.screenshots/en/system-update.jpg) |
 
 </details>
 

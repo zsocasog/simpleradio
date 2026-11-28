@@ -255,11 +255,62 @@
     const n = make("section", "system-section"); n.id = "systemSection-" + name;
     n.setAttribute("role", "tabpanel"); n.setAttribute("aria-labelledby", "systemLocal-" + name); return n;
   }
+  function buildHostnameEditor(section) {
+    const panel = id("networkName"), form = id("hostnameForm"), input = id("radioHostname");
+    const edit = id("editHostname"), link = id("networkNameLink"), feedback = id("hostnameStatus");
+    section.appendChild(panel);
+    let saved = "", busy = false;
+    U.networkName = wifi => {
+      panel.hidden = !wifi?.defaultHostname;
+      if (panel.hidden) return;
+      saved = wifi.hostname;
+      input.placeholder = wifi.defaultHostname;
+      link.textContent = saved + ".local";
+      if (wifi.mdnsReady) {
+        const address = new URL("/", location.href);
+        address.hostname = saved + ".local";
+        link.href = address.href;
+      } else link.removeAttribute("href");
+    };
+    function editing(open) {
+      form.hidden = !open;
+      edit.setAttribute("aria-expanded", String(open));
+      edit.textContent = open ? tr("action.cancel", "Mégse") : tr("ui.modify", "Módosítás");
+      if (open) {
+        input.value = saved === input.placeholder ? "" : saved;
+        feedback.textContent = "";
+        input.focus();
+      } else edit.focus();
+    }
+    edit.onclick = () => editing(form.hidden);
+    input.title = tr("wifi.hostnameRules", "Legfeljebb 31 ékezet nélküli betű, szám vagy belső kötőjel.");
+    form.onsubmit = async event => {
+      event.preventDefault();
+      if (busy) return;
+      const name = input.value.toLowerCase();
+      const submit = form.querySelector("[type=submit]");
+      busy = input.disabled = edit.disabled = submit.disabled = true;
+      try {
+        const response = await fetch("/api/system/hostname", { method: "POST", body: new URLSearchParams({ hostname: name }) });
+        if (!response.ok) throw Error();
+        const result = await response.json();
+        U.networkName({ ...result, defaultHostname: input.placeholder });
+        form.hidden = true;
+        feedback.textContent = result.mdnsReady ? tr("wifi.hostnameSaved", "A hálózati név mentve.") :
+          tr("wifi.hostnamePending", "A név mentve. A helyi névfeloldás indulásáig az IP-címen éred el a rádiót.");
+      } catch {
+        feedback.textContent = tr("ui.saveFailed", "A mentés nem sikerült. Próbáld újra.");
+      } finally {
+        busy = input.disabled = edit.disabled = submit.disabled = false;
+        if (form.hidden) editing(false);
+      }
+    };
+  }
   function buildSystem() {
     const root = id("systemView"); root.querySelector(".page-head [data-config-save]")?.remove();
     const tabs = make("nav", "system-local-tabs"); tabs.setAttribute("role", "tablist"); tabs.setAttribute("aria-label", tr("ui.systemSections", "Rendszer nézetei"));
     const sections = {};
-    const labels = { overview: ["ui.overview", "Áttekintés"], connections: ["ui.connections", "Kapcsolatok"], update: ["ui.update", "Szoftverfrissítés"] };
+    const labels = { overview: ["ui.overview", "Áttekintés"], connections: ["ui.integrations", "Integrációk"], update: ["ui.update", "Szoftverfrissítés"] };
     for (const [name, [key, text]] of Object.entries(labels)) {
       const b = button(tr(key, text), "", () => U.systemTab(name)); b.id = "systemLocal-" + name;
       b.setAttribute("role", "tab"); b.setAttribute("aria-controls", "systemSection-" + name);
@@ -293,6 +344,7 @@
       if (id(name)) technical.appendChild(id(name));
     }
     const versions = make("dl", "version-grid"); versions.innerHTML = '<div><dt>Firmware</dt><dd id="overviewFirmware">—</dd></div><div><dt>' + esc(tr("ui.webInterface", "Webfelület")) + '</dt><dd id="overviewWebui">—</dd></div><div><dt>' + esc(tr("ui.device", "Eszköz")) + '</dt><dd id="overviewChip">—</dd></div><div><dt>' + esc(tr("ui.uptime", "Futásidő")) + '</dt><dd id="overviewUptime">—</dd></div>'; status.after(versions);
+    buildHostnameEditor(sections.overview);
     const serviceButton = (kind, label) => {
       const settings = button(label, "chevron-right", () => kind === "led" ? U.openLed() : U.openConnection(kind));
       settings.setAttribute("aria-haspopup", "dialog");
@@ -541,17 +593,30 @@
     }
     document.querySelector("#soundView .page-head > button")?.classList.remove("primary");
     const timeZone = id("timeZone").closest("label");
-    id("autoBrightness").closest(".settings-section").appendChild(timeZone);
-    id("autoBrightness").closest("label").classList.add("brightness-mode");
-    const brightnessSection = id("autoBrightness").closest(".settings-section");
-    brightnessSection.querySelector("h2").textContent = tr("ui.brightness", "Fényerő");
-    const modes = make("div", "brightness-selector"); modes.setAttribute("role", "group");
+    const autoBrightness = id("autoBrightness");
+    const brightnessSection = autoBrightness.closest(".settings-section");
+    brightnessSection.appendChild(timeZone);
+    autoBrightness.closest("label").hidden = true;
+    const brightnessHead = brightnessSection.querySelector("header");
+    brightnessHead.querySelector("h2").textContent = tr("ui.brightness", "Fényerő");
+    brightnessHead.classList.add("brightness-head");
+    const modes = make("div", "brightness-selector");
+    modes.setAttribute("role", "radiogroup");
     modes.setAttribute("aria-label", tr("ui.brightnessMode", "Fényerő módja"));
-    for (const [value, key, label] of [[false, "ui.manual", "Kézi"], [true, "ui.scheduled", "Időzített"]]) {
-      const n = button(tr(key, label), "", () => { id("autoBrightness").checked = value; id("autoBrightness").dispatchEvent(new Event("change", { bubbles: true })); });
-      n.dataset.brightnessMode = String(value); modes.appendChild(n);
+    for (const [value, icon, key, label] of [[false, "adjustments-horizontal", "ui.manual", "Kézi"], [true, "clock", "ui.scheduled", "Időzített"]]) {
+      const choice = make("label");
+      const input = make("input", "visually-hidden");
+      input.type = "radio"; input.name = "brightnessMode"; input.value = String(value);
+      input.onchange = () => {
+        autoBrightness.checked = value;
+        autoBrightness.dispatchEvent(new Event("change", { bubbles: true }));
+      };
+      const face = make("span");
+      face.innerHTML = U.icon(icon);
+      face.append(tr(key, label));
+      choice.append(input, face); modes.appendChild(choice);
     }
-    brightnessSection.querySelector("header").after(modes);
+    brightnessHead.appendChild(modes);
     const appearance = make("section", "settings-section appearance-settings");
     appearance.append(make("h2", "", tr("ui.appearance", "Megjelenés")), make("small", "theme-help", tr("ui.sharedTheme", "Az LCD és a webfelület közös színei.")), id("themeAccent").closest("label"), id("themeCustomColorField"), id("displayInvert").closest("label"));
     for (const [time, level, key, fallback] of [["dayStartTime", "dayBrightness", "ui.day", "Nappali"], ["nightStartTime", "nightBrightness", "ui.night", "Éjszakai"]]) {
@@ -749,9 +814,9 @@
   U.syncConditional = () => {
     if (!U.ready) return;
     const auto = id("autoBrightness").checked, clock = id("displayClockEnabled").checked;
-    document.querySelectorAll("[data-brightness-mode]").forEach(n => n.setAttribute("aria-pressed", String(n.dataset.brightnessMode === String(auto))));
+    document.querySelectorAll('.brightness-selector input').forEach(n => { n.checked = n.value === String(auto); });
     visible(id("brightness").closest("label"), !auto);
-    ["dayStartTime", "nightStartTime", "dayBrightness", "nightBrightness"].forEach(name => visible(id(name).closest("label"), auto));
+    ["dayStartTime", "nightStartTime"].forEach(name => visible(id(name).closest(".schedule-row"), auto));
     visible(id("timeZone").closest("label"), auto || clock);
     ["displayIdleMode", "displayIdleSeconds"].forEach(name => visible(id(name).closest("label"), id("displayIdleEnabled").checked));
     visible(id("displayIdleBrightness").closest("label"), id("displayIdleEnabled").checked && id("displayIdleMode").value !== "blank");
@@ -865,6 +930,7 @@
   };
   U.systemStatus = status => {
     U.lastStatus = status; if (!U.ready) return;
+    U.networkName(status.wifi);
     const system = status.system || {}, webui = status.webui || {};
     id("overviewWifiState").textContent = status.wifi?.connected ? tr("status.connected", "Csatlakozva") : tr("status.disconnected", "Nincs kapcsolat");
     id("overviewFirmware").textContent = system.version || "—"; id("overviewWebui").textContent = webui.version || "—";

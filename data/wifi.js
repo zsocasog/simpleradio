@@ -27,6 +27,7 @@
     byId("passwordField").hidden = selected?.open === true;
     pass.disabled = !idle || !selected || selected.open === true;
     byId("showPassword").disabled = pass.disabled;
+    byId("setupHostname").disabled = !idle;
     byId("connect").disabled = !idle || !selected || (selected.open === false && !pass.value);
   }
   function closeList() {
@@ -157,6 +158,8 @@
     byId("title").textContent = t("wifi.connectedTitle", "A rádió csatlakozott");
     byId("intro").textContent = t("wifi.joinSame", "Az automatikus megnyitáshoz a telefonod vagy számítógéped is a rádióval azonos hálózatra csatlakozzon.");
     byId("radioIp").textContent = dest.host; byId("radioLink").href = dest.href; byId("handoff").hidden = false;
+    byId("joinedHostname").hidden = !result.hostname;
+    if (result.hostname) byId("joinedHostname").textContent = result.hostname + ".local";
     message(t("wifi.opening", "A webfelület megnyitása…"));
     // The radio may close the setup AP before the acknowledgement response arrives.
     const ack = await request("/setup/finish", { method: "POST", body: new URLSearchParams({ ip }) }).catch(() => null);
@@ -195,6 +198,7 @@
     try {
       if (!resume) {
         const body = new URLSearchParams({ ssid: selected.ssid, pass: selected.open ? "" : pass.value });
+        if (!byId("setupHostnameField").hidden) body.set("hostname", byId("setupHostname").value.toLowerCase());
         let res;
         try { res = await request("/save", { method: "POST", body }); } catch { /* Recover an accepted request with a lost reply. */ }
         if (res && !res.ok && res.status !== 409) throw Error(t("wifi.saveFailed", "Mentés sikertelen"));
@@ -219,6 +223,13 @@
       const res = await request("/setup/status");
       if (res.ok) {
         const result = await res.json();
+        if (result.defaultHostname) {
+          const name = byId("setupHostname");
+          name.placeholder = result.defaultHostname;
+          name.value = result.hostname === result.defaultHostname ? "" : result.hostname || "";
+          name.title = t("wifi.hostnameRules", "Legfeljebb 31 ékezet nélküli betű, szám vagy belső kötőjel.");
+          byId("setupHostnameField").hidden = false;
+        }
         if (result.themeAccent && typeof setThemeIconColor === "function") {
           const theme = normalizeThemeAccent(result.themeAccent);
           setThemeIconColor(theme === "custom" ? result.themeCustomColor : themePresets[theme].accent);

@@ -8,6 +8,7 @@ import base64
 import hashlib
 import json
 import mimetypes
+import re
 import socket
 import struct
 import threading
@@ -26,6 +27,12 @@ SETUP_NETWORKS = [
     dict(ssid='Otthon', rssi=-42, open=False), dict(ssid='Stúdió', rssi=-58, open=False),
     dict(ssid='Vendéghálózat', rssi=-69, open=True), dict(ssid='Műhely', rssi=-78, open=False)]
 SETUP = dict(state='idle', ready_at=0, outcome='idle', finished=False)
+DEFAULT_HOSTNAME = 'simpleradio-a01234'
+NETWORK_NAME = dict(hostname=DEFAULT_HOSTNAME, defaultHostname=DEFAULT_HOSTNAME, mdnsReady=True)
+
+def valid_hostname(name):
+    return name == '' or re.fullmatch(r'[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,29}[a-zA-Z0-9])?', name) is not None
+
 CONFIG = dict(configurationRevision=1, displayInvert=False, brightness=230, displayIdleEnabled=True,
     displayIdleBlank=False, displayIdleSeconds=120, displayIdleBrightness=13,
     displayClockEnabled=True, displayClockStyle='digital', displayFooterMode='spectrum',
@@ -64,7 +71,7 @@ STATE = dict(playing=True, stationId=2, station=STATIONS[1]['name'], volume=35,
 
 def status():
     return dict(status={**STATE,'clients':1}, wifi=dict(connected=True, quality=70,
-        ssid='SimpleRadio preview', rssi=-65, ip='127.0.0.1'),
+        ssid='SimpleRadio preview', rssi=-65, ip='127.0.0.1', **NETWORK_NAME),
         mqtt=dict(configured=CONFIG['mqttEnabled'], connected=CONFIG['mqttEnabled'],
         stateText='OK',host=CONFIG['mqttHost'],port=CONFIG['mqttPort'],rootTopic=CONFIG['mqttRootTopic'],hasAuth=False),
         filesystem=dict(totalBytes=7200000,usedBytes=720000,freeBytes=6480000,
@@ -94,7 +101,8 @@ class Handler(BaseHTTPRequestHandler):
             with LOCK:
                 if SETUP['state']=='connecting' and time.monotonic()>=SETUP['ready_at']:
                     SETUP['state']=SETUP['outcome']
-                body={'state':SETUP['state'], 'themeAccent':CONFIG['themeAccent']}
+                    if SETUP['state']=='connected': NETWORK_NAME['hostname']=SETUP['hostname']
+                body={'state':SETUP['state'], 'themeAccent':CONFIG['themeAccent'], **NETWORK_NAME}
                 if CONFIG['themeAccent']=='custom': body['themeCustomColor']=CONFIG['themeCustomColor']
                 if body['state']=='connected': body.update(ip='127.0.0.1', id='d3a01234')
             return self.reply(body)
@@ -119,14 +127,22 @@ class Handler(BaseHTTPRequestHandler):
         global STATION_REVISION
         path=urlsplit(self.path).path
         body=self.rfile.read(int(self.headers.get('Content-Length',0)))
+        if path=='/api/system/hostname':
+            name=parse_qs(body.decode(),keep_blank_values=True).get('hostname',[None])[0]
+            if name is None or not valid_hostname(name): return self.reply({},code=400)
+            with LOCK:
+                NETWORK_NAME['hostname']=name.lower() or DEFAULT_HOSTNAME
+                return self.reply(NETWORK_NAME)
         if path=='/save':
             submitted=parse_qs(body.decode(),keep_blank_values=True)
             network=next((n for n in SETUP_NETWORKS if n['ssid']==submitted.get('ssid',[''])[0]),None)
             if not network: return self.reply({}, code=400)
+            name=submitted.get('hostname',[NETWORK_NAME['hostname']])[0]
+            if not valid_hostname(name): return self.reply({},code=400)
             with LOCK:
                 if SETUP['state']=='connecting': return self.reply({},code=409)
                 valid=network['open'] or submitted.get('pass')==['simpleradio-demo']
-                SETUP.update(state='connecting', ready_at=time.monotonic()+1.4,
+                SETUP.update(state='connecting', ready_at=time.monotonic()+1.4, hostname=name.lower() or DEFAULT_HOSTNAME,
                              outcome='connected' if valid else 'join_failed', finished=False)
             return self.reply({'state':'connecting'},code=202)
         if path=='/setup/finish':
