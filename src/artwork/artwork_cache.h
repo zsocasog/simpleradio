@@ -107,7 +107,7 @@ private:
   String embeddedKey(const String& streamUrl, const std::vector<uint32_t>& segments) const;
   String cachePath(const String& url, const String& extension) const;
   String detectDownloadedExtension(const String& tempPath) const;
-  String currentArtworkUrl() const;
+  static String currentArtworkUrl(const PlayerStateSnapshot& state);
   bool startDownloadTask(const String& url, bool idlePrewarm = false, bool allowSecureFallback = true,
                           uint32_t deadlineMs = 0);
   bool startAlbumArtworkTask(const String& artist, const String& title, const String& key);

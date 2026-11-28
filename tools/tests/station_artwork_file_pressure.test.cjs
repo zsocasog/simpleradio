@@ -14,6 +14,41 @@ function body(source, marker) {
   }
   throw Error(marker);
 }
+
+test('album fallback skips flash probes for selected logos, retry windows and TLS handover', () => {
+  const loop = body(read('src/artwork/artwork_cache.cpp'), 'void ArtworkCache::loop()');
+  const start = loop.indexOf('const unsigned long readySince');
+  const end = loop.indexOf('if (config.displayArtworkMode', loop.indexOf('station-logo fallback download start:', start));
+  assert.ok(start >= 0 && end > start);
+  const code = loop.slice(start, end).replace(/const (?:unsigned long|bool) /g, 'const ')
+    .replaceAll('.length()', '.length').replace('String cachedFallback;', 'let cachedFallback;')
+    .replace('ReadOnlyStorage::exists(LittleFS.mountpoint(), state.stationLogo.c_str())', 'localExists()')
+    .replace('AlbumArtStore::instance().acquire', 'acquire')
+    .replace('albumArtTrace(', 'trace(').replace('sourceUrl.c_str()', 'sourceUrl');
+  const run = new Function('ctx', 'with (ctx) {' + code + '}');
+  function sample(overrides) {
+    const calls = [];
+    const sourceUrl = 'https://station.test/logo';
+    const ctx = { config: {displayArtworkMode: 'album'}, sourceUrl, lastUrl: sourceUrl, lastAttemptMs: 1,
+      audioConnectionReady: true, audioConnectionReadyMs: 1, CURRENT_ARTWORK_TLS_GRACE_MS: 1500,
+      MISSING_ARTWORK_RETRY_MS: 1000, millis: () => 5000, isDownloadActive: () => false,
+      state: {playing:true, cachedArtworkPath:'', stationLogo:'/logos/local.png', hasStreamImage:false, albumArtworkPath:''},
+      acquire: () => false, trace: () => {}, localExists: () => { calls.push('local'); return false; },
+      findExistingLcdArtworkPath: () => { calls.push('lcd'); return false; },
+      findExistingCachePath: () => { calls.push('cache'); return false; },
+      startDownloadTask: () => { calls.push('download'); return true; } };
+    overrides(ctx, calls);
+    run(ctx);
+    return calls;
+  }
+  assert.deepEqual(sample(c => { c.state.cachedArtworkPath = '/cache/current.sr565'; }), []);
+  assert.deepEqual(sample(c => { c.lastAttemptMs = 4500; }), []);
+  assert.deepEqual(sample(c => { c.audioConnectionReadyMs = 4600; }), []);
+  assert.deepEqual(sample(c => { c.acquire = () => true; }), []);
+  assert.deepEqual(sample((c, calls) => { c.localExists = () => { calls.push('local'); return true; }; }), ['local']);
+  assert.deepEqual(sample(c => { c.lastUrl = 'previous'; }), ['local', 'lcd', 'cache', 'download']);
+  assert.deepEqual(sample(() => {}), ['local', 'lcd', 'cache', 'download']);
+});
 function translate(code) {
   return code.replace(/SR_READ_IO_SCOPE\(\);/g,'').replace(/SR_PERF_(?:SPAN|WAIT)\([^;]+;/g, '').replace('char absolute[320];', 'const absolute={value:""};')
     .replace('!*mount', '!mount.length')

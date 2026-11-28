@@ -14,13 +14,15 @@ private:
     void startTask();
     void service();
     bool connectToStream(const String& url);
-    bool networkStillRequested() const;
+    bool networkStillRequested();
     uint32_t retryDelayMs(const AppConfig& config) const;
     void applyVolumeCurve(const String& curve);
-    void applyProcessingSettings(const AppConfig& config, const PlayerStateSnapshot& state);
+    void applyChannels(bool mono, int8_t balance);
+    void applyProcessingSettings(const AppConfig& config, const PlaybackControls& state);
     void processAudioEvents(uint8_t maxEvents);
     void abortStalledPlayback(uint32_t durationUs);
     Audio audio;
+    PlaybackControls controls;
     TaskHandle_t taskHandle = nullptr;
     bool taskStarted = false;
     bool lastPlaying = false;
@@ -34,6 +36,7 @@ private:
     int8_t lastEqMid = 127;
     int8_t lastEqHigh = 127;
     int8_t lastBalance = 127;
+    bool lastMonoOutput = false;
     String lastVolumeCurve;
     bool lastVuProcessing = true;
     bool lastIirProcessing = true;

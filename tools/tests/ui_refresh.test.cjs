@@ -218,7 +218,7 @@ test('manual status refresh retains focusability, coalesces clicks and reports s
 
 function volumeUi() {
   const { context, U } = ui();
-  const nodes = { volume: { value: '35', setAttribute(k, v) { this[k] = v; } }, volValue: { textContent: '' } };
+  const nodes = { volume: { value: '35', setAttribute(k, v) { this[k] = v; } }, volValue: { value: '' } };
   context.document.getElementById = name => nodes[name];
   context.numberValue = (name, fallback) => Number(nodes[name]?.value ?? fallback);
   context.document.querySelector = () => ({ classList: { toggle() {} } });
@@ -242,13 +242,15 @@ test('mute restores the last audible volume and sends one ordinary control per c
   assert.equal(U.muteButton['aria-pressed'], 'false');
 });
 
-test('repeated muted status frames retain the muted caption without resending volume', () => {
+test('status frames keep mute accessible and preserve a partially typed percentage', () => {
   const { context, U, nodes, stored } = volumeUi();
   context.setVolume = () => assert.fail('Rendering must never send a player command');
   U.volume(57); U.volume(0);
-  nodes.volValue.textContent = '0%'; // app.js writes the numeric label before calling the view renderer.
+  assert.equal(nodes.volValue.value, '0');
+  U.editingVolume = true;
+  nodes.volValue.value = '7';
   U.volume(0);
-  assert.equal(nodes.volValue.textContent, 'Némítva');
+  assert.equal(nodes.volValue.value, '7');
   assert.equal(nodes.volume['aria-valuetext'], 'Némítva');
   assert.equal(stored['simpleradio.lastAudibleVolume'], '57');
 });

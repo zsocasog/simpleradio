@@ -379,7 +379,8 @@ void ArtworkCache::loop() {
           Display::instance().render(DisplayPresenter::build(PlayerState::instance()));
         }
       } else {
-        String activeArtwork = currentArtworkUrl();
+        state = PlayerState::instance().snapshot();
+        String activeArtwork = currentArtworkUrl(state);
         if (!activeArtwork.length() &&
             state.stationId == deferredArtworkStationId &&
             deferredArtworkUrl.length()) {
@@ -413,7 +414,8 @@ void ArtworkCache::loop() {
       PlayerStateSnapshot currentState = PlayerState::instance().snapshot();
       refreshArtworkIfThumbnailReady(completedPath, currentState, completedUrl.startsWith("thumbfill:"));
     } else {
-      String currentUrl = currentArtworkUrl();
+      state = PlayerState::instance().snapshot();
+      String currentUrl = currentArtworkUrl(state);
       if (!currentUrl.length() &&
           state.stationId == deferredArtworkStationId &&
           deferredArtworkUrl.length()) {
@@ -486,7 +488,7 @@ void ArtworkCache::loop() {
 
   AppConfig& config = AppConfig::instance();
   const String requestedAlbumKey = String(ALBUM_ART_CACHE_PREFIX) + state.artist + "|" + state.title;
-  String sourceUrl = currentArtworkUrl();
+  String sourceUrl = currentArtworkUrl(state);
   if (!sourceUrl.length() &&
       state.stationId == deferredArtworkStationId &&
       deferredArtworkUrl.length()) {
@@ -496,24 +498,23 @@ void ArtworkCache::loop() {
   // In album-art mode the station logo remains the visible fallback.  If it
   // only exists remotely, fetch it before launching a potentially slower
   // multi-provider album lookup so the LCD never has to show an empty frame.
+  const unsigned long readySince = audioConnectionReadyMs;
+  const unsigned long fallbackNow = millis();
+  const bool fallbackDue = sourceUrl != lastUrl || (!state.cachedArtworkPath.length() &&
+      fallbackNow - lastAttemptMs >= MISSING_ARTWORK_RETRY_MS);
+  const bool fallbackNetworkReady = !sourceUrl.startsWith("https://") ||
+      (audioConnectionReady && readySince && fallbackNow - readySince >= CURRENT_ARTWORK_TLS_GRACE_MS);
   if (config.displayArtworkMode == "album" && state.playing &&
-      !state.hasStreamImage && sourceUrl.length() && !isDownloadActive() &&
+      !state.hasStreamImage && sourceUrl.length() && fallbackDue && fallbackNetworkReady && !isDownloadActive() &&
       !AlbumArtStore::instance().acquire(state.albumArtworkPath)) {
     String cachedFallback;
     const bool hasLocalFallback = state.stationLogo.startsWith("/") && ReadOnlyStorage::exists(LittleFS.mountpoint(), state.stationLogo.c_str());
-    const bool hasCachedFallback = findExistingLcdArtworkPath(sourceUrl, cachedFallback) ||
-                                   findExistingCachePath(sourceUrl, cachedFallback);
-    if (!hasLocalFallback && !hasCachedFallback &&
-        !(sourceUrl == lastUrl && millis() - lastAttemptMs < MISSING_ARTWORK_RETRY_MS)) {
-      const bool secureFallbackAllowed = !sourceUrl.startsWith("https://") ||
-          (audioConnectionReady && audioConnectionReadyMs > 0 &&
-           millis() - audioConnectionReadyMs >= CURRENT_ARTWORK_TLS_GRACE_MS);
-      if (secureFallbackAllowed) {
-        lastUrl = sourceUrl;
-        lastAttemptMs = millis();
-        albumArtTrace("station-logo fallback download start: %s", sourceUrl.c_str());
-        if (startDownloadTask(sourceUrl, false, true)) return;
-      }
+    if (!hasLocalFallback && !findExistingLcdArtworkPath(sourceUrl, cachedFallback) &&
+        !findExistingCachePath(sourceUrl, cachedFallback)) {
+      lastUrl = sourceUrl;
+      lastAttemptMs = fallbackNow;
+      albumArtTrace("station-logo fallback download start: %s", sourceUrl.c_str());
+      if (startDownloadTask(sourceUrl, false, true)) return;
     }
   }
 
@@ -1369,9 +1370,7 @@ void ArtworkCache::runDownloadJob(ArtworkDownloadJob* job) {
   }
 }
 
-String ArtworkCache::currentArtworkUrl() const {
-  PlayerStateSnapshot state = PlayerState::instance().snapshot();
-
+String ArtworkCache::currentArtworkUrl(const PlayerStateSnapshot& state) {
   if (state.streamLogoUrl.startsWith("http://") || state.streamLogoUrl.startsWith("https://")) {
     return state.streamLogoUrl;
   }

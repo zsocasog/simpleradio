@@ -65,12 +65,17 @@ test('slow connect cannot immediately retry or publish a connection for a cancel
   assert.ok(after.indexOf('if (!networkStillRequested())') < after.indexOf('notifyAudioConnectResult(true)'));
   assert.match(audio, /if \(!streamControlOperation && s\.playing &&/);
   const desired = body(audio, 'bool AudioPlayer::networkStillRequested(')
-    .replace('const PlayerStateSnapshot desired = PlayerState::instance().snapshot();', 'const desired = snapshot();');
-  const run = new Function('snapshot', 'lastStreamUrl', 'WiFi', desired);
+    .replace('PlayerState::instance().refreshPlaybackControls(controls);', 'refresh(controls);');
+  const run = new Function('refresh', 'controls', 'lastStreamUrl', 'WiFi', desired);
   for (const desiredState of [{ playing: false, streamUrl: 'a' }, { playing: true, streamUrl: 'b' }]) {
-    assert.equal(run(() => desiredState, 'a', { isConnected: () => true }), false);
+    assert.equal(run(c => Object.assign(c, desiredState), {}, 'a', { isConnected: () => true }), false);
   }
-  assert.equal(run(() => ({ playing: true, streamUrl: 'a' }), 'a', { isConnected: () => true }), true);
+  const previous = { playing: true, streamUrl: 'a' };
+  assert.equal(run(() => {}, previous, 'a', { isConnected: () => true }), true);
+  assert.equal(run(() => {}, previous, 'a', { isConnected: () => false }), false);
+  const pump = body(audio, 'void AudioPlayer::service(');
+  assert.doesNotMatch(pump, /\.snapshot\(\)|connectToStream\(s\.streamUrl\)/);
+  assert.match(pump, /refreshPlaybackControls\(controls\)/);
   assert.match(body(http, 'bool service()'), /networkGate.audioReserved\(\)/);
   const get = body(http, 'static bool getAttempt(');
   assert.ok(get.indexOf('BackgroundNetworkScope network(options);') < get.indexOf('request(client,'));

@@ -20,9 +20,9 @@ static SemaphoreHandle_t playerStateLockHandle() {
 
 class PlayerStateLock {
 public:
-  PlayerStateLock() {
+  explicit PlayerStateLock(TickType_t wait = pdMS_TO_TICKS(1000)) {
     SemaphoreHandle_t mutex = playerStateLockHandle();
-    locked = mutex && xSemaphoreTakeRecursive(mutex, pdMS_TO_TICKS(1000)) == pdTRUE;
+    locked = mutex && xSemaphoreTakeRecursive(mutex, wait) == pdTRUE;
   }
 
   ~PlayerStateLock() {
@@ -369,12 +369,61 @@ uint32_t PlayerState::revision() const {
   return playerStateRevision;
 }
 
+static bool updateText(String& target, const String& source) {
+  if (target == source) return true;
+  if (!target.reserve(source.length())) return false;
+  target = source;
+  return true;
+}
+
+bool PlayerState::tryReadStatus(PlayerStatus& lastKnown) const {
+  PlayerStateLock lock(0);
+  if (!lock.ok() || !updateText(lastKnown.station, station)) return false;
+  lastKnown.playing = playing;
+  lastKnown.volume = volume;
+  lastKnown.streamConnectionState = streamConnectionState;
+  lastKnown.streamConnectFailures = streamConnectFailures;
+  return true;
+}
+
+void PlayerState::refreshPlaybackControls(PlaybackControls& lastKnown) const {
+  PlayerStateLock lock(0);
+  if (!lock.ok()) return;
+  if (playing && !updateText(lastKnown.streamUrl, streamUrl)) return;
+  lastKnown.playing = playing;
+  lastKnown.volume = volume;
+  lastKnown.eqLow = eqLow;
+  lastKnown.eqMid = eqMid;
+  lastKnown.eqHigh = eqHigh;
+  lastKnown.balance = balance;
+}
+
 bool PlayerState::tryVolume(uint8_t& value) const {
   // Optional lighting must never block playback or copy metadata Strings.
   const SemaphoreHandle_t mutex = playerStateMutex;
   if (!mutex || xSemaphoreTakeRecursive(mutex, 0) != pdTRUE) return false;
   value = volume;
   xSemaphoreGiveRecursive(mutex);
+  return true;
+}
+
+bool PlayerState::applyLocalVolume(const VolumeAdjustment& turns, bool& changed, int* muteRestore) {
+  PlayerStateLock lock(muteRestore ? pdMS_TO_TICKS(1000) : 0);
+  if (!lock.ok()) return false;
+  int next = turns.apply(volume);
+  if (muteRestore) {
+    if (next > 0) {
+      *muteRestore = next;
+      next = 0;
+    } else {
+      next = *muteRestore > 0 ? *muteRestore : 30;
+    }
+  }
+  changed = next != volume;
+  if (changed) {
+    volume = next;
+    markPlayerStateDirty();
+  }
   return true;
 }
 

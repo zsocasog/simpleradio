@@ -4,9 +4,9 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>SimpleRadio</title>
-  <link rel="icon" type="image/svg+xml" sizes="any" href="favicon.svg?v=1.3.28&amp;ui=cf68bdfbd8d3">
-  <link rel="stylesheet" href="style.css?v=1.3.28&amp;ui=cf68bdfbd8d3">
-  <link rel="stylesheet" href="ui.css?v=1.3.28&amp;ui=cf68bdfbd8d3">
+  <link rel="icon" type="image/svg+xml" sizes="any" href="favicon.svg?v=1.3.28&amp;ui=02898872c2eb">
+  <link rel="stylesheet" href="style.css?v=1.3.28&amp;ui=02898872c2eb">
+  <link rel="stylesheet" href="ui.css?v=1.3.28&amp;ui=02898872c2eb">
 </head>
 <body>
   <div class="app-shell">
@@ -62,7 +62,11 @@
 <input id="volume" type="range" min="0" max="100" oninput="setVolume(this.value, true)">
                   <button class="volume-step" type="button" onclick="changeVolume(5)" aria-label="Hangerő növelése 5 százalékkal" title="Hangerő +5%">+</button>
                 </div>
-                <strong id="volValue">50%</strong>
+                <label class="volume-readout">
+                  <span class="visually-hidden" data-i18n="player.volumePercent">Hangerő százalékban (0–100)</span>
+                  <input id="volValue" type="text" inputmode="numeric" enterkeyhint="done" pattern="100|[0-9]{1,2}" required autocomplete="off" value="50">
+                  <span aria-hidden="true">%</span>
+                </label>
               </div>
             </div>
           </article>
@@ -230,9 +234,13 @@
             <div class="settings-column">
               <section class="settings-section">
                 <header class="settings-section-head">
-                  <h2>Balansz</h2>
-                  <small>A bal és jobb csatorna aránya</small>
+                  <h2 id="channelHeading" data-i18n="sound.output">Hangkimenet</h2>
                 </header>
+                <div id="channelSelector" class="brightness-selector" role="radiogroup" aria-labelledby="channelHeading" hidden>
+                  <label><input id="stereoOutput" class="visually-hidden" type="radio" name="channels" checked onchange="postConfig({monoOutput:'0'})"><span data-i18n="sound.stereo">Sztereó</span></label>
+                  <label><input id="monoOutput" class="visually-hidden" type="radio" name="channels" onchange="postConfig({monoOutput:'1'})"><span data-i18n="sound.mono">Monó</span></label>
+                </div>
+                <small id="monoHelp" class="form-note" data-i18n="sound.monoHelp" hidden>A bal és a jobb csatorna keveréke mindkét kimeneten hallható.</small>
                 <label class="setting-row">
                   <span>Bal / jobb</span>
                   <span class="setting-range"><input id="soundBalance" type="range" min="-100" max="100" value="0" oninput="mirrorBalance(this.value, true)"><strong id="soundBalanceValue">Közép</strong></span>
@@ -278,7 +286,7 @@
                 <label class="setting-row"><span>Téma</span>
                   <select id="themeAccent" onchange="syncThemeAccent(); saveConfigNow()">
                 <option value="green">Zöld</option>
-                <option value="amber">Borostyán</option>
+                <option value="amber" selected>Borostyán</option>
                 <option value="blue">Kék</option>
                 <option value="cyan">Cián</option>
                 <option value="red">Vörös</option>
@@ -296,6 +304,18 @@
                   <span class="setting-copy"><strong>Automatikus nappal / éjszaka mód</strong></span>
                   <span class="toggle-switch"><input id="autoBrightness" type="checkbox" onchange="saveConfigNow()"><span></span></span>
                 </label>
+                <label id="solarToggleRow" class="setting-row setting-toggle" hidden>
+                  <span class="setting-copy"><strong data-i18n="display.sunSchedule">Napkelte és napnyugta követése</strong></span>
+                  <span class="toggle-switch"><input id="solarBrightness" type="checkbox" onchange="postConfig({solarBrightness:this.checked?'1':'0'})"><span></span></span>
+                </label>
+                <details id="solarLocation" class="disclosure" hidden>
+                  <summary></summary>
+                  <form id="solarLocationForm">
+                    <label><span data-i18n="display.latitude">Szélességi fok</span><input id="solarLatitude" type="number" required step="any" min="-90" max="90"></label>
+                    <label><span data-i18n="display.longitude">Hosszúsági fok</span><input id="solarLongitude" type="number" required step="any" min="-180" max="180"></label>
+                    <button type="submit" class="quiet-button" data-i18n="display.saveLocation">Hely mentése</button>
+                  </form>
+                </details>
                 <label class="setting-row"><span>Nappali mód kezdete</span><input id="dayStartTime" type="time" onchange="saveConfigNow()"></label>
                 <label class="setting-row"><span>Éjszakai mód kezdete</span><input id="nightStartTime" type="time" onchange="saveConfigNow()"></label>
                 <label class="setting-row"><span>Nappali</span><span class="setting-range"><input id="dayBrightness" type="range" min="0" max="255" oninput="setPercentLabel('dayBrightness')"><strong id="dayBrightnessValue">0%</strong></span></label>
@@ -321,11 +341,11 @@
                 <option value="volume">Hangerősáv</option>
                 <option value="station">Állomás</option>
                 <option value="datetime" data-i18n="display.footer.datetime">Dátum és idő</option>
-                <option value="vu">Animáció</option>
+                <option value="vu">Kivezérlésjelző (VU)</option>
                 <option value="spectrum" data-i18n="display.footer.spectrum">Spektrum (24 sáv, FFT)</option>
                   </select>
                 </label>
-                <label id="displayVuStyleField" class="setting-row"><span>Animáció típusa</span>
+                <label id="displayVuStyleField" class="setting-row"><span>Kivezérlésjelző stílusa</span>
                   <select id="displayVuStyle" onchange="saveConfigNow()">
                 <option value="bars">Álló oszlopok</option>
                 <option value="symmetric">Szimmetrikus oszlopok</option>
@@ -717,14 +737,14 @@
       <span id="footerVersion">v-</span>
     </footer>
   </div>
-  <script src="theme.js?v=1.3.28&amp;ui=cf68bdfbd8d3"></script>
-  <script src="i18n-catalog.js?v=1.3.28&amp;ui=cf68bdfbd8d3"></script>
-  <script src="i18n.js?v=1.3.28&amp;ui=cf68bdfbd8d3"></script>
-  <script src="ir-profiles.js?v=1.3.28&amp;ui=cf68bdfbd8d3"></script>
-  <script src="ir-editor.js?v=1.3.28&amp;ui=cf68bdfbd8d3"></script>
-  <script src="station-playlist.js?v=1.3.28&amp;ui=cf68bdfbd8d3"></script>
-  <script src="led-settings.js?v=1.3.28&amp;ui=cf68bdfbd8d3"></script>
-  <script src="ui.js?v=1.3.28&amp;ui=cf68bdfbd8d3"></script>
-  <script src="app.js?v=1.3.28&amp;ui=cf68bdfbd8d3"></script>
+  <script src="theme.js?v=1.3.28&amp;ui=02898872c2eb"></script>
+  <script src="i18n-catalog.js?v=1.3.28&amp;ui=02898872c2eb"></script>
+  <script src="i18n.js?v=1.3.28&amp;ui=02898872c2eb"></script>
+  <script src="ir-profiles.js?v=1.3.28&amp;ui=02898872c2eb"></script>
+  <script src="ir-editor.js?v=1.3.28&amp;ui=02898872c2eb"></script>
+  <script src="station-playlist.js?v=1.3.28&amp;ui=02898872c2eb"></script>
+  <script src="led-settings.js?v=1.3.28&amp;ui=02898872c2eb"></script>
+  <script src="ui.js?v=1.3.28&amp;ui=02898872c2eb"></script>
+  <script src="app.js?v=1.3.28&amp;ui=02898872c2eb"></script>
 </body>
 </html>

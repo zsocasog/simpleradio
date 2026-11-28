@@ -67,8 +67,7 @@ static int stationPickerIndex = -1;
 static unsigned long stationPickerChangedMs = 0;
 static unsigned long stationPickerOpenedMs = 0;
 static uint32_t stationPickerRequest = 0;
-static int pendingVolumeTarget = -1;
-static unsigned long pendingVolumeTargetMs = 0;
+static VolumeAdjustment pendingVolumeTurns;
 static uint16_t irStationNumberBuffer = 0;
 static uint8_t irStationNumberDigits = 0;
 static unsigned long irStationNumberMs = 0;
@@ -169,16 +168,20 @@ static void stationOffset(int offset) {
   applyCommand(cmd);
 }
 
+static void flushVolumeTurns(int* muteRestore = nullptr) {
+  if (!pendingVolumeTurns.pending() && !muteRestore) return;
+  bool changed = false;
+  if (!PlayerState::instance().applyLocalVolume(pendingVolumeTurns, changed, muteRestore)) return;
+  pendingVolumeTurns = {};
+  if (changed) {
+    Display::instance().notifyActivity();
+    requestStateSave();
+  }
+}
+
 static void volumeOffset(int delta) {
-  JsonDocument cmd;
-  PlayerStateSnapshot state = PlayerState::instance().snapshot();
-  int baseVolume = pendingVolumeTarget >= 0 ? pendingVolumeTarget : state.volume;
-  int nextVolume = constrain(baseVolume + delta, 0, 100);
-  if (nextVolume == baseVolume && nextVolume == state.volume) return;
-  pendingVolumeTarget = nextVolume;
-  pendingVolumeTargetMs = millis();
-  cmd["volume"] = nextVolume;
-  applyCommand(cmd);
+  pendingVolumeTurns.add(delta);
+  flushVolumeTurns();
 }
 
 static void togglePlay() {
@@ -194,17 +197,7 @@ static void stopPlayback() {
 }
 
 static void toggleMute() {
-  PlayerStateSnapshot state = PlayerState::instance().snapshot();
-  JsonDocument cmd;
-
-  if (state.volume > 0) {
-    mutedVolume = state.volume;
-    cmd["volume"] = 0;
-  } else {
-    cmd["volume"] = mutedVolume > 0 ? mutedVolume : 30;
-  }
-
-  applyCommand(cmd);
+  flushVolumeTurns(&mutedVolume);
 }
 
 static void cycleDisplayFooterView() {
@@ -819,12 +812,7 @@ void InputController::loop() {
   AppConfig& config = AppConfig::instance();
   loopIrStationNumberInput();
 
-  if (pendingVolumeTarget >= 0) {
-    uint8_t currentVolume = PlayerState::instance().snapshot().volume;
-    if (currentVolume == pendingVolumeTarget || millis() - pendingVolumeTargetMs > 700) {
-      pendingVolumeTarget = -1;
-    }
-  }
+  flushVolumeTurns();
 
   if (!config.encoderEnabled && stationPickerActive) {
     closeStationPicker();

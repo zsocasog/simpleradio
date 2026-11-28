@@ -548,13 +548,20 @@ static String systemStatusJson(bool includeLayoutTiming) {
   ArtworkJson::Allocator jsonAllocator;
   JsonDocument doc(&jsonAllocator);
 
-  PlayerStateSnapshot player = PlayerState::instance().snapshot();
+  // Only the AsyncTCP request handler accesses this cache. Keep other HTTP
+  // requests responsive even when a station command holds the player lock.
+  static PlayerStatus player;
+  static bool havePlayer = false;
+  const bool fresh = PlayerState::instance().tryReadStatus(player);
+  if (!fresh && !havePlayer) return {};
+  havePlayer = true;
   JsonObject status = doc["status"].to<JsonObject>();
   status["playing"] = player.playing;
   status["station"] = player.station;
   status["volume"] = player.volume;
   status["streamConnectionState"] = streamConnectionStateName(player.streamConnectionState);
   status["streamConnectFailures"] = player.streamConnectFailures;
+  status["playerStateFresh"] = fresh;
   status["clients"] = ws.count();
 
   JsonObject wifi = doc["wifi"].to<JsonObject>();
@@ -2624,7 +2631,9 @@ void webServerBegin() {
   });
 
   server.on("/api/system/status", HTTP_GET, [](AsyncWebServerRequest* request) {
-    request->send(200, "application/json", systemStatusJson(request->hasParam("layoutTiming")));
+    const String json = systemStatusJson(request->hasParam("layoutTiming"));
+    if (json.isEmpty()) request->send(503, "text/plain", "Player state busy");
+    else request->send(200, "application/json", json);
   });
 
 #if SIMPLE_RADIO_RUNTIME_DIAGNOSTICS
@@ -2869,6 +2878,19 @@ void webServerBegin() {
     setString("themeCustomColor");
     setString("timeZone");
     setBool("autoBrightness");
+    setBool("solarBrightness");
+    setBool("monoOutput");
+    for (const char* name : {"solarLatitudeE2", "solarLongitudeE2"}) {
+      if (!request->hasParam(name, true)) continue;
+      const String value = request->getParam(name, true)->value();
+      const long coordinate = value.toInt();
+      const int limit = strcmp(name, "solarLatitudeE2") == 0 ? 9000 : 18000;
+      if (String(coordinate) != value || coordinate < -limit || coordinate > limit) {
+        request->send(400, "text/plain", "Invalid solar coordinates");
+        return;
+      }
+      doc[name] = coordinate;
+    }
     setInt("dayBrightness");
     setInt("nightBrightness");
     setInt("dayStartMinute");

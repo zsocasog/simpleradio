@@ -43,25 +43,28 @@ public:
 
   bool displayInvert = false;
   uint8_t brightness = 230;
-  bool displayIdleEnabled = false;
+  bool displayIdleEnabled = true;
   bool displayIdleBlank = false;
-  uint16_t displayIdleSeconds = 120;
-  uint8_t displayIdleBrightness = 13;
-  bool displayClockEnabled = false;
+  uint16_t displayIdleSeconds = 30;
+  uint8_t displayIdleBrightness = 38;
+  bool displayClockEnabled = true;
   String displayClockStyle = "digital";
-  String displayFooterMode = "volume";
-  String displayArtworkMode = "logo";
+  String displayFooterMode = "spectrum";
+  String displayArtworkMode = "album";
   String lastFmApiKey;
   String displayVuStyle = "bars";
-  String themeAccent = "green";
+  String themeAccent = "amber";
   String themeCustomColor = "#a9f7bf";
   DisplayClockStyle displayClockStyleId = DisplayClockStyle::Digital;
-  DisplayFooterMode displayFooterModeId = DisplayFooterMode::Volume;
+  DisplayFooterMode displayFooterModeId = DisplayFooterMode::Spectrum;
   DisplayVuStyle displayVuStyleId = DisplayVuStyle::Bars;
   String timeZone = "CET-1CEST,M3.5.0/2,M10.5.0/3";
-  bool autoBrightness = false;
-  uint8_t dayBrightness = 230;
-  uint8_t nightBrightness = 51;
+  bool autoBrightness = true;
+  bool solarBrightness = false;
+  int16_t solarLatitudeE2 = 4750;    // Budapest, in hundredths of a degree.
+  int16_t solarLongitudeE2 = 1904;
+  uint8_t dayBrightness = 204;
+  uint8_t nightBrightness = 38;
   uint16_t dayStartMinute = 7 * 60;
   uint16_t nightStartMinute = 20 * 60;
 
@@ -122,6 +125,7 @@ public:
   uint16_t streamRetryMs = 5000;
   bool autoStart = false;
   String volumeCurve = "soft";
+  bool monoOutput = false;
   bool frontLedEnabled = false;
   bool frontLedUseTheme = true;
   uint8_t frontLedBrightness = 128;

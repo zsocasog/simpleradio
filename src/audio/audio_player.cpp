@@ -235,7 +235,7 @@ void AudioPlayer::applyVolumeCurve(const String& curve) {
   }
 }
 
-void AudioPlayer::applyProcessingSettings(const AppConfig& config, const PlayerStateSnapshot& state) {
+void AudioPlayer::applyProcessingSettings(const AppConfig& config, const PlaybackControls& state) {
   bool vuNeeded = config.displayFooterMode == "vu";
   if (vuNeeded != lastVuProcessing) {
     lastVuProcessing = vuNeeded;
@@ -398,6 +398,20 @@ static void audioInfo(Audio::msg_t m) {
   }
 }
 
+void AudioPlayer::applyChannels(bool mono, int8_t balance) {
+  if (mono != lastMonoOutput) {
+    audio.forceMono(mono);
+    lastMonoOutput = mono;
+  }
+  // The decoder applies balance before mixing. Keep both inputs at equal gain
+  // in mono, and restore the listener's stereo balance when switching back.
+  const int8_t effectiveBalance = mono ? 0 : balance;
+  if (effectiveBalance != lastBalance) {
+    audio.setBalance(map(effectiveBalance, -100, 100, -16, 16));
+    lastBalance = effectiveBalance;
+  }
+}
+
 void AudioPlayer::begin() {
   SimpleRadioAudio::networkOwner = this;
   SimpleRadioAudio::continueNetwork = [](void* owner) {
@@ -415,13 +429,14 @@ void AudioPlayer::begin() {
   AudioMeter::instance().setEnabled(false);
   audio.setPinout(I2S_BCLK, I2S_LRC, I2S_DOUT);
   audio.setConnectionTimeout(700, 2700);
-  PlayerStateSnapshot s = PlayerState::instance().snapshot();
+  PlayerState::instance().refreshPlaybackControls(controls);
   AppConfig& config = AppConfig::instance();
   audio.setVolumeSteps(100);
   applyVolumeCurve(config.volumeCurve);
-  audio.setTone(s.eqLow, s.eqMid, s.eqHigh);
-  audio.setBalance(map(s.balance, -100, 100, -16, 16));
-  audio.setVolume(s.volume);
+  audio.setTone(controls.eqLow, controls.eqMid, controls.eqHigh);
+  applyChannels(config.monoOutput, controls.balance);
+  audio.setVolume(controls.volume);
+  lastVolume = controls.volume;
   startTask();
 }
 
@@ -455,9 +470,9 @@ uint32_t AudioPlayer::retryDelayMs(const AppConfig& config) const {
   return min<uint32_t>(base * multiplier, 60000);
 }
 
-bool AudioPlayer::networkStillRequested() const {
-  const PlayerStateSnapshot desired = PlayerState::instance().snapshot();
-  return desired.playing && desired.streamUrl == lastStreamUrl && WiFi.isConnected();
+bool AudioPlayer::networkStillRequested() {
+  PlayerState::instance().refreshPlaybackControls(controls);
+  return controls.playing && controls.streamUrl == lastStreamUrl && WiFi.isConnected();
 }
 
 bool AudioPlayer::connectToStream(const String& url) {
@@ -550,7 +565,8 @@ void AudioPlayer::service() {
   struct PumpStageExit { ~PumpStageExit() { RuntimeProbe::setPumpStage(0); } } pumpStageExit;
 #endif
   processAudioEvents(4);
-  PlayerStateSnapshot s = PlayerState::instance().snapshot();
+  PlayerState::instance().refreshPlaybackControls(controls);
+  const PlaybackControls& s = controls;
 #if SIMPLE_RADIO_RUNTIME_DIAGNOSTICS
   RuntimeProbe::setPumpStage(2);
 #endif
@@ -580,7 +596,7 @@ void AudioPlayer::service() {
       lastRetryMs = millis();
       streamControlOperation = true;
       if (wifiConnected) {
-        connectToStream(s.streamUrl);
+        connectToStream(lastStreamUrl);
       } else {
         PlayerState::instance().setStreamConnectionState(StreamConnectionState::WaitingForNetwork, connectFailureCount);
       }
@@ -610,7 +626,7 @@ void AudioPlayer::service() {
     lastRetryMs = millis();
     ArtworkCache::instance().cancelIdlePrewarm();
     if (wifiConnected) {
-      connectToStream(s.streamUrl);
+      connectToStream(lastStreamUrl);
     } else {
       PlayerState::instance().setStreamConnectionState(StreamConnectionState::WaitingForNetwork, connectFailureCount);
     }
@@ -637,7 +653,7 @@ void AudioPlayer::service() {
         audio.stopSong();
         delay(20);
         audioLoopStallCount = 0;
-        connectToStream(s.streamUrl);
+        connectToStream(lastStreamUrl);
       }
     }
   }
@@ -657,10 +673,7 @@ void AudioPlayer::service() {
     audio.setTone(s.eqLow, s.eqMid, s.eqHigh);
   }
 
-  if (s.balance != lastBalance) {
-    lastBalance = s.balance;
-    audio.setBalance(map(s.balance, -100, 100, -16, 16));
-  }
+  applyChannels(config.monoOutput, s.balance);
 
   uint32_t audioLoopStartUs = micros();
 #if SIMPLE_RADIO_RUNTIME_DIAGNOSTICS

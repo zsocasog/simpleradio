@@ -9,6 +9,7 @@
 #include "../artwork/lcd_thumbnail_ram.h"
 #include "../artwork/picker_logo_loader.h"
 #include "../config/app_config.h"
+#include "solar_brightness.h"
 #include "../config/hardware_config.h"
 #include "../config/logging.h"
 #include "../i18n/i18n.h"
@@ -3966,6 +3967,25 @@ void Display::applyConfig() {
   pendingConfigApply.store(true);
 }
 
+static uint8_t scheduledBrightness(const AppConfig& config) {
+  // Avoid a blocking SNTP wait on every LCD frame during initial Wi-Fi setup.
+  const time_t now = time(nullptr);
+  if (now < 1483228800) return config.dayBrightness;
+  bool day;
+  if (config.solarBrightness) {
+    static SolarBrightness::MinuteCache sun;
+    day = sun.daylight(now, config.solarLatitudeE2, config.solarLongitudeE2);
+  } else {
+    tm local{};
+    localtime_r(&now, &local);
+    const int minute = local.tm_hour * 60 + local.tm_min;
+    day = config.dayStartMinute <= config.nightStartMinute ?
+        minute >= config.dayStartMinute && minute < config.nightStartMinute :
+        minute >= config.dayStartMinute || minute < config.nightStartMinute;
+  }
+  return day ? config.dayBrightness : config.nightBrightness;
+}
+
 void Display::applyConfigNow() {
   AppConfig& config = AppConfig::instance();
 
@@ -4007,17 +4027,7 @@ void Display::applyConfigNow() {
 
   uint8_t targetBrightness = offRequested ? 0 : idle ? config.displayIdleBrightness : config.brightness;
   if (!idle && config.autoBrightness) {
-    struct tm timeinfo;
-    if (getLocalTime(&timeinfo, 5)) {
-      uint16_t minute = timeinfo.tm_hour * 60 + timeinfo.tm_min;
-      bool isDay;
-      if (config.dayStartMinute <= config.nightStartMinute) {
-        isDay = minute >= config.dayStartMinute && minute < config.nightStartMinute;
-      } else {
-        isDay = minute >= config.dayStartMinute || minute < config.nightStartMinute;
-      }
-      targetBrightness = isDay ? config.dayBrightness : config.nightBrightness;
-    }
+    targetBrightness = scheduledBrightness(config);
   }
 
   if (clockRequested) {

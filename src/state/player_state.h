@@ -13,17 +13,47 @@ enum class StreamConnectionState : uint8_t {
 
 const char* streamConnectionStateName(StreamConnectionState state);
 
-struct PlayerStateSnapshot {
+struct PlaybackControls {
+  bool playing = false;
+  uint8_t volume = 0;
+  int8_t eqLow = 0;
+  int8_t eqMid = 0;
+  int8_t eqHigh = 0;
+  int8_t balance = 0;
+  String streamUrl;
+};
+
+// A run of relative turns can be replayed on the latest web/IR volume.
+// The endpoints preserve direction reversals at 0 and 100 while the state is busy.
+struct VolumeAdjustment {
+  int offset = 0;
+  int minimum = 0;
+  int maximum = 100;
+
+  void add(int step) {
+    minimum = constrain(minimum + step, 0, 100);
+    maximum = constrain(maximum + step, 0, 100);
+    offset = minimum == maximum ? 0 : offset + step;
+  }
+
+  bool pending() const { return minimum != 0 || maximum != 100; }
+  int apply(int value) const { return constrain(value + offset, minimum, maximum); }
+};
+
+struct PlayerStatus {
   bool playing = false;
   StreamConnectionState streamConnectionState = StreamConnectionState::Idle;
   uint8_t streamConnectFailures = 0;
   uint8_t volume = 50;
+  String station;
+};
+
+struct PlayerStateSnapshot : PlayerStatus {
   int stationId = -1;
   int8_t eqLow = 0;
   int8_t eqMid = 0;
   int8_t eqHigh = 0;
   int8_t balance = 0;
-  String station;
   String streamUrl;
   String stationLogo;
   String artist;
@@ -66,7 +96,10 @@ public:
   bool hasStreamImage = false;
 
   PlayerStateSnapshot snapshot() const;
+  bool tryReadStatus(PlayerStatus& lastKnown) const;
+  void refreshPlaybackControls(PlaybackControls& lastKnown) const;
   bool tryVolume(uint8_t& value) const;
+  bool applyLocalVolume(const VolumeAdjustment& turns, bool& changed, int* muteRestore = nullptr);
   uint32_t revision() const;
   String toJson() const;
   bool applyCommand(const JsonDocument& cmd);

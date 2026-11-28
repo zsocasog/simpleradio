@@ -12,7 +12,7 @@ A SimpleRadio egy otthon is megépíthető, ESP32-S3 alapú internetrádió. A l
 - **Webes lejátszó és állomáskezelő** mobilra és asztali gépre, állomáskereséssel, yoRadio-kompatibilis CSV-importtal és -exporttal, valamint hang- és kijelzőbeállításokkal.
 - **Vezérlés és integráció** forgóenkóderrel, opcionális infrás távirányítóval és RGB-világítással, valamint automatikus MQTT-felismeréssel a Home Assistantban.
 
-![A SimpleRadio webes lejátszója](.screenshots/player.jpg)
+![A SimpleRadio webes lejátszója](.screenshots/live-player.jpg)
 
 ## Hardver és telepítés
 
@@ -26,7 +26,7 @@ A webfelületen indított LittleFS-frissítés megőrzi a beállításokat, az �
 
 A Wi-Fi beállításakor adhatsz a rádiónak hálózati nevet. Például a `konyha-radio` névvel a `http://konyha-radio.local/` címen érhető el mDNS-t támogató helyi hálózaton. Üres mezőnél a készülék egyedi nevet kap. A nevet később a **Rendszer → Áttekintés → Hálózati név** alatt módosíthatod. Az IP-cím továbbra is használható.
 
-![Kijelzőbeállítások LCD-előnézettel](.screenshots/display.jpg)
+![Kijelzőbeállítások LCD-előnézettel](.screenshots/live-display.jpg)
 
 ## Útmutatók
 
@@ -35,7 +35,7 @@ A Wi-Fi beállításakor adhatsz a rádiónak hálózati nevet. Például a `kon
 
 ## Képernyőképek
 
-A friss galériához érdemes lefotózni az LCD-t lejátszás közben állomáslogóval és albumborítóval, illetve megnyitott állomáslistával. A webfelületről az asztali és mobil lejátszónézet, valamint a kijelzőbeállítások oldala mutatná be a legtöbbet az LCD-előnézettel együtt.
+A webes képek működés közben készültek a rádióról. A galériában a fizikai LCD-ről készült fotók is láthatók.
 
 <details>
 <summary>További LCD-fotók és webes képernyőképek</summary>
@@ -43,14 +43,8 @@ A friss galériához érdemes lefotózni az LCD-t lejátszás közben állomásl
 | LCD-lejátszó képpel | LCD-állomásválasztó |
 | --- | --- |
 | ![LCD-lejátszó képpel](.screenshots/lcd/player2.jpg) | ![LCD-állomásválasztó](.screenshots/lcd/station_picker.jpg) |
-| Hangerő | Állomások |
-| ![LCD-hangerőnézet](.screenshots/lcd/volume.jpg) | ![Webes állomáslista](.screenshots/stations.jpg) |
-| Hang | Vezérlés |
-| ![Hangbeállítások](.screenshots/sound.jpg) | ![Vezérlés](.screenshots/controls.jpg) |
-| Távirányító | Rendszeráttekintés |
-| ![Távirányító-beállítások](.screenshots/ir.jpg) | ![Rendszeráttekintés](.screenshots/system.jpg) |
-| Integrációk | Frissítés |
-| ![Integrációk beállításai](.screenshots/system-connections.jpg) | ![Frissítési oldal](.screenshots/system-update.jpg) |
+| Hangerő | Állomáskezelő |
+| ![LCD-hangerőnézet](.screenshots/lcd/volume.jpg) | ![Webes állomáskezelő](.screenshots/live-stations.jpg) |
 
 </details>
 

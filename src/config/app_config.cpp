@@ -242,6 +242,10 @@ bool AppConfig::save() {
   doc["themeCustomColor"] = themeCustomColor;
   doc["timeZone"] = timeZone;
   doc["autoBrightness"] = autoBrightness;
+  doc["solarBrightness"] = solarBrightness;
+  doc["solarLatitudeE2"] = solarLatitudeE2;
+  doc["solarLongitudeE2"] = solarLongitudeE2;
+  doc["monoOutput"] = monoOutput;
   doc["dayBrightness"] = dayBrightness;
   doc["nightBrightness"] = nightBrightness;
   doc["dayStartMinute"] = dayStartMinute;
@@ -346,6 +350,10 @@ String AppConfig::toJson() const {
   doc["themeCustomColor"] = themeCustomColor;
   doc["timeZone"] = timeZone;
   doc["autoBrightness"] = autoBrightness;
+  doc["solarBrightness"] = solarBrightness;
+  doc["solarLatitudeE2"] = solarLatitudeE2;
+  doc["solarLongitudeE2"] = solarLongitudeE2;
+  doc["monoOutput"] = monoOutput;
   doc["dayBrightness"] = dayBrightness;
   doc["nightBrightness"] = nightBrightness;
   doc["dayStartMinute"] = dayStartMinute;
@@ -532,6 +540,12 @@ bool AppConfig::applyJson(const JsonDocument& doc) {
     }
   }
   if (doc["autoBrightness"].is<bool>()) autoBrightness = doc["autoBrightness"];
+  if (doc["solarBrightness"].is<bool>()) solarBrightness = doc["solarBrightness"];
+  if (doc["solarLatitudeE2"].is<int16_t>() && abs(doc["solarLatitudeE2"].as<int>()) <= 9000)
+    solarLatitudeE2 = doc["solarLatitudeE2"];
+  if (doc["solarLongitudeE2"].is<int16_t>() && abs(doc["solarLongitudeE2"].as<int>()) <= 18000)
+    solarLongitudeE2 = doc["solarLongitudeE2"];
+  if (doc["monoOutput"].is<bool>()) monoOutput = doc["monoOutput"];
   if (doc["dayBrightness"].is<int>()) dayBrightness = constrain(doc["dayBrightness"].as<int>(), 0, 255);
   if (doc["nightBrightness"].is<int>()) nightBrightness = constrain(doc["nightBrightness"].as<int>(), 0, 255);
   if (doc["dayStartMinute"].is<int>()) dayStartMinute = constrain(doc["dayStartMinute"].as<int>(), 0, 1439);

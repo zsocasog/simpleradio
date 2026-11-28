@@ -617,12 +617,29 @@
       choice.append(input, face); modes.appendChild(choice);
     }
     brightnessHead.appendChild(modes);
+    const locationForm = id("solarLocationForm");
+    locationForm.oninput = () => { locationForm.dataset.editing = "1"; };
+    locationForm.onsubmit = async event => {
+      event.preventDefault();
+      const saved = await postConfig({
+        solarLatitudeE2: String(Math.round(id("solarLatitude").valueAsNumber * 100)),
+        solarLongitudeE2: String(Math.round(id("solarLongitude").valueAsNumber * 100))
+      });
+      if (saved && !locationForm.dataset.editing) {
+        id("solarLocation").open = false;
+        id("solarLocation").querySelector("summary").focus();
+      }
+    };
+    id("channelSelector").addEventListener("change", U.syncConditional);
     const appearance = make("section", "settings-section appearance-settings");
     appearance.append(make("h2", "", tr("ui.appearance", "Megjelenés")), make("small", "theme-help", tr("ui.sharedTheme", "Az LCD és a webfelület közös színei.")), id("themeAccent").closest("label"), id("themeCustomColorField"), id("displayInvert").closest("label"));
     for (const [time, level, key, fallback] of [["dayStartTime", "dayBrightness", "ui.day", "Nappali"], ["nightStartTime", "nightBrightness", "ui.night", "Éjszakai"]]) {
       const clockRow = id(time).closest("label"), levelRow = id(level).closest("label");
       const row = make("div", "schedule-row"); clockRow.before(row); row.append(clockRow, levelRow);
       clockRow.querySelector("span").textContent = tr(key, fallback);
+      const sunLabel = time === "dayStartTime" ? tr("display.sunrise", "Napkeltekor") : tr("display.sunset", "Napnyugtakor");
+      const marker = make("small", "solar-event", sunLabel);
+      marker.hidden = true; id(time).after(marker);
       levelRow.querySelector("span").classList.add("visually-hidden");
     }
     const artworkSection = id("displayArtworkMode").closest(".settings-section");
@@ -687,8 +704,29 @@
     header.querySelector(".top-actions").appendChild(volumeMenu);
     volumePanel.hidden = true;
     const railSpace = make("div", "volume-space");
+    const percent = id("volValue");
+    percent.addEventListener("focus", () => percent.select());
+    percent.addEventListener("input", () => { U.editingVolume = true; });
+    percent.addEventListener("blur", () => {
+      const level = numberValue("volume", 0);
+      const next = Number(percent.value);
+      const commit = U.editingVolume && percent.validity.valid && next !== level;
+      U.editingVolume = false;
+      percent.value = String(commit ? next : level);
+      if (commit) setVolume(next);
+    });
+    percent.addEventListener("keydown", event => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        if (percent.reportValidity()) percent.blur();
+      } else if (event.key === "Escape") {
+        U.editingVolume = false;
+        percent.blur();
+      }
+    });
     function toggleVolume(open) {
       if (open === !volumePanel.hidden) return;
+      if (document.activeElement === percent) percent.blur();
       if (open) {
         rail.replaceWith(railSpace); volumePanel.appendChild(rail);
       } else {
@@ -765,10 +803,11 @@
     }
     const muted = level === 0;
     id("volume").setAttribute("aria-valuetext", muted ? tr("ui.muted", "Némítva") : level + "%");
-    id("volValue").textContent = muted ? tr("ui.muted", "Némítva") : level + "%";
+    if (!U.editingVolume && id("volValue").value !== String(level)) id("volValue").value = String(level);
     if (U.shownVolume === level) return; U.shownVolume = level;
     const label = muted ? tr("ui.unmute", "Némítás feloldása") : tr("ui.mute", "Némítás");
-    U.muteButton.innerHTML = U.icon(muted ? "volume-off" : "volume");
+    U.muteButton.innerHTML = U.icon(muted ? "volume-off" : "volume") +
+      "<span>" + esc(muted ? tr("ui.muted", "Némítva") : tr("player.volume", "Hangerő")) + "</span>";
     const launcher = id("headerVolumeButton");
     if (launcher) launcher.innerHTML = U.icon(muted ? "volume-off" : "volume");
     U.muteButton.setAttribute("aria-label", label); U.muteButton.title = label;
@@ -814,9 +853,22 @@
   U.syncConditional = () => {
     if (!U.ready) return;
     const auto = id("autoBrightness").checked, clock = id("displayClockEnabled").checked;
-    document.querySelectorAll('.brightness-selector input').forEach(n => { n.checked = n.value === String(auto); });
+    document.querySelectorAll('.brightness-head .brightness-selector input').forEach(n => { n.checked = n.value === String(auto); });
     visible(id("brightness").closest("label"), !auto);
-    ["dayStartTime", "nightStartTime"].forEach(name => visible(id(name).closest(".schedule-row"), auto));
+    const solarAvailable = typeof currentConfig.solarBrightness === "boolean";
+    const solar = auto && solarAvailable && id("solarBrightness").checked;
+    visible(id("solarToggleRow"), auto && solarAvailable);
+    visible(id("solarLocation"), solar);
+    ["dayStartTime", "nightStartTime"].forEach(name => {
+      const input = id(name);
+      visible(input.closest(".schedule-row"), auto);
+      visible(input, !solar);
+      visible(input.nextElementSibling, solar);
+    });
+    const mono = id("monoOutput").checked;
+    visible(id("channelSelector"), typeof currentConfig.monoOutput === "boolean");
+    visible(id("monoHelp"), mono);
+    visible(id("soundBalance").closest("label"), !mono);
     visible(id("timeZone").closest("label"), auto || clock);
     ["displayIdleMode", "displayIdleSeconds"].forEach(name => visible(id(name).closest("label"), id("displayIdleEnabled").checked));
     visible(id("displayIdleBrightness").closest("label"), id("displayIdleEnabled").checked && id("displayIdleMode").value !== "blank");
@@ -829,6 +881,17 @@
   U.configuration = config => {
     U.lastConfiguration = config;
     if (!U.ready) return;
+    if (typeof config.solarBrightness === "boolean") {
+      const lat = config.solarLatitudeE2 / 100, lon = config.solarLongitudeE2 / 100;
+      const location = lat === 47.50 && lon === 19.04 ? "Budapest" : lat.toFixed(2) + "°, " + lon.toFixed(2) + "°";
+      disclosureLabel(id("solarLocation").querySelector("summary"), tr("display.solarLocation", "Helyszín") + " · " + location);
+      const form = id("solarLocationForm"), latitude = id("solarLatitude"), longitude = id("solarLongitude");
+      if (!form.dataset.editing || (Math.round(latitude.valueAsNumber * 100) === config.solarLatitudeE2 &&
+                                    Math.round(longitude.valueAsNumber * 100) === config.solarLongitudeE2)) {
+        latitude.value = String(lat); longitude.value = String(lon);
+        delete form.dataset.editing;
+      }
+    }
     if (U.connectionKind && !U.committing) {
       Object.entries(U.draft).forEach(([name, value]) => { const n = id(name); if (n.type === "checkbox") n.checked = value; else n.value = value; });
     }

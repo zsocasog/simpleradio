@@ -12,7 +12,7 @@ SimpleRadio is an ESP32-S3 internet radio you can build yourself. Listen to your
 - **Web player and station manager** for phones and desktops, with station search, yoRadio-compatible CSV import/export, and audio and display settings.
 - **Physical controls and integration** with rotary encoders, an optional IR remote and RGB lighting, plus MQTT discovery for Home Assistant.
 
-![SimpleRadio web player](.screenshots/en/player.jpg)
+![SimpleRadio web player](.screenshots/live-player.jpg)
 
 ## Hardware and setup
 
@@ -26,7 +26,7 @@ LittleFS updates through the web interface preserve settings, stations and saved
 
 During Wi-Fi setup you can give the radio a network name. For example, `kitchen-radio` opens at `http://kitchen-radio.local/` on a local network with mDNS support. Leave the field blank for a unique device name. You can change it later under **System → Overview → Network name**. The IP address still works.
 
-![Display settings with LCD preview](.screenshots/en/display.jpg)
+![Display settings with LCD preview](.screenshots/live-display.jpg)
 
 ## Guides
 
@@ -35,7 +35,7 @@ During Wi-Fi setup you can give the radio a network name. For example, `kitchen-
 
 ## Screenshots
 
-For the next photo set, capture the LCD during playback with a station logo and with album artwork, and while browsing the station list. For the web interface, capture the player at desktop and phone widths, and the display settings with the LCD preview visible.
+Web screenshots from a running SimpleRadio with its Hungarian interface. The gallery also includes photos of the physical LCD.
 
 <details>
 <summary>More LCD photos and web screenshots</summary>
@@ -43,14 +43,8 @@ For the next photo set, capture the LCD during playback with a station logo and 
 | LCD player with artwork | LCD station picker |
 | --- | --- |
 | ![LCD player with artwork](.screenshots/lcd/player2.jpg) | ![LCD station picker](.screenshots/lcd/station_picker.jpg) |
-| Volume | Stations |
-| ![LCD volume screen](.screenshots/lcd/volume.jpg) | ![Web station list](.screenshots/en/stations.jpg) |
-| Sound | Controls |
-| ![Sound settings](.screenshots/en/sound.jpg) | ![Controls](.screenshots/en/controls.jpg) |
-| Remote control | System overview |
-| ![Remote control settings](.screenshots/en/ir.jpg) | ![System overview](.screenshots/en/system.jpg) |
-| Integrations | Update |
-| ![Integration settings](.screenshots/en/system-connections.jpg) | ![Update page](.screenshots/en/system-update.jpg) |
+| Volume | Station manager |
+| ![LCD volume screen](.screenshots/lcd/volume.jpg) | ![Web station manager](.screenshots/live-stations.jpg) |
 
 </details>
 

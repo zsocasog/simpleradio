@@ -34,11 +34,12 @@ def valid_hostname(name):
     return name == '' or re.fullmatch(r'[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,29}[a-zA-Z0-9])?', name) is not None
 
 CONFIG = dict(configurationRevision=1, displayInvert=False, brightness=230, displayIdleEnabled=True,
-    displayIdleBlank=False, displayIdleSeconds=120, displayIdleBrightness=13,
+    displayIdleBlank=False, displayIdleSeconds=30, displayIdleBrightness=38,
     displayClockEnabled=True, displayClockStyle='digital', displayFooterMode='spectrum',
     displayArtworkMode='album', displayVuStyle='symmetric',
     themeAccent='amber', themeCustomColor='#f5ce74', timeZone='CET-1CEST,M3.5.0/2,M10.5.0/3',
-    autoBrightness=True, dayBrightness=230, nightBrightness=51, dayStartMinute=420,
+    autoBrightness=True, dayBrightness=204, nightBrightness=38, dayStartMinute=420,
+    solarBrightness=False, solarLatitudeE2=4750, solarLongitudeE2=1904, monoOutput=False,
     nightStartMinute=1200, irEnabled=True, irSensitivity=40, irActionLearning='',
     encoderEnabled=True, secondEncoderEnabled=False, encoderMode='single_volume_picker',
     encoderSensitivity=8, encoderVolumeStep=5, encoderLongPressMs=700,

@@ -359,6 +359,13 @@ body[data-view=player] .station-playing:not([hidden]) .station-activity-bar { an
 .schedule-row .setting-row + .setting-row { grid-template-columns: 1fr; }
 .schedule-row .setting-range { width: 100%; }
 .schedule-row .setting-range input { min-width: 50px; }
+#monoHelp { margin-top: 14px; }
+#solarLocation { margin: 0; border-top: 0; border-bottom: 1px solid var(--line-soft); }
+#solarLocationForm { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; align-items: end; }
+#solarLocationForm label { display: grid; gap: 6px; font-size: 14px; color: var(--muted); }
+#solarLocationForm input { width: 100%; min-width: 0; }
+#solarLocationForm button { grid-column: 1 / -1; justify-self: start; }
+.solar-event { color: var(--muted); font-size: 14px; }
 .layout-preview { margin: 0 0 24px; }
 .layout-preview > small { display: block; margin-bottom: 8px; }
 .lcd-preview { --bg: #000000; --text: #e8f6e2; --muted: #697a70; --line: #1a221e; --accent: var(--lcd-accent, var(--accent-strong)); --logo-mat: var(--bg); position: relative; container-type: inline-size; width: 100%; aspect-ratio: 480 / 320; overflow: hidden; border: 1px solid var(--line-soft); border-radius: 8px; background: var(--bg); color: var(--accent); }
@@ -480,12 +487,12 @@ body[data-view=player] .station-playing:not([hidden]) .station-activity-bar { an
 .player-controls {
   --skip-size: 52px; --play-size: 68px; --control-icon-size: 28px;
   --transport-gap: 26px; --transport-inset: 8px;
-  --wave-inset: calc(var(--transport-inset) + (var(--skip-size) - var(--control-icon-size)) / 2 + var(--control-icon-size) / 6);
-  width: calc(var(--skip-size) * 2 + var(--play-size) + var(--transport-gap) * 2 + var(--transport-inset) * 2);
+  container: volume-controls / inline-size;
+  width: min(100%, 520px);
   align-self: center; flex: 0 0 auto; margin-top: auto; margin-bottom: -8px; padding-top: 24px;
 }
 .transport { align-self: center; justify-content: center; gap: 8px; padding: 6px; border: 1px solid var(--line-soft); border-radius: 999px; background: var(--surface-2); }
-.player-controls > .transport { margin: 0; width: 100%; grid-template-columns: var(--skip-size) var(--play-size) var(--skip-size); gap: var(--transport-gap); padding: calc(var(--transport-inset) - 1px); }
+.player-controls > .transport { margin: 0 auto; width: max-content; max-width: 100%; grid-template-columns: var(--skip-size) var(--play-size) var(--skip-size); gap: var(--transport-gap); padding: calc(var(--transport-inset) - 1px); }
 .transport button { width: 48px; height: 48px; min-width: 0; padding: 10px; border: 0; background: transparent; color: var(--text); justify-self: center; }
 .player-controls .transport button { width: var(--skip-size); height: var(--skip-size); min-height: var(--skip-size); }
 .player-controls .transport .ui-icon { width: var(--control-icon-size); height: var(--control-icon-size); }
@@ -493,22 +500,24 @@ body[data-view=player] .station-playing:not([hidden]) .station-activity-bar { an
 .transport .play-main { width: 64px; height: 64px; min-width: 64px; border-radius: 50%; background: var(--accent); color: #101412; }
 .player-controls .transport .play-main { width: var(--play-size); height: var(--play-size); min-width: var(--play-size); min-height: var(--play-size); }
 .transport .play-main:hover { background: var(--accent-strong); color: #101412; }
-.volume-rail { position: relative; display: block; width: 100%; height: 52px; max-width: none; margin-top: 22px; }
-.volume-control-row { position: static; display: block; padding: 0; }
-.volume-step { position: absolute; top: 0; min-width: 28px; width: 28px; height: 52px; min-height: 44px; padding: 3px; border: 0; background: transparent; border-radius: 6px; }
-.volume-step:first-child { left: calc(var(--wave-inset) - 42px); }
-.volume-step:last-child { right: calc(var(--wave-inset) - 42px); }
+.volume-rail { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; width: 100%; max-width: none; gap: 8px; margin-top: 22px; }
+.volume-control-row { display: grid; grid-template-columns: 48px minmax(0, 1fr) 48px; align-items: center; gap: 8px; padding: 0; }
+.volume-step, .mute-button { position: static; display: inline-flex; align-items: center; justify-content: center; min-width: 48px; width: 48px; height: 48px; padding: 0; border: 1px solid var(--line); border-radius: 50%; background: var(--chrome); }
+.volume-step .ui-icon, .mute-button .ui-icon, .header-volume > button .ui-icon { width: 24px; height: 24px; }
 .volume-step:hover, .mute-button:hover { background: rgba(var(--accent-rgb), .08); color: var(--accent); }
-.mute-button { position: absolute; left: calc(var(--wave-inset) - 82px); top: 0; min-width: 32px; width: 32px; height: 52px; padding: 3px; border: 0; background: transparent; border-radius: 6px; color: var(--muted); }
+.mute-button { color: var(--muted); border-color: transparent; background: transparent; }
 .mute-button > span { display: none; }
 .mute-button[aria-pressed=false] { color: var(--accent); }
-#volValue { position: absolute; left: calc(100% - var(--wave-inset) + 54px); top: 0; display: flex; align-items: center; width: 60px; height: 52px; color: var(--muted); font-size: 14px; text-align: left; white-space: nowrap; }
-.signature-volume { position: absolute; left: var(--wave-inset); right: var(--wave-inset); top: 0; height: 52px; min-width: 56px; }
-.volume-pattern { display: flex; align-items: center; justify-content: space-between; position: absolute; top: 8px; left: 0; right: 0; height: 36px; pointer-events: none; }
-.volume-pill { display: block; position: relative; flex: 0 0 4px; width: 4px; overflow: hidden; border-radius: 999px; background: var(--line); }
+.volume-readout { position: relative; display: flex; align-items: center; width: 76px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.volume-readout input { width: 100%; min-width: 0; height: 48px; margin: 0; padding: 0 28px 0 5px; text-align: right; font: inherit; font-size: 18px; font-weight: 650; color: var(--text); background: var(--chrome); border: 1px solid var(--line); border-radius: 10px; }
+.volume-readout input:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
+.volume-readout > span:last-child { position: absolute; right: 10px; font-size: 15px; pointer-events: none; }
+.signature-volume { position: relative; display: block; height: 56px; min-width: 0; }
+.volume-pattern { display: flex; align-items: center; justify-content: space-between; position: absolute; inset: 5px 0; pointer-events: none; }
+.volume-pill { display: block; position: relative; flex: 0 1 5px; max-width: 3%; overflow: hidden; border-radius: 999px; background: var(--line); }
 .volume-pill::after { content: ''; position: absolute; left: 0; top: 0; width: var(--hover-fill, var(--fill, 0%)); height: 100%; background: var(--accent); }
 .signature-volume.is-previewing .volume-pill::after { background: rgba(var(--accent-rgb), .45); }
-.volume-control-row .signature-volume input[type=range] { appearance: none; -webkit-appearance: none; position: absolute; inset: 0; width: 100%; min-width: 0; height: 52px; margin: 0; padding: 0; border: 0; opacity: 0; cursor: pointer; }
+.volume-control-row .signature-volume input[type=range] { appearance: none; -webkit-appearance: none; position: absolute; inset: 0; width: 100%; min-width: 0; height: 100%; margin: 0; padding: 0; border: 0; opacity: 0; cursor: pointer; touch-action: pan-y; }
 /* A zero-width invisible thumb makes the native click value match the wave's
    full 0..100% width and its hover prediction in both browser engines. */
 .signature-volume input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 0; height: 0; border: 0; }
@@ -535,15 +544,22 @@ body[data-view=player].main-transport-visible :is(#connectionInfo, #headerTrack,
 .brand:has(:where(#headerTrack:not(:empty))) .brand-name { display: none; }
 body[data-view=player].main-transport-visible .brand .brand-name { display: block; }
 .header-volume { position: relative; }
-.header-volume > button { border-color: transparent; color: var(--accent); }
-.header-volume-panel { position: absolute; z-index: 5; right: 0; top: calc(100% + 12px); width: min(310px, calc(100vw - 42px)); padding: 8px; border: 1px solid var(--line); border-radius: 12px; background: var(--chrome); box-shadow: 0 8px 24px #0006; }
-.header-volume-panel .volume-rail { --wave-inset: 82px; height: 52px; margin: 0; }
-.player-controls .volume-space { height: 52px; margin-top: 22px; }
+.header-volume > button { min-width: 48px; min-height: 48px; border-color: transparent; color: var(--accent); }
+.header-volume-panel { container: volume-controls / inline-size; position: absolute; z-index: 5; right: 0; top: calc(100% + 12px); width: min(500px, calc(100vw - 24px)); padding: 12px; border: 1px solid var(--line); border-radius: 12px; background: var(--chrome); box-shadow: 0 8px 24px #0006; }
+.header-volume-panel .volume-rail { margin: 0; }
+.player-controls .volume-space { height: 56px; margin-top: 22px; }
+@container volume-controls (max-width: 439px) {
+  .volume-rail { grid-template-columns: minmax(0, 1fr) auto; row-gap: 4px; }
+  .mute-button { grid-area: 1 / 1; justify-self: start; width: auto; gap: 8px; padding: 0 10px; border-radius: 10px; }
+  .mute-button > span { display: inline; font-size: 15px; font-weight: 550; color: var(--text); }
+  .volume-readout { grid-area: 1 / 2; }
+  .volume-control-row { grid-area: 2 / 1 / 3 / -1; }
+  .player-controls .volume-space { height: 108px; }
+}
 @media (min-width: 1101px) {
   .now-grid { grid-template-columns: minmax(0, 1fr) minmax(300px, 32%); }
   .now-copy { justify-content: center; padding: 0; }
   .now-copy .player-controls { align-self: flex-start; margin: 24px 0 0; padding: 0; }
-  .player-controls .volume-rail { margin-left: calc(82px - var(--wave-inset)); }
 }
 #stationsView .page-head { align-items: center; }
 #stationsView .page-head h1 { margin-bottom: 3px; }
@@ -619,7 +635,7 @@ body[data-view=player].main-transport-visible .brand .brand-name { display: bloc
   .now-copy h1 { font-size: clamp(27px, 3.1vw, 36px); }
   .player-station-name { margin-bottom: 8px; }
   .player-controls { --skip-size: 46px; --play-size: 60px; --control-icon-size: 26px; --transport-gap: 20px; --transport-inset: 7px; padding-top: 20px; }
-  .volume-rail { margin-top: 18px; }
+  .player-controls :is(.volume-rail, .volume-space) { margin-top: 18px; }
 }
 @media (min-width: 761px) and (max-width: 1400px) {
   .topbar { gap: 16px; }
@@ -667,11 +683,6 @@ body[data-view=player].main-transport-visible .brand .brand-name { display: bloc
   .cover-frame { max-width: 260px; }
   .now-copy { padding: 0; }
   .player-controls { --skip-size: 46px; --play-size: 60px; --control-icon-size: 26px; --transport-gap: 16px; --transport-inset: 6px; margin-top: 24px; margin-bottom: 0; padding-top: 0; }
-  .volume-step { width: 26px; min-width: 26px; }
-  .volume-step:first-child { left: calc(var(--wave-inset) - 34px); }
-  .volume-step:last-child { right: calc(var(--wave-inset) - 34px); }
-  .mute-button { left: calc(var(--wave-inset) - 68px); width: 28px; min-width: 28px; }
-  #volValue { left: calc(100% - var(--wave-inset) + 40px); width: 48px; font-size: 13px; }
 }
 @media (max-width: 480px) {
   .topbar { gap: 8px; padding-inline: 12px; }
@@ -680,11 +691,6 @@ body[data-view=player].main-transport-visible .brand .brand-name { display: bloc
 }
 @media (max-width: 360px) {
   .player-controls { --skip-size: 44px; --play-size: 56px; --control-icon-size: 24px; --transport-gap: 12px; --transport-inset: 5px; }
-  .volume-step { width: 24px; min-width: 24px; }
-  .volume-step:first-child { left: calc(var(--wave-inset) - 30px); }
-  .volume-step:last-child { right: calc(var(--wave-inset) - 30px); }
-  .mute-button { left: calc(var(--wave-inset) - 62px); }
-  #volValue { left: calc(100% - var(--wave-inset) + 34px); width: 42px; font-size: 12px; }
   .topbar { gap: 8px; }
   .header-transport { grid-template-columns: 34px 40px 34px; gap: 3px; }
   .header-transport .transport-icon { width: 34px; }

@@ -743,7 +743,6 @@ function togglePlay() {
 function setVolume(v, preview = false) {
   const value = clampNumber(parseInt(v, 10), 0, 100, 50);
   setValue("volume", value);
-  setText("volValue", `${value}%`);
   window.SRUI?.volume?.(value);
   sendPlayerControls({ volume: value }, preview);
 }
@@ -2181,6 +2180,8 @@ function collectConfig() {
     frontLedStartPixel: $("frontLedStartPixel").value || "1",
     frontLedReverse: $("frontLedReverse").value || "0"
   });
+  if (typeof currentConfig.monoOutput === "boolean") data.monoOutput = $("monoOutput").checked ? "1" : "0";
+  if (typeof currentConfig.solarBrightness === "boolean") data.solarBrightness = $("solarBrightness").checked ? "1" : "0";
   const lastFmApiKey = $("lastFmApiKey").value.trim();
   if (lastFmApiKey) data.lastFmApiKey = lastFmApiKey;
   irActions.forEach(item => {
@@ -2380,15 +2381,15 @@ function applyConfigToUI(config) {
   $("displayInvert").checked = !!config.displayInvert;
   setConfigValue("brightness", config.brightness || 0);
   setPercentLabel("brightness");
-  $("displayIdleEnabled").checked = !!config.displayIdleEnabled;
+  $("displayIdleEnabled").checked = config.displayIdleEnabled ?? true;
   $("displayIdleBlank").checked = !!config.displayIdleBlank;
-  setConfigValue("displayIdleSeconds", config.displayIdleSeconds || 120);
-  setConfigValue("displayIdleBrightness", config.displayIdleBrightness ?? 16);
+  setConfigValue("displayIdleSeconds", config.displayIdleSeconds ?? 30);
+  setConfigValue("displayIdleBrightness", config.displayIdleBrightness ?? 38);
   setPercentLabel("displayIdleBrightness");
-  $("displayClockEnabled").checked = !!config.displayClockEnabled;
+  $("displayClockEnabled").checked = config.displayClockEnabled ?? true;
   setConfigValue("displayClockStyle", config.displayClockStyle || "digital");
-  setConfigValue("displayFooterMode", config.displayFooterMode || "volume");
-  setConfigValue("displayArtworkMode", config.displayArtworkMode || "logo");
+  setConfigValue("displayFooterMode", config.displayFooterMode || "spectrum");
+  setConfigValue("displayArtworkMode", config.displayArtworkMode || "album");
   setConfigValue("lastFmApiKey", "");
   $("lastFmApiKey").placeholder = config.hasSavedLastFmApiKey
     ? t("key.savedPlaceholder", "Van mentett kulcs — üresen hagyva megmarad")
@@ -2404,19 +2405,20 @@ function applyConfigToUI(config) {
   const themeColor = normalizeHexColor(config.themeCustomColor || "#a9f7bf");
   setConfigValue("themeCustomColor", themeColor);
   setConfigValue("themeCustomColorText", themeColor);
-  setConfigValue("themeAccent", config.themeAccent || "green");
+  setConfigValue("themeAccent", config.themeAccent || "amber");
   syncThemeAccent();
   syncDisplayFooterMode();
   setConfigValue("timeZone", config.timeZone || "CET-1CEST,M3.5.0/2,M10.5.0/3");
-  const idleMode = config.displayClockEnabled ? "clock" : (config.displayIdleBlank ? "blank" : "dim");
+  const idleMode = $("displayClockEnabled").checked ? "clock" : (config.displayIdleBlank ? "blank" : "dim");
   setConfigValue("displayIdleMode", idleMode);
   syncDisplayIdleMode();
-  $("autoBrightness").checked = !!config.autoBrightness;
+  $("autoBrightness").checked = config.autoBrightness ?? true;
+  $("solarBrightness").checked = config.solarBrightness === true;
   setConfigValue("dayStartTime", minutesToTime(config.dayStartMinute ?? 420));
-  setConfigValue("nightStartTime", minutesToTime(config.nightStartMinute ?? 1320));
-  setConfigValue("dayBrightness", config.dayBrightness || 0);
+  setConfigValue("nightStartTime", minutesToTime(config.nightStartMinute ?? 1200));
+  setConfigValue("dayBrightness", config.dayBrightness ?? 204);
   setPercentLabel("dayBrightness");
-  setConfigValue("nightBrightness", config.nightBrightness || 0);
+  setConfigValue("nightBrightness", config.nightBrightness ?? 38);
   setPercentLabel("nightBrightness");
 
   $("irEnabled").checked = !!config.irEnabled;
@@ -2427,7 +2429,7 @@ function applyConfigToUI(config) {
   if (config.irActionLearning) selectedIrAction = config.irActionLearning;
   updateIrPanel();
 
-  $("encoderEnabled").checked = !!config.encoderEnabled;
+  $("encoderEnabled").checked = config.encoderEnabled ?? true;
   $("secondEncoderEnabled").checked = !!config.secondEncoderEnabled;
   setConfigValue("encoderSensitivity", config.encoderSensitivity || 8);
   syncEncoderSensitivity($("encoderSensitivity").value);
@@ -2447,6 +2449,7 @@ function applyConfigToUI(config) {
   setConfigValue("streamRetryMs", config.streamRetryMs || 5000);
   $("autoStart").checked = !!config.autoStart;
   setConfigValue("volumeCurve", config.volumeCurve || "soft");
+  $(config.monoOutput ? "monoOutput" : "stereoOutput").checked = true;
   syncVolumeCurve();
   $("frontLedEnabled").checked = !!config.frontLedEnabled;
   $("frontLedUseTheme").checked = config.frontLedUseTheme !== false;
@@ -2824,7 +2827,6 @@ function updateUI(state) {
   setText("connectionInfo", state.station || t("state.noStation", "Nincs állomás"));
   const shownVolume = sliderIsProtected("volume") ? numberValue("volume", state.volume) : state.volume;
   setValue("volume", shownVolume);
-  setText("volValue", `${shownVolume}%`);
 
   const low = sliderIsProtected("soundEqLow") ? eqValue("low") : state.eqLow || 0;
   const mid = sliderIsProtected("soundEqMid") ? eqValue("mid") : state.eqMid || 0;
